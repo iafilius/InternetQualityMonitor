@@ -9,6 +9,10 @@ The binary has TWO modes now:
 - Collection mode (default): actively probe all sites (optionally via per-IP task fanout) and append new lines, then analyze.
 - Analyze-only: read existing `monitor_results.jsonl` batches, print summaries / deltas, emit alert JSON. Enable with `--analyze-only=true`.
 
+Recent changes:
+- Per-IP-family aggregation: batch JSON summaries now include `ipv4` / `ipv6` objects with the same metrics (averages & rates) restricted to that family. Console lines append succinct `v4(...)/v6(...)` segments when present.
+- High-resolution speed fallback: ultra-fast tiny transfers (<1ms) now compute non-zero speeds (previously rounded to 0 when duration in whole ms was 0).
+
 First time (no results yet) you likely want to collect data (this is now the default mode):
 ```bash
 go run ./src/main.go --analyze-only=false --iterations 1 --parallel 2
@@ -338,6 +342,8 @@ Caching / proxy / reuse rates (% of lines where condition true):
 Use these to correlate: e.g. a rise in `ip_mismatch_rate_pct` plus degraded `avg_speed_kbps` may indicate path changes; increasing `avg_head_get_time_ratio` with stable speed might highlight control plane latency growth.
 </details>
 
+Per-family batch objects (`ipv4`, `ipv6`): each, when present, mirrors the core metric names (e.g. `avg_speed_kbps`, `avg_ttfb_ms`, `avg_p50_kbps`, rates like `cache_hit_rate_pct`) restricted to that IP family. They are omitted if a family has zero lines in the batch. Alert JSON currently reports only the combined batch (family-level alerts not yet emitted).
+
 ### Example Batch Summary Console Line
 <details>
 <summary>Show example console line</summary>
@@ -345,7 +351,7 @@ Use these to correlate: e.g. a rise in `ip_mismatch_rate_pct` plus degraded `avg
 A typical analyzer line (fields may be omitted when zero) now looks like:
 
 ```
-[batch 20250818_131129] lines=42 avg_speed=18450.7 median=18210.0 ttfb=210 bytes=52428800 errors=1 first_rtt=950.2 p50=18200.3 p99/p50=1.35 jitter=8.4% slope=120.5 cov%=9.8 cache_hit=40.0% reuse=35.0% plateaus=2.0 longest_ms=3400
+[batch 20250818_131129] lines=42 avg_speed=18450.7 median=18210.0 ttfb=210 bytes=52428800 errors=1 first_rtt=950.2 p50=18200.3 p99/p50=1.35 jitter=8.4% slope=120.5 cov%=9.8 cache_hit=40.0% reuse=35.0% plateaus=2.0 longest_ms=3400 v4(lines=30 spd=19010.4 ttfb=205 p50=18800.1) v6(lines=12 spd=16880.2 ttfb=225 p50=16750.0)
 ```
 
 Field order is optimized for quick visual scanning: core throughput & latency first, variability & stability next, then rates.
@@ -559,6 +565,7 @@ Your Go code will then be able to use these databases for GeoIP lookups.
 | Warm cache suspected w/ low cache hit rate | HEAD path cached, object not | Inspect `header_age` / `x-cache` and warm HEAD timings |
 | Need verbose analysis | Want batch grouping debug | `ANALYSIS_DEBUG=1 go run ./src/main.go` |
 | Need baseline only | Old data noisy | Move or delete results file; collect fresh single batch |
+| All speeds zero for tiny object | Sub-ms transfer (older versions) | Update to latest (uses high-res timing) or test with larger asset |
 
 Quick focused test rerun:
 ```bash

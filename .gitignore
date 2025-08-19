@@ -5,3 +5,4 @@ iqmon
 go.mod
 go.sum
 monitor_results.jsonl
+src/analysis/announcement.md
