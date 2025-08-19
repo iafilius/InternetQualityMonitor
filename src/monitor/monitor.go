@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/arjan/internet-monitor-monitor/src/types"
+	"github.com/iafilius/InternetQualityMonitor/src/types"
 	"github.com/oschwald/geoip2-golang"
 )
 
