@@ -1,0 +1,70 @@
+[
+  // US-based site
+  {
+    "name": "Google US",
+    "url": "https://www.google.com",
+    "country": "US"
+  },
+  // UK-based site
+  {
+    "name": "BBC UK",
+    "url": "https://www.bbc.co.uk",
+    "country": "UK"
+  },
+  // Japan-based site
+  {
+    "name": "Yahoo Japan",
+    "url": "https://www.yahoo.co.jp",
+    "country": "JP"
+  },
+  // Hetzner Germany
+  { "name": "Hetzner Germany 10MB", "url": "https://speed.hetzner.de/10MB.bin", "country": "DE" },
+  { "name": "Hetzner Germany 100MB", "url": "https://speed.hetzner.de/100MB.bin", "country": "DE" },
+  { "name": "Hetzner Germany 1GB", "url": "https://speed.hetzner.de/1GB.bin", "country": "DE" },
+  //{ "name": "Hetzner Germany 10GB", "url": "https://speed.hetzner.de/10GB.bin", "country": "DE" },
+
+  // ThinkBroadband UK
+  { "name": "ThinkBroadband UK 5MB", "url": "http://ipv4.download.thinkbroadband.com/5MB.zip", "country": "UK" },
+  { "name": "ThinkBroadband UK 10MB", "url": "http://ipv4.download.thinkbroadband.com/10MB.zip", "country": "UK" },
+  { "name": "ThinkBroadband UK 100MB", "url": "http://ipv4.download.thinkbroadband.com/100MB.zip", "country": "UK" },
+  { "name": "ThinkBroadband UK 1GB", "url": "http://ipv4.download.thinkbroadband.com/1GB.zip", "country": "UK" },
+
+  // OVH France
+  { "name": "OVH France 10MB", "url": "http://proof.ovh.net/files/10Mb.dat", "country": "FR" },
+  { "name": "OVH France 100MB", "url": "http://proof.ovh.net/files/100Mb.dat", "country": "FR" },
+  { "name": "OVH France 1GB", "url": "http://proof.ovh.net/files/1Gb.dat", "country": "FR" },
+  //{ "name": "OVH France 10GB", "url": "http://proof.ovh.net/files/10Gb.dat", "country": "FR" },
+
+  // Tele2 Sweden
+  { "name": "Tele2 Sweden 10MB", "url": "http://speedtest.tele2.net/10MB.zip", "country": "SE" },
+  { "name": "Tele2 Sweden 100MB", "url": "http://speedtest.tele2.net/100MB.zip", "country": "SE" },
+  { "name": "Tele2 Sweden 1GB", "url": "http://speedtest.tele2.net/1GB.zip", "country": "SE" },
+  //{ "name": "Tele2 Sweden 10GB", "url": "http://speedtest.tele2.net/10GB.zip", "country": "SE" },
+
+  // Leaseweb Netherlands
+  { "name": "Leaseweb NL 100MB", "url": "https://mirror.nl.leaseweb.net/speedtest/100mb.bin", "country": "NL" },
+  { "name": "Leaseweb NL 1GB", "url": "https://mirror.nl.leaseweb.net/speedtest/1gb.bin", "country": "NL" },
+  //{ "name": "Leaseweb NL 10GB", "url": "https://mirror.nl.leaseweb.net/speedtest/10gb.bin", "country": "NL" },
+
+  // Leaseweb Germany
+  { "name": "Leaseweb DE 100MB", "url": "https://mirror.de.leaseweb.net/speedtest/100mb.bin", "country": "DE" },
+  { "name": "Leaseweb DE 1GB", "url": "https://mirror.de.leaseweb.net/speedtest/1gb.bin", "country": "DE" },
+  //{ "name": "Leaseweb DE 10GB", "url": "https://mirror.de.leaseweb.net/speedtest/10gb.bin", "country": "DE" },
+
+  // Leaseweb USA
+  { "name": "Leaseweb US 100MB", "url": "https://mirror.us.leaseweb.net/speedtest/100mb.bin", "country": "US" },
+  { "name": "Leaseweb US 1GB", "url": "https://mirror.us.leaseweb.net/speedtest/1gb.bin", "country": "US" },
+  //{ "name": "Leaseweb US 10GB", "url": "https://mirror.us.leaseweb.net/speedtest/10gb.bin", "country": "US" },
+
+  // Leaseweb Singapore
+  { "name": "Leaseweb SG 100MB", "url": "https://mirror.sg.leaseweb.net/speedtest/100mb.bin", "country": "SG" },
+  { "name": "Leaseweb SG 1GB", "url": "https://mirror.sg.leaseweb.net/speedtest/1gb.bin", "country": "SG" },
+  //{ "name": "Leaseweb SG 10GB", "url": "https://mirror.sg.leaseweb.net/speedtest/10gb.bin", "country": "SG" },
+
+  // Linode Global
+  { "name": "Linode US 100MB", "url": "https://speedtest.newark.linode.com/100MB-newark.bin", "country": "US" },
+  { "name": "Linode DE 100MB", "url": "https://speedtest.frankfurt.linode.com/100MB-frankfurt.bin", "country": "DE" },
+  { "name": "Linode UK 100MB", "url": "https://speedtest.london.linode.com/100MB-london.bin", "country": "UK" },
+  { "name": "Linode JP 100MB", "url": "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin", "country": "JP" },
+  { "name": "Linode SG 100MB", "url": "https://speedtest.singapore.linode.com/100MB-singapore.bin", "country": "SG" }
+]
