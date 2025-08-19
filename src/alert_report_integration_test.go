@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/arjan/internet-monitor-monitor/src/analysis"
+	"github.com/iafilius/InternetQualityMonitor/src/analysis"
 )
 
 // TestWriteAlertJSONComparison ensures comparison block appears when comp provided.

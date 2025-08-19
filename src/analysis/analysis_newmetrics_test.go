@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arjan/internet-monitor-monitor/src/monitor"
+	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
 
 // writeRichLine writes a ResultEnvelope line with many extended metric fields populated.

@@ -28,9 +28,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/arjan/internet-monitor-monitor/src/analysis"
-	"github.com/arjan/internet-monitor-monitor/src/monitor"
-	"github.com/arjan/internet-monitor-monitor/src/types"
+	"github.com/iafilius/InternetQualityMonitor/src/analysis"
+	"github.com/iafilius/InternetQualityMonitor/src/monitor"
+	"github.com/iafilius/InternetQualityMonitor/src/types"
 )
 
 // StripJSONC loads a JSONC file (lines beginning with // are ignored) and returns raw JSON bytes.

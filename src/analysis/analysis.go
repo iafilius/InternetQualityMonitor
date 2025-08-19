@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arjan/internet-monitor-monitor/src/monitor"
+	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
 
 // BatchSummary captures aggregate metrics for one run_tag batch.
@@ -31,24 +31,26 @@ type BatchSummary struct {
 	AvgJitterPct       float64 `json:"avg_jitter_mean_abs_pct"`
 	BatchDurationMs    int64   `json:"batch_duration_ms,omitempty"`
 	// Extended aggregated metrics (averages or rates over successful lines)
-	AvgP90Speed              float64 `json:"avg_p90_kbps,omitempty"`
-	AvgP95Speed              float64 `json:"avg_p95_kbps,omitempty"`
-	AvgP99Speed              float64 `json:"avg_p99_kbps,omitempty"`
-	AvgSlopeKbpsPerSec       float64 `json:"avg_slope_kbps_per_sec,omitempty"`
-	AvgCoefVariationPct      float64 `json:"avg_coef_variation_pct,omitempty"`
-	CacheHitRatePct          float64 `json:"cache_hit_rate_pct,omitempty"`
-	ProxySuspectedRatePct    float64 `json:"proxy_suspected_rate_pct,omitempty"`
-	IPMismatchRatePct        float64 `json:"ip_mismatch_rate_pct,omitempty"`
-	PrefetchSuspectedRatePct float64 `json:"prefetch_suspected_rate_pct,omitempty"`
+	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
+	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
+	AvgP99Speed               float64 `json:"avg_p99_kbps,omitempty"`
+	AvgSlopeKbpsPerSec        float64 `json:"avg_slope_kbps_per_sec,omitempty"`
+	AvgCoefVariationPct       float64 `json:"avg_coef_variation_pct,omitempty"`
+	CacheHitRatePct           float64 `json:"cache_hit_rate_pct,omitempty"`
+	ProxySuspectedRatePct     float64 `json:"proxy_suspected_rate_pct,omitempty"`
+	IPMismatchRatePct         float64 `json:"ip_mismatch_rate_pct,omitempty"`
+	PrefetchSuspectedRatePct  float64 `json:"prefetch_suspected_rate_pct,omitempty"`
 	WarmCacheSuspectedRatePct float64 `json:"warm_cache_suspected_rate_pct,omitempty"`
-	ConnReuseRatePct         float64 `json:"conn_reuse_rate_pct,omitempty"`
-	PlateauStableRatePct     float64 `json:"plateau_stable_rate_pct,omitempty"`
-	AvgHeadGetTimeRatio      float64 `json:"avg_head_get_time_ratio,omitempty"`
+	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
+	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
+	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
 }
 
 // AnalyzeRecentResults parses the results file and returns the most recent up to MaxBatches batch summaries.
 // Thin wrapper over AnalyzeRecentResultsFull.
-func AnalyzeRecentResults(path string, schemaVersion, MaxBatches int) ([]BatchSummary, error) { return AnalyzeRecentResultsFull(path, schemaVersion, MaxBatches, "") }
+func AnalyzeRecentResults(path string, schemaVersion, MaxBatches int) ([]BatchSummary, error) {
+	return AnalyzeRecentResultsFull(path, schemaVersion, MaxBatches, "")
+}
 
 // AnalyzeRecentResultsFull parses the results file and computes extended batch metrics.
 // MaxBatches limits how many recent batches are returned (0 or negative -> default 10).
@@ -176,13 +178,19 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		order = order[len(order)-MaxBatches:]
 	}
 	avg := func(a []float64) float64 {
-		if len(a) == 0 { return 0 }
+		if len(a) == 0 {
+			return 0
+		}
 		s := 0.0
-		for _, v := range a { s += v }
+		for _, v := range a {
+			s += v
+		}
 		return s / float64(len(a))
 	}
 	median := func(a []float64) float64 {
-		if len(a) == 0 { return 0 }
+		if len(a) == 0 {
+			return 0
+		}
 		cp := append([]float64(nil), a...)
 		sort.Float64s(cp)
 		return cp[len(cp)/2]
@@ -198,36 +206,91 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		var minTS, maxTS time.Time
 		for _, r := range recs {
 			if !r.timestamp.IsZero() {
-				if minTS.IsZero() || r.timestamp.Before(minTS) { minTS = r.timestamp }
-				if maxTS.IsZero() || r.timestamp.After(maxTS) { maxTS = r.timestamp }
+				if minTS.IsZero() || r.timestamp.Before(minTS) {
+					minTS = r.timestamp
+				}
+				if maxTS.IsZero() || r.timestamp.After(maxTS) {
+					maxTS = r.timestamp
+				}
 			}
-			if r.speed > 0 { speeds = append(speeds, r.speed) }
-			if r.ttfb > 0 { ttfbs = append(ttfbs, r.ttfb) }
-			if r.bytes > 0 { bytesVals = append(bytesVals, r.bytes) }
-			if r.firstRTT > 0 { firsts = append(firsts, r.firstRTT) }
-			if r.p50 > 0 { p50s = append(p50s, r.p50) }
-			if r.p90 > 0 { p90s = append(p90s, r.p90) }
-			if r.p95 > 0 { p95s = append(p95s, r.p95) }
-			if r.p99 > 0 { p99s = append(p99s, r.p99) }
-			if r.p50 > 0 && r.p99 > 0 { ratios = append(ratios, r.p99/r.p50) }
-			if r.plateauCount > 0 { plateauCounts = append(plateauCounts, r.plateauCount) }
-			if r.longestPlateau > 0 { longest = append(longest, r.longestPlateau) }
-			if r.jitterPct > 0 { jitters = append(jitters, r.jitterPct) }
-			if r.slope != 0 { slopes = append(slopes, r.slope) }
-			if r.coefVarPct > 0 { coefVars = append(coefVars, r.coefVarPct) }
-			if r.headGetRatio > 0 { headGetRatios = append(headGetRatios, r.headGetRatio) }
-			if r.cachePresent { cacheCnt++ }
-			if r.proxySuspected { proxyCnt++ }
-			if r.ipMismatch { ipMismatchCnt++ }
-			if r.prefetchSuspected { prefetchCnt++ }
-			if r.warmCacheSuspected { warmCacheCnt++ }
-			if r.connReused { reuseCnt++ }
-			if r.plateauStable { plateauStableCnt++ }
-			if strings.Contains(r.raw, "tcp_error") || strings.Contains(r.raw, "http_error") { errorLines++ }
+			if r.speed > 0 {
+				speeds = append(speeds, r.speed)
+			}
+			if r.ttfb > 0 {
+				ttfbs = append(ttfbs, r.ttfb)
+			}
+			if r.bytes > 0 {
+				bytesVals = append(bytesVals, r.bytes)
+			}
+			if r.firstRTT > 0 {
+				firsts = append(firsts, r.firstRTT)
+			}
+			if r.p50 > 0 {
+				p50s = append(p50s, r.p50)
+			}
+			if r.p90 > 0 {
+				p90s = append(p90s, r.p90)
+			}
+			if r.p95 > 0 {
+				p95s = append(p95s, r.p95)
+			}
+			if r.p99 > 0 {
+				p99s = append(p99s, r.p99)
+			}
+			if r.p50 > 0 && r.p99 > 0 {
+				ratios = append(ratios, r.p99/r.p50)
+			}
+			if r.plateauCount > 0 {
+				plateauCounts = append(plateauCounts, r.plateauCount)
+			}
+			if r.longestPlateau > 0 {
+				longest = append(longest, r.longestPlateau)
+			}
+			if r.jitterPct > 0 {
+				jitters = append(jitters, r.jitterPct)
+			}
+			if r.slope != 0 {
+				slopes = append(slopes, r.slope)
+			}
+			if r.coefVarPct > 0 {
+				coefVars = append(coefVars, r.coefVarPct)
+			}
+			if r.headGetRatio > 0 {
+				headGetRatios = append(headGetRatios, r.headGetRatio)
+			}
+			if r.cachePresent {
+				cacheCnt++
+			}
+			if r.proxySuspected {
+				proxyCnt++
+			}
+			if r.ipMismatch {
+				ipMismatchCnt++
+			}
+			if r.prefetchSuspected {
+				prefetchCnt++
+			}
+			if r.warmCacheSuspected {
+				warmCacheCnt++
+			}
+			if r.connReused {
+				reuseCnt++
+			}
+			if r.plateauStable {
+				plateauStableCnt++
+			}
+			if strings.Contains(r.raw, "tcp_error") || strings.Contains(r.raw, "http_error") {
+				errorLines++
+			}
 		}
 		recCount := len(recs)
 		den := float64(recCount)
-		pct := func(c int) float64 { if recCount == 0 { return 0 }; return float64(c) / den * 100 }
+		pct := func(c int) float64 {
+			if recCount == 0 {
+				return 0
+			}
+			return float64(c) / den * 100
+		}
 		var durationMs int64
 		if !minTS.IsZero() && !maxTS.IsZero() && maxTS.After(minTS) {
 			durationMs = maxTS.Sub(minTS).Milliseconds()
@@ -261,9 +324,17 @@ func CompareLastVsPrevious(summaries []BatchSummary) (speedDeltaPct, ttfbDeltaPc
 	prevCount := float64(len(summaries) - 1)
 	prevAvgSpeed /= prevCount
 	prevAvgTTFB /= prevCount
-	if prevAvgSpeed > 0 { speedDeltaPct = (last.AvgSpeed - prevAvgSpeed) / prevAvgSpeed * 100 }
-	if prevAvgTTFB > 0 { ttfbDeltaPct = (last.AvgTTFB - prevAvgTTFB) / prevAvgTTFB * 100 }
-	if math.IsNaN(speedDeltaPct) { speedDeltaPct = 0 }
-	if math.IsNaN(ttfbDeltaPct) { ttfbDeltaPct = 0 }
+	if prevAvgSpeed > 0 {
+		speedDeltaPct = (last.AvgSpeed - prevAvgSpeed) / prevAvgSpeed * 100
+	}
+	if prevAvgTTFB > 0 {
+		ttfbDeltaPct = (last.AvgTTFB - prevAvgTTFB) / prevAvgTTFB * 100
+	}
+	if math.IsNaN(speedDeltaPct) {
+		speedDeltaPct = 0
+	}
+	if math.IsNaN(ttfbDeltaPct) {
+		ttfbDeltaPct = 0
+	}
 	return
 }
