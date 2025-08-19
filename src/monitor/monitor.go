@@ -659,9 +659,18 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	close(watchdogQuit)
 	resp.Body.Close()
 	transferDuration := time.Since(transferStart)
+	// Compute overall average transfer speed. Previously this used only whole milliseconds;
+	// extremely fast (sub-millisecond) transfers would yield ms=0 -> speed 0. Use high-resolution seconds fallback.
 	speed := 0.0
-	if ms := transferDuration.Milliseconds(); ms > 0 {
+	ms := transferDuration.Milliseconds()
+	if ms > 0 {
 		speed = float64(bytesRead) / (float64(ms) / 1000) / 1024
+	} else if bytesRead > 0 {
+		secs := transferDuration.Seconds()
+		if secs <= 0 {
+			secs = 0.0005 // assume 0.5ms minimal duration to avoid huge inflated speeds
+		}
+		speed = float64(bytesRead) / secs / 1024
 	}
 	sr.TransferTimeMs = transferDuration.Milliseconds()
 	sr.TransferSizeBytes = bytesRead

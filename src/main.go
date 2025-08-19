@@ -137,7 +137,14 @@ func main() {
 			os.Exit(1)
 		}
 		for _, s := range summaries {
-			fmt.Printf("[batch %s] lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt=%.1f p50=%.1f p99/p50=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% plateaus=%.1f longest_ms=%.0f\n", s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgJitterPct, s.AvgSlopeKbpsPerSec, s.AvgCoefVariationPct, s.CacheHitRatePct, s.ConnReuseRatePct, s.AvgPlateauCount, s.AvgLongestPlateau)
+			line := fmt.Sprintf("[batch %s] lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt=%.1f p50=%.1f p99/p50=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% plateaus=%.1f longest_ms=%.0f", s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgJitterPct, s.AvgSlopeKbpsPerSec, s.AvgCoefVariationPct, s.CacheHitRatePct, s.ConnReuseRatePct, s.AvgPlateauCount, s.AvgLongestPlateau)
+			if s.IPv4 != nil {
+				line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
+			}
+			if s.IPv6 != nil {
+				line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
+			}
+			fmt.Println(line)
 		}
 		if len(summaries) == 0 {
 			fmt.Println("[analysis] no batches found")
@@ -574,8 +581,15 @@ func performAnalysis(path string, schemaVersion, n int, speedDropThresh, ttfbInc
 		return
 	}
 	for _, s := range summaries {
-		fmt.Printf("[batch %s] lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt_kbps=%.1f p50=%.1f p99/p50=%.2f plateaus=%.1f longest_ms=%.0f jitter=%.1f%%\n",
+		line := fmt.Sprintf("[batch %s] lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt_kbps=%.1f p50=%.1f p99/p50=%.2f plateaus=%.1f longest_ms=%.0f jitter=%.1f%%",
 			s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgPlateauCount, s.AvgLongestPlateau, s.AvgJitterPct)
+		if s.IPv4 != nil {
+			line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
+		}
+		if s.IPv6 != nil {
+			line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
+		}
+		fmt.Println(line)
 	}
 	if len(summaries) == 0 {
 		return
