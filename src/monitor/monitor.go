@@ -100,6 +100,35 @@ type SiteResult struct {
 	HeaderVia    string `json:"header_via,omitempty"`
 	HeaderXCache string `json:"header_x_cache,omitempty"`
 	HeaderAge    string `json:"header_age,omitempty"`
+	HeaderServer string `json:"header_server,omitempty"`
+	// Proxy identification (heuristic). proxy_suspected remains a broader flag; these fields
+	// attempt to classify the proxy/CDN if discernible from headers.
+	ProxyName   string `json:"proxy_name,omitempty"`
+	ProxySource string `json:"proxy_source,omitempty"`
+	// ProxyIndicators lists raw indicator tokens (header names or key substrings) observed that
+	// contributed to proxy/CDN detection (e.g. cf-ray, x-akamai-request-id, x-zscaler-*) to aid
+	// downstream auditing & new heuristic refinement.
+	ProxyIndicators []string `json:"proxy_indicators,omitempty"`
+	// Go's proxy resolution (respecting environment variables like HTTPS_PROXY / NO_PROXY) for the target URL.
+	// This records what proxy (if any) the standard library would use before any custom transport overrides.
+	EnvProxyURL string `json:"env_proxy_url,omitempty"`
+	// Whether NO_PROXY excluded the host (explicit bypass) when EnvProxyURL is empty.
+	EnvProxyBypassed bool `json:"env_proxy_bypassed,omitempty"`
+	UsingEnvProxy    bool `json:"using_env_proxy,omitempty"`
+	// When using a proxy, remote_ip reflects the proxy endpoint. These fields explicitly label and duplicate it
+	// so downstream processors need not infer from header heuristics.
+	ProxyRemoteIP      string `json:"proxy_remote_ip,omitempty"`
+	ProxyRemoteIsProxy bool   `json:"proxy_remote_is_proxy,omitempty"`
+	// OriginIPCandidate attempts to record the underlying origin server IP when a proxy is used.
+	// For direct connections this is identical to remote_ip. When an HTTP proxy is used the
+	// underlying origin IP is not visible (tunnel established to proxy). In that case we fall
+	// back to the first resolved DNS IP (if any) so downstream analysis can still reason about
+	// suspected origin location / ASN. It is best-effort and may be empty.
+	OriginIPCandidate string `json:"origin_ip_candidate,omitempty"`
+	// TLS certificate subject / issuer (leaf). Included only when captured for potential
+	// corporate proxy MITM detection (Zscaler, Bluecoat, Palo Alto, Netskope, Forcepoint, etc.).
+	TLSCertSubject string `json:"tls_cert_subject,omitempty"`
+	TLSCertIssuer  string `json:"tls_cert_issuer,omitempty"`
 	// First RTT derived metrics
 	FirstRTTBytes         int64   `json:"first_rtt_bytes,omitempty"`
 	FirstRTTGoodputKbps   float64 `json:"first_rtt_goodput_kbps,omitempty"`
@@ -391,9 +420,30 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		Errorf("parse url %s: %v", site.URL, err)
 		return
 	}
+	// Determine environment proxy (standard library resolution) for transparency
+	var envProxyURL string
+	var envBypass bool
+	reqURL := &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+	if pu, perr := http.ProxyFromEnvironment(&http.Request{URL: reqURL}); perr == nil {
+		if pu != nil {
+			envProxyURL = pu.String()
+		}
+	} else {
+		Debugf("[%s %s] proxy resolution error: %v", site.Name, ipStr, perr)
+	}
+	if envProxyURL == "" { // check if NO_PROXY caused bypass
+		if os.Getenv("HTTPS_PROXY") != "" || os.Getenv("HTTP_PROXY") != "" || os.Getenv("ALL_PROXY") != "" {
+			envBypass = true
+		}
+	}
 	var start time.Time
 	// Begin migration to typed SiteResult: maintain legacy map for rich metrics while introducing sr.
 	sr := &SiteResult{Name: site.Name, URL: site.URL, IP: ipStr, CountryConfigured: site.Country, DNSIPs: dnsIPs, DNSTimeMs: dnsTime.Milliseconds(), ResolvedIP: ipStr, IPIndex: idx}
+	if envProxyURL != "" {
+		sr.EnvProxyURL = envProxyURL
+	} else if envBypass {
+		sr.EnvProxyBypassed = true
+	}
 	if ipAddr.To4() != nil {
 		sr.IPFamily = "ipv4"
 	} else {
@@ -438,7 +488,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	if parsed.Scheme == "https" {
 		Debugf("[%s %s] TLS handshake", site.Name, ipStr)
 		tlsStart := time.Now()
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: parsed.Hostname()})
+		cfg := &tls.Config{ServerName: parsed.Hostname()}
+		tlsConn := tls.Client(conn, cfg)
 		herr := tlsConn.Handshake()
 		tlt := time.Since(tlsStart)
 		sr.SSLHandshakeTimeMs = tlt.Milliseconds()
@@ -448,6 +499,55 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 			writeResult(wrapRoot(sr))
 			Warnf("[%s %s] TLS failed: %v", site.Name, ipStr, herr)
 			return
+		}
+		// Extract certificate subject/issuer for corporate proxy detection heuristics.
+		state := tlsConn.ConnectionState()
+		if len(state.PeerCertificates) > 0 {
+			leaf := state.PeerCertificates[0]
+			// Use CommonName if present plus first DNSName for brevity.
+			var subjParts []string
+			if leaf.Subject.CommonName != "" {
+				subjParts = append(subjParts, leaf.Subject.CommonName)
+			}
+			if len(leaf.DNSNames) > 0 {
+				subjParts = append(subjParts, leaf.DNSNames[0])
+			}
+			if len(subjParts) > 0 {
+				sr.TLSCertSubject = strings.Join(subjParts, ",")
+			}
+			issuer := leaf.Issuer.CommonName
+			if issuer == "" && len(leaf.Issuer.Organization) > 0 {
+				issuer = leaf.Issuer.Organization[0]
+			}
+			if issuer != "" {
+				sr.TLSCertIssuer = issuer
+			}
+			// Quick heuristic: corporate proxies often insert their brand in issuer or subject.
+			li := strings.ToLower(sr.TLSCertIssuer + " " + sr.TLSCertSubject)
+			if sr.ProxyName == "" { // only override if not already classified via headers
+				switch {
+				case strings.Contains(li, "zscaler"):
+					sr.ProxyName = "zscaler"
+					sr.ProxySource = "tls_cert"
+					sr.ProxyIndicators = append(sr.ProxyIndicators, "cert:zscaler")
+				case strings.Contains(li, "bluecoat") || strings.Contains(li, "symantec"):
+					sr.ProxyName = "bluecoat"
+					sr.ProxySource = "tls_cert"
+					sr.ProxyIndicators = append(sr.ProxyIndicators, "cert:bluecoat")
+				case strings.Contains(li, "netskope"):
+					sr.ProxyName = "netskope"
+					sr.ProxySource = "tls_cert"
+					sr.ProxyIndicators = append(sr.ProxyIndicators, "cert:netskope")
+				case strings.Contains(li, "palo alto") || strings.Contains(li, "palonetworks") || strings.Contains(li, "palosecure"):
+					sr.ProxyName = "paloalto"
+					sr.ProxySource = "tls_cert"
+					sr.ProxyIndicators = append(sr.ProxyIndicators, "cert:paloalto")
+				case strings.Contains(li, "forcepoint"):
+					sr.ProxyName = "forcepoint"
+					sr.ProxySource = "tls_cert"
+					sr.ProxyIndicators = append(sr.ProxyIndicators, "cert:forcepoint")
+				}
+			}
 		}
 		tlsConn.Close()
 	} else {
@@ -460,20 +560,55 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	probeVal := hex.EncodeToString(probeBytes)
 	var remoteIP string
 	dialCount := 0
-	// Transport that dials the specific IP but preserves Host header
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		c, e := d.DialContext(ctx, network, target)
-		if e == nil && remoteIP == "" {
-			if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
-				remoteIP = ta.IP.String()
-			} else {
-				remoteIP = c.RemoteAddr().String()
-			}
-			dialCount++
+	var transport *http.Transport
+	if sr.EnvProxyURL != "" { // use proxy-aware transport; still wrap DialContext to record proxy connect timing & remoteIP
+		proxyURL, _ := url.Parse(sr.EnvProxyURL)
+		transport = &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+				c, e := d.DialContext(ctx, network, address)
+				if e == nil && remoteIP == "" {
+					if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+						remoteIP = ta.IP.String()
+					} else {
+						remoteIP = c.RemoteAddr().String()
+					}
+					dialCount++
+					// record as proxy endpoint
+					sr.ProxyRemoteIP = remoteIP
+					sr.ProxyRemoteIsProxy = true
+					// best effort: origin candidate from DNS list (first entry) if present
+					if sr.OriginIPCandidate == "" && len(sr.DNSIPs) > 0 {
+						sr.OriginIPCandidate = sr.DNSIPs[0]
+					}
+				}
+				return c, e
+			},
+			TLSHandshakeTimeout:   20 * time.Second,
+			ResponseHeaderTimeout: httpTimeout,
 		}
-		return c, e
-	}}
+		sr.UsingEnvProxy = true
+	} else {
+		// Direct IP dial preserving Host header
+		transport = &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 10 * time.Second}
+			c, e := d.DialContext(ctx, network, target)
+			if e == nil && remoteIP == "" {
+				if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+					remoteIP = ta.IP.String()
+				} else {
+					remoteIP = c.RemoteAddr().String()
+				}
+				dialCount++
+				// direct path: origin candidate == remote IP
+				if sr.OriginIPCandidate == "" {
+					sr.OriginIPCandidate = remoteIP
+				}
+			}
+			return c, e
+		}}
+	}
 	client := &http.Client{Transport: transport, Timeout: httpTimeout}
 
 	// HEAD
@@ -534,10 +669,14 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
 	ageHeader := resp.Header.Get("Age")
+	serverHeader := resp.Header.Get("Server")
 	sr.HeaderVia = via
 	sr.HeaderXCache = xcache
 	if ageHeader != "" {
 		sr.HeaderAge = ageHeader
+	}
+	if serverHeader != "" {
+		sr.HeaderServer = serverHeader
 	}
 	cachePresent := false
 	if ageHeader != "" {
@@ -561,6 +700,139 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	prefetchSuspect := headErr == nil && headTime > 0 && httpConnectTime < (headTime/2)
 	sr.PrefetchSuspected = prefetchSuspect
 	proxySuspected := ipMismatch || via != "" || xcache != ""
+	// Basic heuristic mapping to identify common CDN/proxy names and enterprise proxies (Zscaler, Bluecoat etc.)
+	var proxyName, proxySource string
+	var proxyIndicators []string
+	if via != "" {
+		proxySource = "via"
+		lower := strings.ToLower(via)
+		switch {
+		case strings.Contains(lower, "cloudfront"):
+			proxyName = "cloudfront"
+		case strings.Contains(lower, "fastly"):
+			proxyName = "fastly"
+		case strings.Contains(lower, "akamai"):
+			proxyName = "akamai"
+		case strings.Contains(lower, "cachefly"):
+			proxyName = "cachefly"
+		case strings.Contains(lower, "azureedge"):
+			proxyName = "azurecdn"
+		case strings.Contains(lower, "cloudflare"):
+			proxyName = "cloudflare"
+		case strings.Contains(lower, "google") && strings.Contains(lower, "cache"):
+			proxyName = "google"
+		case strings.Contains(lower, "zscaler"):
+			proxyName = "zscaler"
+		case strings.Contains(lower, "bluecoat") || strings.Contains(lower, "symantec"):
+			proxyName = "bluecoat"
+		case strings.Contains(lower, "netskope"):
+			proxyName = "netskope"
+		case strings.Contains(lower, "palosecure") || strings.Contains(lower, "palo"):
+			proxyName = "paloalto"
+		case strings.Contains(lower, "forcepoint"):
+			proxyName = "forcepoint"
+		}
+		proxyIndicators = append(proxyIndicators, "via:"+via)
+	}
+	if proxyName == "" && xcache != "" {
+		ls := strings.ToLower(xcache)
+		proxySource = "x-cache"
+		switch {
+		case strings.Contains(ls, "cloudfront"):
+			proxyName = "cloudfront"
+		case strings.Contains(ls, "fastly"):
+			proxyName = "fastly"
+		case strings.Contains(ls, "akam"):
+			proxyName = "akamai"
+		case strings.Contains(ls, "cloudflare"):
+			proxyName = "cloudflare"
+		case strings.Contains(ls, "cachefly"):
+			proxyName = "cachefly"
+		case strings.Contains(ls, "zscaler"):
+			proxyName = "zscaler"
+		}
+		proxyIndicators = append(proxyIndicators, "x-cache:"+xcache)
+	}
+	if proxyName == "" && serverHeader != "" { // fallback to Server header hints
+		lower := strings.ToLower(serverHeader)
+		proxySource = "server"
+		switch {
+		case strings.Contains(lower, "cloudflare"):
+			proxyName = "cloudflare"
+		case strings.Contains(lower, "cloudfront"):
+			proxyName = "cloudfront"
+		case strings.Contains(lower, "fastly"):
+			proxyName = "fastly"
+		case strings.Contains(lower, "akamai"):
+			proxyName = "akamai"
+		case strings.Contains(lower, "varnish"):
+			proxyName = "varnish"
+		case strings.Contains(lower, "squid"):
+			proxyName = "squid"
+		case strings.Contains(lower, "nginx"):
+			proxyName = "nginx" // generic
+		case strings.Contains(lower, "apache"):
+			proxyName = "apache" // generic
+		case strings.Contains(lower, "zscaler"):
+			proxyName = "zscaler"
+		case strings.Contains(lower, "bluecoat") || strings.Contains(lower, "symantec"):
+			proxyName = "bluecoat"
+		case strings.Contains(lower, "netskope"):
+			proxyName = "netskope"
+		case strings.Contains(lower, "palosecure") || strings.Contains(lower, "palo"):
+			proxyName = "paloalto"
+		case strings.Contains(lower, "forcepoint"):
+			proxyName = "forcepoint"
+		}
+		proxyIndicators = append(proxyIndicators, "server:"+serverHeader)
+	}
+	// Additional specialized headers frequently used by enterprise / security proxies
+	for k, vv := range resp.Header {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, "x-zscaler-") || lk == "x-zscaler-bypass" {
+			if proxyName == "" {
+				proxyName = "zscaler"
+				proxySource = k
+			}
+			proxyIndicators = append(proxyIndicators, k+":"+strings.Join(vv, ","))
+		}
+		if lk == "x-bluecoat-via" || lk == "x-bluecoat-request-id" {
+			if proxyName == "" {
+				proxyName = "bluecoat"
+				proxySource = k
+			}
+			proxyIndicators = append(proxyIndicators, k+":"+strings.Join(vv, ","))
+		}
+		if lk == "x-paloalto-metadata" || lk == "x-paloalto-app" {
+			if proxyName == "" {
+				proxyName = "paloalto"
+				proxySource = k
+			}
+			proxyIndicators = append(proxyIndicators, k+":"+strings.Join(vv, ","))
+		}
+		if strings.HasPrefix(lk, "x-netskope-") {
+			if proxyName == "" {
+				proxyName = "netskope"
+				proxySource = k
+			}
+			proxyIndicators = append(proxyIndicators, k+":"+strings.Join(vv, ","))
+		}
+		if strings.HasPrefix(lk, "x-forcepoint-") {
+			if proxyName == "" {
+				proxyName = "forcepoint"
+				proxySource = k
+			}
+			proxyIndicators = append(proxyIndicators, k+":"+strings.Join(vv, ","))
+		}
+	}
+	if proxyName != "" {
+		proxySuspected = true
+		sr.ProxyName = proxyName
+		sr.ProxySource = proxySource
+		if len(proxyIndicators) > 0 {
+			sr.ProxyIndicators = proxyIndicators
+		}
+	}
 	sr.ProxySuspected = proxySuspected
 	sr.ProbeHeaderValue = probeVal
 	probeEcho := resp.Header.Get("X-Probe")
@@ -1294,6 +1566,10 @@ func writeResult(env *ResultEnvelope) {
 	b, _ := json.Marshal(env)
 	f.WriteString(string(b) + "\n")
 }
+
+// hostPort retained for potential future use when constructing explicit authority; nolint to silence unused warning.
+//
+//nolint:unused
 func hostPort(u *url.URL) string {
 	port := u.Port()
 	if port == "" {
@@ -1305,6 +1581,10 @@ func hostPort(u *url.URL) string {
 	}
 	return u.Hostname() + ":" + port
 }
+
+// resolveIP retained for potential future diagnostic utilities; nolint to silence unused warning.
+//
+//nolint:unused
 func resolveIP(host string) string {
 	ips, err := net.LookupIP(host)
 	if err != nil || len(ips) == 0 {

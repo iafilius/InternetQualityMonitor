@@ -44,9 +44,24 @@ type BatchSummary struct {
 	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
+	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
+	CacheHitLines           int `json:"-"`
+	ProxySuspectedLines     int `json:"-"`
+	IPMismatchLines         int `json:"-"`
+	PrefetchSuspectedLines  int `json:"-"`
+	WarmCacheSuspectedLines int `json:"-"`
+	ConnReuseLines          int `json:"-"`
+	PlateauStableLines      int `json:"-"`
 	// Per-IP-family breakdown (same metrics as above but limited to that family)
 	IPv4 *FamilySummary `json:"ipv4,omitempty"`
 	IPv6 *FamilySummary `json:"ipv6,omitempty"`
+	// Proxy aggregation (counts / rates)
+	ProxyUsedLines         int                `json:"proxy_used_lines,omitempty"`
+	ProxyUsingEnvLines     int                `json:"proxy_using_env_lines,omitempty"`
+	ProxyNameCounts        map[string]int     `json:"proxy_name_counts,omitempty"`
+	ProxyNameRatePct       map[string]float64 `json:"proxy_name_rate_pct,omitempty"`
+	EnvProxyUsageRatePct   float64            `json:"env_proxy_usage_rate_pct,omitempty"`
+	ClassifiedProxyRatePct float64            `json:"classified_proxy_rate_pct,omitempty"`
 }
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
@@ -103,6 +118,8 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		raw                string
 		runTag             string
 		ipFamily           string
+		proxyName          string
+		usingEnvProxy      bool
 		timestamp          time.Time
 		speed, ttfb, bytes float64
 		firstRTT           float64
@@ -148,7 +165,7 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 				ts = parsed
 			}
 		}
-		bs := rec{raw: line, runTag: env.Meta.RunTag, ipFamily: sr.IPFamily, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
+		bs := rec{raw: line, runTag: env.Meta.RunTag, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
 		if sa := sr.SpeedAnalysis; sa != nil {
 			bs.p50 = sa.P50Kbps
 			if sa.P99Kbps > 0 {
@@ -237,6 +254,9 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 	var summaries []BatchSummary
 	for _, tag := range order {
 		recs := batches[tag]
+		proxyNameCounts := map[string]int{}
+		proxyUsingEnv := 0
+		proxyClassified := 0
 
 		buildFamily := func(filter string) *FamilySummary {
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
@@ -366,6 +386,13 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 			if r.speed > 0 {
 				speeds = append(speeds, r.speed)
 			}
+			if r.proxyName != "" {
+				proxyNameCounts[r.proxyName]++
+				proxyClassified++
+			}
+			if r.usingEnvProxy {
+				proxyUsingEnv++
+			}
 			if r.ttfb > 0 {
 				ttfbs = append(ttfbs, r.ttfb)
 			}
@@ -452,6 +479,24 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 			AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 			CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 			BatchDurationMs: durationMs,
+			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
+		}
+		// Fill proxy aggregation
+		if len(proxyNameCounts) > 0 {
+			summary.ProxyNameCounts = proxyNameCounts
+			summary.ProxyNameRatePct = map[string]float64{}
+			for k, v := range proxyNameCounts {
+				summary.ProxyNameRatePct[k] = float64(v) / float64(recCount) * 100
+			}
+		}
+		if recCount > 0 {
+			summary.ProxyUsingEnvLines = proxyUsingEnv
+			summary.EnvProxyUsageRatePct = float64(proxyUsingEnv) / float64(recCount) * 100
+			summary.ProxyUsedLines = 0
+			for _, v := range proxyNameCounts {
+				summary.ProxyUsedLines += v
+			}
+			summary.ClassifiedProxyRatePct = float64(proxyClassified) / float64(recCount) * 100
 		}
 		// Add per-family subsets only if present
 		if fam := buildFamily("ipv4"); fam != nil {
