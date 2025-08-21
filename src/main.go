@@ -82,6 +82,36 @@ func loadSites(path string) ([]types.Site, error) {
 }
 
 func main() {
+	// Normalize boolean flags of the form `--flag true|false` to `--flag=true|false`
+	// to avoid Go's flag parsing stopping at the first non-flag argument.
+	if len(os.Args) > 1 {
+		boolFlags := map[string]struct{}{
+			"--analyze-only":        {},
+			"-analyze-only":         {},
+			"--progress-sites":      {},
+			"-progress-sites":       {},
+			"--progress-resolve-ip": {},
+			"-progress-resolve-ip":  {},
+			"--ip-fanout":           {},
+			"-ip-fanout":            {},
+		}
+		norm := make([]string, 0, len(os.Args))
+		norm = append(norm, os.Args[0])
+		for i := 1; i < len(os.Args); i++ {
+			a := os.Args[i]
+			if _, ok := boolFlags[a]; ok && i+1 < len(os.Args) {
+				nv := strings.ToLower(os.Args[i+1])
+				if nv == "true" || nv == "false" {
+					norm = append(norm, fmt.Sprintf("%s=%s", a, nv))
+					i++
+					continue
+				}
+			}
+			norm = append(norm, a)
+		}
+		os.Args = norm
+	}
+
 	sitesPath := flag.String("sites", "./sites.jsonc", "Path to sites JSONC file")
 	iterations := flag.Int("iterations", 1, "Number of passes over the sites list")
 	parallel := flag.Int("parallel", 1, "Maximum concurrent site monitors")
@@ -175,7 +205,7 @@ func main() {
 			os.Exit(1)
 		}
 		for _, s := range summaries {
-			line := fmt.Sprintf("[batch %s] (per-batch) lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt=%.1f p50=%.1f p99/p50=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% plateaus=%.1f longest_ms=%.0f", s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgJitterPct, s.AvgSlopeKbpsPerSec, s.AvgCoefVariationPct, s.CacheHitRatePct, s.ConnReuseRatePct, s.AvgPlateauCount, s.AvgLongestPlateau)
+			line := fmt.Sprintf("[batch %s] (per-batch) lines=%d dur=%dms avg_speed=%.1fkbps median=%.1fkbps ttfb=%.0fms bytes=%.0fB errors=%d first_rtt_goodput=%.1fkbps p50=%.1fkbps p99/p50=%.2f jitter=%.1f%% slope=%.2fkbps/s cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% plateaus=%.1f longest_ms=%.0f", s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgJitterPct, s.AvgSlopeKbpsPerSec, s.AvgCoefVariationPct, s.CacheHitRatePct, s.ConnReuseRatePct, s.AvgPlateauCount, s.AvgLongestPlateau)
 			if s.EnvProxyUsageRatePct > 0 {
 				line += fmt.Sprintf(" env_proxy=%.1f%%", s.EnvProxyUsageRatePct)
 			}
@@ -194,10 +224,10 @@ func main() {
 				}
 			}
 			if s.IPv4 != nil {
-				line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
+				line += fmt.Sprintf(" v4(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
 			}
 			if s.IPv6 != nil {
-				line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
+				line += fmt.Sprintf(" v6(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
 			}
 			fmt.Println(line)
 		}
@@ -279,12 +309,12 @@ func main() {
 				cacheRate = float64(cacheCnt) / float64(totalLines) * 100
 				reuseRate = float64(reuseCnt) / float64(totalLines) * 100
 			}
-			line := fmt.Sprintf("[overall across %d batches] lines=%d avg_speed=%.1f avg_ttfb=%.0f avg_bytes=%.0f first_rtt=%.1f p50=%.1f p99/p50=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f plateaus=%.1f longest_ms=%.0f cache_hit=%.1f%% reuse=%.1f%%", len(summaries), totalLines, ov(speeds), ov(ttfbs), ov(bytesVals), ov(firsts), ov(p50s), ov(ratios), ov(jitterPct), ov(slopes), ov(coefVars), ov(plateauCounts), ov(longest), cacheRate, reuseRate)
+			line := fmt.Sprintf("[overall across %d batches] lines=%d avg_speed=%.1fkbps avg_ttfb=%.0fms avg_bytes=%.0fB first_rtt_goodput=%.1fkbps p50=%.1fkbps p99/p50=%.2f jitter=%.1f%% slope=%.2fkbps/s cov%%=%.1f plateaus=%.1f longest_ms=%.0f cache_hit=%.1f%% reuse=%.1f%%", len(summaries), totalLines, ov(speeds), ov(ttfbs), ov(bytesVals), ov(firsts), ov(p50s), ov(ratios), ov(jitterPct), ov(slopes), ov(coefVars), ov(plateauCounts), ov(longest), cacheRate, reuseRate)
 			if v4Lines > 0 {
-				line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", v4Lines, v4SpeedSum/float64(v4Lines), v4TTFBSum/float64(v4Lines), v4P50Sum/float64(v4Lines))
+				line += fmt.Sprintf(" v4(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", v4Lines, v4SpeedSum/float64(v4Lines), v4TTFBSum/float64(v4Lines), v4P50Sum/float64(v4Lines))
 			}
 			if v6Lines > 0 {
-				line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", v6Lines, v6SpeedSum/float64(v6Lines), v6TTFBSum/float64(v6Lines), v6P50Sum/float64(v6Lines))
+				line += fmt.Sprintf(" v6(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", v6Lines, v6SpeedSum/float64(v6Lines), v6TTFBSum/float64(v6Lines), v6P50Sum/float64(v6Lines))
 			}
 			fmt.Println(line)
 		}
@@ -723,13 +753,13 @@ func performAnalysis(path string, schemaVersion, n int, speedDropThresh, ttfbInc
 		return
 	}
 	for _, s := range summaries {
-		line := fmt.Sprintf("[batch %s] (per-batch) lines=%d dur=%dms avg_speed=%.1f median=%.1f ttfb=%.0f bytes=%.0f errors=%d first_rtt_kbps=%.1f p50=%.1f p99/p50=%.2f plateaus=%.1f longest_ms=%.0f jitter=%.1f%%",
+		line := fmt.Sprintf("[batch %s] (per-batch) lines=%d dur=%dms avg_speed=%.1fkbps median=%.1fkbps ttfb=%.0fms bytes=%.0fB errors=%d first_rtt_goodput=%.1fkbps p50=%.1fkbps p99/p50=%.2f plateaus=%.1f longest_ms=%.0f jitter=%.1f%%",
 			s.RunTag, s.Lines, s.BatchDurationMs, s.AvgSpeed, s.MedianSpeed, s.AvgTTFB, s.AvgBytes, s.ErrorLines, s.AvgFirstRTTGoodput, s.AvgP50Speed, s.AvgP99P50Ratio, s.AvgPlateauCount, s.AvgLongestPlateau, s.AvgJitterPct)
 		if s.IPv4 != nil {
-			line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
+			line += fmt.Sprintf(" v4(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", s.IPv4.Lines, s.IPv4.AvgSpeed, s.IPv4.AvgTTFB, s.IPv4.AvgP50Speed)
 		}
 		if s.IPv6 != nil {
-			line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
+			line += fmt.Sprintf(" v6(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", s.IPv6.Lines, s.IPv6.AvgSpeed, s.IPv6.AvgTTFB, s.IPv6.AvgP50Speed)
 		}
 		fmt.Println(line)
 	}
@@ -813,12 +843,12 @@ func performAnalysis(path string, schemaVersion, n int, speedDropThresh, ttfbInc
 			cacheRate = float64(cacheCnt) / float64(totalLines) * 100
 			reuseRate = float64(reuseCnt) / float64(totalLines) * 100
 		}
-		line := fmt.Sprintf("[overall across %d batches] lines=%d avg_speed=%.1f avg_ttfb=%.0f avg_bytes=%.0f first_rtt=%.1f p50=%.1f p99/p50=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f plateaus=%.1f longest_ms=%.0f cache_hit=%.1f%% reuse=%.1f%%", len(summaries), totalLines, ov(speeds), ov(ttfbs), ov(bytesVals), ov(firsts), ov(p50s), ov(ratios), ov(jitterPct), ov(slopes), ov(coefVars), ov(plateauCounts), ov(longest), cacheRate, reuseRate)
+		line := fmt.Sprintf("[overall across %d batches] lines=%d avg_speed=%.1fkbps avg_ttfb=%.0fms avg_bytes=%.0fB first_rtt_goodput=%.1fkbps p50=%.1fkbps p99/p50=%.2f jitter=%.1f%% slope=%.2fkbps/s cov%%=%.1f plateaus=%.1f longest_ms=%.0f cache_hit=%.1f%% reuse=%.1f%%", len(summaries), totalLines, ov(speeds), ov(ttfbs), ov(bytesVals), ov(firsts), ov(p50s), ov(ratios), ov(jitterPct), ov(slopes), ov(coefVars), ov(plateauCounts), ov(longest), cacheRate, reuseRate)
 		if v4Lines > 0 {
-			line += fmt.Sprintf(" v4(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", v4Lines, v4SpeedSum/float64(v4Lines), v4TTFBSum/float64(v4Lines), v4P50Sum/float64(v4Lines))
+			line += fmt.Sprintf(" v4(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", v4Lines, v4SpeedSum/float64(v4Lines), v4TTFBSum/float64(v4Lines), v4P50Sum/float64(v4Lines))
 		}
 		if v6Lines > 0 {
-			line += fmt.Sprintf(" v6(lines=%d spd=%.1f ttfb=%.0f p50=%.1f)", v6Lines, v6SpeedSum/float64(v6Lines), v6TTFBSum/float64(v6Lines), v6P50Sum/float64(v6Lines))
+			line += fmt.Sprintf(" v6(lines=%d spd=%.1fkbps ttfb=%.0fms p50=%.1fkbps)", v6Lines, v6SpeedSum/float64(v6Lines), v6TTFBSum/float64(v6Lines), v6P50Sum/float64(v6Lines))
 		}
 		fmt.Println(line)
 	}
