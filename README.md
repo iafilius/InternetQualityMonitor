@@ -12,6 +12,13 @@ The binary has TWO modes now:
 Recent changes:
 - Per-IP-family aggregation: batch JSON summaries now include `ipv4` / `ipv6` objects with the same metrics (averages & rates) restricted to that family. Console lines append succinct `v4(...)/v6(...)` segments when present.
 - High-resolution speed fallback: ultra-fast tiny transfers (<1ms) now compute non-zero speeds (previously rounded to 0 when duration in whole ms was 0).
+- Expanded proxy / CDN / enterprise security proxy detection: new fields `proxy_name`, `proxy_source`, `proxy_indicators` classify common CDNs (cloudfront, fastly, akamai, cloudflare, azurecdn, cachefly, google) plus enterprise proxies (zscaler, bluecoat, netskope, paloalto, forcepoint, varnish, squid) and record raw header tokens used for detection.
+ - Environment proxy awareness & usage tracking: fields `env_proxy_url`, `env_proxy_bypassed`, `using_env_proxy` indicate proxy configuration and whether a proxy transport path was actually used; `proxy_remote_ip` / `proxy_remote_is_proxy` record the proxy endpoint address.
+ - Origin IP candidate: `origin_ip_candidate` provides a best-effort origin server IP (direct connections: equals `remote_ip`; proxied: first DNS IP) to retain geographic/ASN context when tunneling through a proxy.
+ - TLS certificate heuristics: `tls_cert_subject`, `tls_cert_issuer` captured for corporate proxy MITM detection (zscaler, bluecoat, netskope, paloalto, forcepoint, etc.).
+ - Batch proxy aggregation metrics: analysis now reports `env_proxy_usage_rate_pct`, `classified_proxy_rate_pct`, per `proxy_name_counts` & `proxy_name_rate_pct` maps; console adds `env_proxy=` and `proxy_classified=` percentages plus top proxy names for quick scan.
+ - Overall multi-batch aggregation line: when more than one batch is analyzed, an additional `overall across <N> batches` line is printed, showing line-weighted aggregate metrics (including IPv4/IPv6 splits) across all displayed batches. Individual batch lines are now marked with `(per-batch)` for clarity.
+- Console output units: analysis lines now include explicit units for clarity (kbps, ms, B, kbps/s).
 
 First time (no results yet) you likely want to collect data (this is now the default mode):
 ```bash
@@ -50,6 +57,105 @@ What you get per site (JSON line):
 Key object: `speed_analysis` (stats, patterns, plateaus, insights)
 
 Exit after iterations; appends continuously to the output JSONL (default `monitor_results.jsonl`) via an async single-writer queue.
+
+
+## Getting started (beginners)
+
+Prerequisite: Go 1.22 or newer (see `go.mod`). If `go version` fails or shows an older version, install/update Go using one of the options below.
+
+macOS (Homebrew):
+
+```bash
+brew update
+brew install go
+go version
+```
+
+Ubuntu/Debian:
+- Easiest (Snap, usually latest stable):
+
+```bash
+sudo snap install go --classic
+go version
+```
+
+- APT (may be older on some releases):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y golang-go
+go version
+```
+
+- Official tarball (recommended if you need the very latest):
+   1) Find the latest version at https://go.dev/dl/
+   2) Download the tarball matching your CPU/arch (example below uses amd64 and 1.22.x):
+
+```bash
+cd /tmp
+wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz   # replace with the latest
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
+echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+go version
+```
+
+Windows:
+- Using winget (Windows 10/11):
+
+```powershell
+winget install GoLang.Go
+go version
+```
+
+- Using Chocolatey:
+
+```powershell
+choco install golang -y
+go version
+```
+
+- Or download the MSI installer from https://go.dev/dl/ and follow the wizard (adds Go to PATH). Reopen your terminal and run `go version` to verify.
+
+Quick repo smoke test after installing Go:
+
+```bash
+go build ./...
+go test ./...
+```
+
+If both commands succeed, you’re ready to run the monitor.
+
+Fedora:
+
+```bash
+sudo dnf install -y golang
+go version
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -Syu --needed go
+go version
+```
+
+Nix / NixOS:
+- One-off shell with Go available:
+
+```bash
+nix-shell -p go
+# inside the shell
+go version
+```
+
+- Or install into your user profile (persistent):
+
+```bash
+nix profile install nixpkgs#go
+go version
+```
 
 
 ## Features
@@ -92,6 +198,132 @@ Operational conveniences:
 ## Usage
 1. Add sites to `sites.jsonc`
 2. Run the monitor from your local PC or via SSH
+
+Windows users
+- If you have Git Bash or WSL installed, you can run the existing `.sh` scripts directly.
+- Alternatively, use the provided PowerShell runner `monitor_core.ps1`, which mirrors the `.sh` behavior (collection + analysis steps):
+
+```powershell
+# PowerShell
+./monitor_core.ps1 -Situation "Home_CorporateLaptop_CorpProxy_SequencedTest" -Parallel 2 -Iterations 1 -AnalysisBatches 15
+
+# Or via env vars
+$env:SITUATION = "Home_WiFi"; $env:PARALLEL = "2"; ./monitor_core.ps1
+```
+
+PowerShell prerequisites: Go on PATH; PowerShell 7+ recommended. The Go binary itself remains cross‑platform.
+
+PowerShell scenario wrappers (Windows)
+- For each Bash wrapper listed below, a PowerShell equivalent exists with the same basename and a `.ps1` extension.
+- They call `monitor_core.ps1` and behave identically: a Monitor (collection) phase followed by an Analysis phase for the same `SITUATION`.
+
+Examples:
+
+```powershell
+# Run the corporate-at-home scenario wrapper (PowerShell)
+./monitor_atHomeCorpLaptop.ps1
+
+# Increase the analysis window to 25 batches for a one-off run
+$env:ANALYSIS_BATCHES = "25"; ./monitor_atHomeCorpLaptop.ps1
+```
+
+Available curated PowerShell wrappers:
+
+| Script | Intended Situation | Proxy State | Concurrency Mode | Default PARALLEL | Default ITERATIONS | Notes |
+|--------|--------------------|-------------|------------------|------------------|--------------------|-------|
+| `monitor_atHomeCorpLaptop.ps1` | Corporate laptop at home | Corporate proxy enabled | Sequential | 1 | 1 | Baseline for controlled home + corp proxy path |
+| `monitor_atHomeCorpLaptopNoCorpProxy.ps1` | Corporate laptop at home | Corporate proxy disabled | Sequential | 1 | 1 | Contrast vs proxy-enabled to isolate proxy impact |
+| `monitor_atOfficeCorpLaptop.ps1` | Corporate laptop in office | Corporate proxy enabled | Sequential | 1 | 1 | On‑prem baseline |
+| `monitor_atOfficeCorpLaptopNoCorpProxy.ps1` | Corporate laptop in office | Proxy disabled | Sequential | 1 | 1 | Office direct path comparison |
+| `monitor_atHomePrivateLaptop.ps1` | Private (non‑corp) laptop at home | No corporate proxy | Sequential | 1 | 1 | Clean consumer environment |
+
+Tip: Copy any of the above to a new filename (e.g., `monitor_HotelWifi.ps1`) and adjust the `Situation` default at the top to create your own repeatable scenario.
+
+### Scenario Wrapper Scripts (Repeatable Situations)
+
+For consistent, comparable batches, use the provided wrapper scripts instead of manually exporting environment variables each time. Each wrapper sets a descriptive `SITUATION` label and then execs `monitor_core.sh`, which performs the collection using a single persistent results file (`monitor_results.jsonl` by default). All situations append to the same file; the `meta.situation` field lets you later filter / compare.
+
+Available curated wrappers:
+
+| Script | Intended Situation | Proxy State | Concurrency Mode | Default PARALLEL | Default ITERATIONS | Notes |
+|--------|--------------------|-------------|------------------|------------------|--------------------|-------|
+| `monitor_atHomeCorpLaptop.sh` | Corporate laptop at home | Corporate proxy enabled | Sequential | 1 | 1 | Baseline for controlled home + corp proxy path |
+| `monitor_atHomeCorpLaptopNoCorpProxy.sh` | Corporate laptop at home | Corporate proxy disabled | Sequential | 1 | 1 | Contrast vs proxy-enabled to isolate proxy impact |
+| `monitor_atOfficeCorpLaptop.sh` | Corporate laptop in office | Corporate proxy enabled | Sequential | 1 | 1 | On‑prem baseline |
+| `monitor_atOfficeCorpLaptopNoCorpProxy.sh` | Corporate laptop in office | Proxy disabled | Sequential | 1 | 1 | Office direct path comparison |
+| `monitor_atHomePrivateLaptop.sh` | Private (non‑corp) laptop at home | No corporate proxy | Sequential | 1 | 1 | Clean consumer environment |
+| `monitor_bulk_example.sh` | Private laptop stress / capacity test | No corporate proxy | Parallel | 8 | 1 | Higher load; watch impact on local link |
+
+Template / examples to clone & adapt:
+`monitor_scenario7.sh`, `monitor_scenario8.sh`, `monitor_scenario9.sh` – kept intentionally simple so you can copy, rename, and set a custom `SITUATION` (e.g. `Hotel_WiFi_VPNOn`, `MobileHotspot`, `Home_ISP_Failover`). Create as many as you need; all improvements in `monitor_core.sh` automatically apply.
+
+Quick start with a wrapper:
+```bash
+./monitor_atHomeCorpLaptop.sh
+./monitor_atHomeCorpLaptopNoCorpProxy.sh
+./monitor_bulk_example.sh   # high parallel example
+```
+
+What happens when you run a wrapper
+- The core runner (Bash: `monitor_core.sh`, PowerShell: `monitor_core.ps1`) performs two phases:
+   1) Monitor/collection phase: collect a fresh batch and append to the results file
+   2) Analysis phase: summarize the most recent batches for the same `SITUATION`
+- After a successful monitor phase, the analysis runs automatically and prints per‑batch lines and an overall aggregate across your most recent batches.
+- Control the analysis window using the environment variable `ANALYSIS_BATCHES` (default: 15). Examples:
+
+```bash
+ANALYSIS_BATCHES=25 ./monitor_atHomeCorpLaptop.sh
+```
+
+```powershell
+$env:ANALYSIS_BATCHES = "25"; ./monitor_atHomeCorpLaptop.ps1
+```
+
+The monitor banner prints the selected parameters (parallel, iterations, situation, log level, sites, output path, analysis batches) so runs are self-describing in logs.
+
+Analyzing only recent batches for a specific situation:
+```bash
+go run ./src/main.go --out monitor_results.jsonl --analysis-batches 5 --situation Home_CorporateLaptop_CorpProxy_SequencedTest
+```
+
+Ad‑hoc custom run without a wrapper (still allowed):
+```bash
+SITUATION="Hotel_WiFi" PARALLEL=2 ITERATIONS=2 ./monitor_core.sh
+```
+
+Filtering results by situation with jq:
+```bash
+grep '"Home_CorporateLaptop_NoCorpProxy_SequentialTest"' monitor_results.jsonl | tail -n 3 | jq '.site_result.name, .site_result.transfer_speed_kbps'
+```
+
+Comparing two situations’ average speeds (last line of each situation):
+```bash
+last_home_proxy=$(grep '"Home_CorporateLaptop_CorpProxy_SequencedTest"' monitor_results.jsonl | tail -n 1)
+last_home_noproxy=$(grep '"Home_CorporateLaptop_NoCorpProxy_SequentialTest"' monitor_results.jsonl | tail -n 1)
+echo "$last_home_proxy" | jq '.meta.situation, .site_result.transfer_speed_kbps'
+echo "---" 
+echo "$last_home_noproxy" | jq '.meta.situation, .site_result.transfer_speed_kbps'
+```
+
+### Note: Situation-scoped analysis and cross-situation comparisons
+
+- The built-in analysis phase groups and aggregates batches by the exact `SITUATION` label. Batches with different labels are not co-aggregated nor compared programmatically.
+- Cross-situation comparison (e.g., corporate laptop vs private laptop) is not implemented and may never be. Workaround: compare the printed analysis outputs manually and keep test conditions identical.
+- Tips for fair comparisons:
+   - Use the same `SITES`, `PARALLEL`, `ITERATIONS`, and `ANALYSIS_BATCHES` for both scenarios.
+   - Run each scenario wrapper back-to-back so the time window is similar, then compare the per-batch and `overall across` lines.
+   - Optionally export results to separate files via different `OUT_BASENAME` values for side-by-side inspection.
+
+Field note (anecdotal): In one setup, a 15-year-old ThinkPad T430 (Linux, i7‑3840QM) measured significantly better throughput and TTFB than a modern Mac M2 using a corporate proxy—about 3x in sequential and parallel (8x) modes. If proxying is part of your environment, it’s worth investigating its impact on speed and TTFB.
+
+Guidelines for creating a new wrapper:
+1. Copy one of the `monitor_scenario*.sh` files to a meaningful name, e.g. `monitor_hotelWifi.sh`.
+2. Edit the banner comment to describe location/device/proxy state.
+3. Set a stable `SITUATION` string (avoid spaces; use underscores for parsing ease).
+4. Optionally adjust `PARALLEL`, `ITERATIONS`, or `OUT_BASENAME` (if you want to isolate output).
+5. Run it and later analyze by passing `--situation <label>` to the analyzer.
+
+Rationale: Re-using identical labels provides clean before/after / environment-to-environment comparisons and enables simple grep/jq pipelines without extra bookkeeping.
 
 ### Command Line
 
@@ -184,6 +416,10 @@ DNS / connection / TLS / httptrace:
 Headers / proxy / cache signals:
 - `header_via`, `header_x_cache`, `header_age`
 - `cache_present`, `proxy_suspected`, `prefetch_suspected`, `ip_mismatch`
+- `proxy_name`, `proxy_source`, `proxy_indicators` (classification + hints: via/x-cache/server or specialized headers like X-Zscaler-*)
+ - `env_proxy_url`, `env_proxy_bypassed`, `using_env_proxy`
+ - `proxy_remote_ip`, `proxy_remote_is_proxy`, `origin_ip_candidate`
+ - `tls_cert_subject`, `tls_cert_issuer`
 - `head_time_ms`, `head_status`, `head_error`, `head_get_time_ratio`
 - `second_get_status`, `second_get_time_ms`, `second_get_header_age`, `second_get_x_cache`, `second_get_content_range`, `second_get_cache_present`
 - `warm_head_time_ms`, `warm_head_speedup`, `warm_cache_suspected`
@@ -344,17 +580,27 @@ Use these to correlate: e.g. a rise in `ip_mismatch_rate_pct` plus degraded `avg
 
 Per-family batch objects (`ipv4`, `ipv6`): each, when present, mirrors the core metric names (e.g. `avg_speed_kbps`, `avg_ttfb_ms`, `avg_p50_kbps`, rates like `cache_hit_rate_pct`) restricted to that IP family. They are omitted if a family has zero lines in the batch. Alert JSON currently reports only the combined batch (family-level alerts not yet emitted).
 
-### Example Batch Summary Console Line
+### Example Batch Summary Console Lines
 <details>
 <summary>Show example console line</summary>
 
-A typical analyzer line (fields may be omitted when zero) now looks like:
+A typical per-batch analyzer line (fields may be omitted when zero) now looks like:
 
 ```
-[batch 20250818_131129] lines=42 avg_speed=18450.7 median=18210.0 ttfb=210 bytes=52428800 errors=1 first_rtt=950.2 p50=18200.3 p99/p50=1.35 jitter=8.4% slope=120.5 cov%=9.8 cache_hit=40.0% reuse=35.0% plateaus=2.0 longest_ms=3400 v4(lines=30 spd=19010.4 ttfb=205 p50=18800.1) v6(lines=12 spd=16880.2 ttfb=225 p50=16750.0)
+[batch 20250818_131129] (per-batch) lines=42 dur=33500ms avg_speed=18450.7 median=18210.0 ttfb=210 bytes=52428800 errors=1 first_rtt=950.2 p50=18200.3 p99/p50=1.35 jitter=8.4% slope=120.5 cov%=9.8 cache_hit=40.0% reuse=35.0% plateaus=2.0 longest_ms=3400 v4(lines=30 spd=19010.4 ttfb=205 p50=18800.1) v6(lines=12 spd=16880.2 ttfb=225 p50=16750.0)
 ```
 
-Field order is optimized for quick visual scanning: core throughput & latency first, variability & stability next, then rates.
+When more than one batch is in scope (rolling or analyze-only with >1), a line-weighted overall line follows:
+
+```
+[overall across 5 batches] lines=210 avg_speed=18620.3 avg_ttfb=205 avg_bytes=52400000 first_rtt=955.1 p50=18310.4 p99/p50=1.37 jitter=8.6% slope=118.2 cov%=9.5 plateaus=1.9 longest_ms=3600 cache_hit=39.2% reuse=34.1% v4(lines=150 spd=19120.5 ttfb=198 p50=18850.2) v6(lines=60 spd=17110.7 ttfb=223 p50=16780.0)
+```
+
+Interpretation:
+* `(per-batch)` lines summarize a single run_tag batch (one iteration or ip-fanout group).
+* `overall across` line aggregates all batches displayed (line-weighted) for a quick broader trend view; use this to observe slow drift vs previous collection windows.
+
+Field order is optimized for quick visual scanning: core throughput & latency first, variability & stability next, then rates and IP-family splits.
 </details>
 
 ### last_batch_summary JSON (Extended Schema)
