@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -37,19 +39,24 @@ type uiState struct {
 	batchesN   int
 	situations []string
 	summaries  []analysis.BatchSummary
+	// mapping from run_tag to situation loaded from meta in results file
+	runTagSituation map[string]string
 
 	// toggles and modes
 	xAxisMode   string // "batch", "run_tag", or "time" (batch only for now)
 	yScaleMode  string // "absolute" or "relative"
+	useRelative bool   // derived flag to avoid case/string mismatches
 	showOverall bool
 	showIPv4    bool
 	showIPv6    bool
 
 	// widgets
-	table          *widget.Table
-	batchesLabel   *widget.Label
-	speedImgCanvas *canvas.Image
-	ttfbImgCanvas  *canvas.Image
+	table        *widget.Table
+	batchesLabel *widget.Label
+	// situation selector (populated after data load)
+	situationSelect *widget.Select
+	speedImgCanvas  *canvas.Image
+	ttfbImgCanvas   *canvas.Image
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
@@ -151,19 +158,64 @@ func main() {
 		xAxisSelect.Selected = "Batch"
 	}
 	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, func(v string) {
-		if strings.ToLower(v) == "relative" {
+		if strings.EqualFold(v, "Relative") {
 			state.yScaleMode = "relative"
+			state.useRelative = true
 		} else {
 			state.yScaleMode = "absolute"
+			state.useRelative = false
 		}
 		savePrefs(state)
 		redrawCharts(state)
 	})
-	if strings.EqualFold(state.yScaleMode, "relative") {
+	if state.useRelative {
 		yScaleSelect.Selected = "Relative"
 	} else {
 		yScaleSelect.Selected = "Absolute"
 	}
+
+	// Situation selector (options filled after first load)
+	sitSelect := widget.NewSelect([]string{}, func(v string) {
+		if strings.EqualFold(v, "all") {
+			state.situation = ""
+		} else {
+			state.situation = v
+		}
+		savePrefs(state)
+		if state.table != nil {
+			state.table.Refresh()
+		}
+		redrawCharts(state)
+	})
+	sitSelect.PlaceHolder = "All"
+	state.situationSelect = sitSelect
+
+	// Batches control: - [label] +
+	state.batchesLabel = widget.NewLabel(fmt.Sprintf("%d", state.batchesN))
+	decB := widget.NewButton("-", func() {
+		n := state.batchesN - 10
+		if n < 10 {
+			n = 10
+		}
+		if n != state.batchesN {
+			state.batchesN = n
+			state.batchesLabel.SetText(fmt.Sprintf("%d", n))
+			savePrefs(state)
+			loadAll(state, fileLabel)
+		}
+	})
+	incB := widget.NewButton("+", func() {
+		n := state.batchesN + 10
+		if n > 500 {
+			n = 500
+		}
+		if n != state.batchesN {
+			state.batchesN = n
+			state.batchesLabel.SetText(fmt.Sprintf("%d", n))
+			savePrefs(state)
+			loadAll(state, fileLabel)
+		}
+	})
 
 	// Data table (batches overview)
 	state.table = widget.NewTable(
@@ -276,6 +328,8 @@ func main() {
 		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
+		widget.NewLabel("Situation:"), sitSelect,
+		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk,
 		widget.NewLabel("File:"), fileLabel,
 	)
@@ -395,9 +449,25 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 		return
 	}
 	state.summaries = summaries
-	state.situations = uniqueSituations(summaries)
+	// refresh runTag->situation mapping from meta
+	populateRunTagSituations(state)
+	state.situations = uniqueSituationsFromMap(state.runTagSituation)
 	if state.situation == "" && len(state.situations) > 0 {
+		// default to first real situation if present; else All
 		state.situation = state.situations[0]
+	}
+	// update situation selector
+	if state.situationSelect != nil {
+		opts := make([]string, 0, len(state.situations)+1)
+		opts = append(opts, "All")
+		opts = append(opts, state.situations...)
+		state.situationSelect.Options = opts
+		if state.situation == "" {
+			state.situationSelect.Selected = "All"
+		} else {
+			state.situationSelect.Selected = state.situation
+		}
+		state.situationSelect.Refresh()
 	}
 	if state.table != nil {
 		state.table.Refresh()
@@ -406,19 +476,25 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 	redrawCharts(state)
 }
 
-func uniqueSituations(in []analysis.BatchSummary) []string {
-	m := map[string]struct{}{}
-	for _, s := range in {
-		if s.Situation != "" {
-			m[s.Situation] = struct{}{}
+// (old uniqueSituations removed; we now use meta-driven mapping)
+
+// uniqueSituationsFromMap returns sorted unique non-empty situations from mapping
+func uniqueSituationsFromMap(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, v := range m {
+		if v != "" {
+			set[v] = struct{}{}
 		}
 	}
-	arr := make([]string, 0, len(m))
-	for k := range m {
-		arr = append(arr, k)
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
 	}
-	sort.Strings(arr)
-	return arr
+	sort.Strings(out)
+	return out
 }
 
 func filteredSummaries(state *uiState) []analysis.BatchSummary {
@@ -427,7 +503,7 @@ func filteredSummaries(state *uiState) []analysis.BatchSummary {
 	}
 	out := make([]analysis.BatchSummary, 0, len(state.summaries))
 	for _, s := range state.summaries {
-		if s.Situation == state.situation {
+		if sit, ok := state.runTagSituation[s.RunTag]; ok && sit == state.situation {
 			out = append(out, s)
 		}
 	}
@@ -459,14 +535,20 @@ func renderSpeedChart(state *uiState) image.Image {
 	// collect series
 	series := []chart.Series{}
 	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
 
 	if state.showOverall {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
 			v := r.AvgSpeed * factor
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -478,13 +560,20 @@ func renderSpeedChart(state *uiState) image.Image {
 	if state.showIPv4 {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
-			v := 0.0
+			var v float64
 			if r.IPv4 != nil {
 				v = r.IPv4.AvgSpeed * factor
+			} else {
+				v = math.NaN()
 			}
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -496,13 +585,20 @@ func renderSpeedChart(state *uiState) image.Image {
 	if state.showIPv6 {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
-			v := 0.0
+			var v float64
 			if r.IPv6 != nil {
 				v = r.IPv6.AvgSpeed * factor
+			} else {
+				v = math.NaN()
 			}
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -513,14 +609,23 @@ func renderSpeedChart(state *uiState) image.Image {
 	}
 
 	yMin := 0.0
-	if strings.EqualFold(state.yScaleMode, "relative") && minY != math.MaxFloat64 {
-		yMin = minY
+	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+	} else if !state.useRelative && maxY != -math.MaxFloat64 {
+		// Absolute mode: baseline at 0 with a nice rounded max
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
 		XAxis:      xAxis,
-		YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: yMin}},
+		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange},
 		Series:     series,
 	}
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -544,14 +649,20 @@ func renderTTFBChart(state *uiState) image.Image {
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
 	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
 
 	if state.showOverall {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
 			v := r.AvgTTFB
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -563,13 +674,20 @@ func renderTTFBChart(state *uiState) image.Image {
 	if state.showIPv4 {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
-			v := 0.0
+			var v float64
 			if r.IPv4 != nil {
 				v = r.IPv4.AvgTTFB
+			} else {
+				v = math.NaN()
 			}
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -581,13 +699,20 @@ func renderTTFBChart(state *uiState) image.Image {
 	if state.showIPv6 {
 		ys := make([]float64, len(rows))
 		for i, r := range rows {
-			v := 0.0
+			var v float64
 			if r.IPv6 != nil {
 				v = r.IPv6.AvgTTFB
+			} else {
+				v = math.NaN()
 			}
 			ys[i] = v
-			if v > 0 && v < minY {
-				minY = v
+			if !math.IsNaN(v) {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
 		}
 		if timeMode {
@@ -598,14 +723,23 @@ func renderTTFBChart(state *uiState) image.Image {
 	}
 
 	yMin := 0.0
-	if strings.EqualFold(state.yScaleMode, "relative") && minY != math.MaxFloat64 {
-		yMin = minY
+	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+	} else if !state.useRelative && maxY != -math.MaxFloat64 {
+		// Absolute mode: baseline at 0 with a nice rounded max
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg TTFB (ms)%s", situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
 		XAxis:      xAxis,
-		YAxis:      chart.YAxis{Name: "ms", Range: &chart.ContinuousRange{Min: yMin}},
+		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange},
 		Series:     series,
 	}
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -675,6 +809,83 @@ func situationSuffix(state *uiState) string {
 		return ""
 	}
 	return " – " + state.situation
+}
+
+// niceAxisBounds expands [min,max] by a small margin and rounds to "nice" numbers for readability.
+func niceAxisBounds(min, max float64) (float64, float64) {
+	if math.IsNaN(min) || math.IsNaN(max) {
+		return min, max
+	}
+	if max <= min {
+		max = min + 1
+	}
+	span := max - min
+	// 5% margin on both sides
+	pad := span * 0.05
+	if pad <= 0 {
+		pad = 1
+	}
+	a := min - pad
+	b := max + pad
+	// round to nearest "nice" increments based on span order of magnitude
+	mag := math.Pow(10, math.Floor(math.Log10(span)))
+	if !math.IsInf(mag, 0) && mag > 0 {
+		a = math.Floor(a/mag) * mag
+		b = math.Ceil(b/mag) * mag
+	}
+	return a, b
+}
+
+// populateRunTagSituations scans the results file's meta to map run_tag -> situation
+func populateRunTagSituations(state *uiState) {
+	if state == nil {
+		return
+	}
+	state.runTagSituation = map[string]string{}
+	if state.filePath == "" || len(state.summaries) == 0 {
+		return
+	}
+	// build set of run_tags of interest (current summaries)
+	needed := map[string]struct{}{}
+	for _, s := range state.summaries {
+		needed[s.RunTag] = struct{}{}
+	}
+	remaining := len(needed)
+	f, err := os.Open(state.filePath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	type metaOnly struct {
+		Meta struct {
+			RunTag        string `json:"run_tag"`
+			Situation     string `json:"situation"`
+			SchemaVersion int    `json:"schema_version"`
+		} `json:"meta"`
+	}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var mo metaOnly
+		if err := json.Unmarshal(sc.Bytes(), &mo); err != nil {
+			continue
+		}
+		if mo.Meta.SchemaVersion != monitor.SchemaVersion {
+			continue
+		}
+		if _, ok := needed[mo.Meta.RunTag]; !ok {
+			continue
+		}
+		if mo.Meta.Situation != "" {
+			// set if not set yet
+			if _, exists := state.runTagSituation[mo.Meta.RunTag]; !exists {
+				state.runTagSituation[mo.Meta.RunTag] = mo.Meta.Situation
+				remaining--
+				if remaining <= 0 {
+					break
+				}
+			}
+		}
+	}
 }
 
 func blank(w, h int) image.Image {
@@ -810,7 +1021,8 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 		state.yScaleMode = ymode
 	}
 	if yScale != nil {
-		if strings.EqualFold(state.yScaleMode, "relative") {
+		state.useRelative = strings.EqualFold(state.yScaleMode, "relative")
+		if state.useRelative {
 			yScale.Selected = "Relative"
 		} else {
 			yScale.Selected = "Absolute"
