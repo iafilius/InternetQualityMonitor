@@ -610,12 +610,14 @@ func renderSpeedChart(state *uiState) image.Image {
 
 	yMin := 0.0
 	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	var yTicks []chart.Tick
 	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && maxY != -math.MaxFloat64 {
 		// Absolute mode: baseline at 0 with a nice rounded max
 		_, nMax := niceAxisBounds(0, maxY)
@@ -625,7 +627,7 @@ func renderSpeedChart(state *uiState) image.Image {
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
 		XAxis:      xAxis,
-		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange},
+		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -724,12 +726,14 @@ func renderTTFBChart(state *uiState) image.Image {
 
 	yMin := 0.0
 	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	var yTicks []chart.Tick
 	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && maxY != -math.MaxFloat64 {
 		// Absolute mode: baseline at 0 with a nice rounded max
 		_, nMax := niceAxisBounds(0, maxY)
@@ -739,7 +743,7 @@ func renderTTFBChart(state *uiState) image.Image {
 		Title:      fmt.Sprintf("Avg TTFB (ms)%s", situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
 		XAxis:      xAxis,
-		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange},
+		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -834,6 +838,68 @@ func niceAxisBounds(min, max float64) (float64, float64) {
 		b = math.Ceil(b/mag) * mag
 	}
 	return a, b
+}
+
+// niceTicks generates up to n desired tick marks between [min, max] using nice increments.
+func niceTicks(min, max float64, n int) []chart.Tick {
+	if n < 2 || math.IsNaN(min) || math.IsNaN(max) {
+		return nil
+	}
+	if max <= min {
+		max = min + 1
+	}
+	span := max - min
+	// Preferred tick steps: 1, 2, 2.5, 5, 10 ... scaled by power of 10
+	mag := math.Pow(10, math.Floor(math.Log10(span/float64(n-1))))
+	candidates := []float64{1, 2, 2.5, 5, 10}
+	bestStep := mag
+	bestScore := math.MaxFloat64
+	for _, c := range candidates {
+		step := c * mag
+		count := math.Ceil((max - min) / step)
+		if count < 2 {
+			count = 2
+		}
+		score := math.Abs(count - float64(n))
+		if score < bestScore {
+			bestScore = score
+			bestStep = step
+		}
+	}
+	start := math.Floor(min/bestStep) * bestStep
+	end := math.Ceil(max/bestStep) * bestStep
+	// limit to a reasonable number of ticks (<= n+2)
+	ticks := []chart.Tick{}
+	for v := start; v <= end+bestStep/2; v += bestStep {
+		ticks = append(ticks, chart.Tick{Value: v, Label: formatTick(v)})
+		if len(ticks) > n+2 {
+			break
+		}
+	}
+	return ticks
+}
+
+func formatTick(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	av := math.Abs(v)
+	switch {
+	case av >= 1_000_000:
+		return fmt.Sprintf("%.0f", v)
+	case av >= 100_000:
+		return fmt.Sprintf("%.0f", v)
+	case av >= 10_000:
+		return fmt.Sprintf("%.0f", v)
+	case av >= 1000:
+		return fmt.Sprintf("%.0f", v)
+	case av >= 100:
+		return fmt.Sprintf("%.0f", v)
+	case av >= 10:
+		return fmt.Sprintf("%.1f", v)
+	default:
+		return fmt.Sprintf("%.2f", v)
+	}
 }
 
 // populateRunTagSituations scans the results file's meta to map run_tag -> situation
