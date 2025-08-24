@@ -333,12 +333,21 @@ func main() {
 		overallChk, ipv4Chk, ipv6Chk,
 		widget.NewLabel("File:"), fileLabel,
 	)
-	charts := container.NewHSplit(state.speedImgCanvas, state.ttfbImgCanvas)
-	charts.Offset = 0.5
+	// charts stacked vertically with scroll for future additions
+	// ensure reasonable minimum heights for readability
+	state.speedImgCanvas.SetMinSize(fyne.NewSize(900, 320))
+	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(900, 320))
+	chartsColumn := container.NewVBox(
+		state.speedImgCanvas,
+		widget.NewSeparator(),
+		state.ttfbImgCanvas,
+	)
+	chartsScroll := container.NewVScroll(chartsColumn)
+	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
 	// tabs: Batches | Charts
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Batches", state.table),
-		container.NewTabItem("Charts", charts),
+		container.NewTabItem("Charts", chartsScroll),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
 	// persist selected tab on change
@@ -349,6 +358,32 @@ func main() {
 	}
 	content := container.NewBorder(top, nil, nil, nil, tabs)
 	w.SetContent(content)
+
+	// Redraw charts on window resize so they scale with width
+	if w.Canvas() != nil {
+		prevW := int(w.Canvas().Size().Width)
+		done := make(chan struct{})
+		w.SetOnClosed(func() { close(done) })
+		go func() {
+			t := time.NewTicker(300 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					c := w.Canvas()
+					if c == nil { continue }
+					sz := c.Size()
+					curW := int(sz.Width)
+					if curW != prevW {
+						prevW = curW
+						fyne.Do(func() { redrawCharts(state) })
+					}
+				}
+			}
+		}()
+	}
 
 	// Now that canvases are ready, assign checkbox callbacks
 	overallChk.OnChanged = func(b bool) {
@@ -516,12 +551,39 @@ func redrawCharts(state *uiState) {
 	if spImg != nil {
 		state.speedImgCanvas.Image = spImg
 		state.speedImgCanvas.Refresh()
+		// ensure the image reserves enough width/height to show the rendered chart
+		cw, chh := chartSize(state)
+		state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 	}
 	ttImg := renderTTFBChart(state)
 	if ttImg != nil {
 		state.ttfbImgCanvas.Image = ttImg
 		state.ttfbImgCanvas.Refresh()
+		cw, chh := chartSize(state)
+		state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 	}
+}
+
+// chartSize computes a chart size based on the current window width so charts use more X-axis space.
+func chartSize(state *uiState) (int, int) {
+	if state == nil || state.window == nil || state.window.Canvas() == nil {
+		return 1100, 340
+	}
+	sz := state.window.Canvas().Size()
+	// Use ~95% of the available width, minus a small margin for scrollbars/padding
+	w := int(sz.Width*0.95) - 12
+	if w < 800 {
+		w = 800
+	}
+	// Maintain a ~3:1 aspect ratio, with sane bounds
+	h := int(float32(w) * 0.33)
+	if h < 280 {
+		h = 280
+	}
+	if h > 520 {
+		h = 520
+	}
+	return w, h
 }
 
 func renderSpeedChart(state *uiState) image.Image {
@@ -623,13 +685,25 @@ func renderSpeedChart(state *uiState) image.Image {
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
+	// More bottom padding when X-axis labels are long
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
-		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	// Size chart to use window width so X-axis has more space
+	cw, chh := chartSize(state)
+	ch.Width = cw
+	ch.Height = chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 
 	var buf bytes.Buffer
@@ -739,13 +813,23 @@ func renderTTFBChart(state *uiState) image.Image {
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg TTFB (ms)%s", situationSuffix(state)),
-		Background: chart.Style{Padding: chart.Box{Top: 20, Left: 20, Right: 20, Bottom: 20}},
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	cw, chh := chartSize(state)
+	ch.Width = cw
+	ch.Height = chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 
 	var buf bytes.Buffer
