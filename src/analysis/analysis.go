@@ -2,8 +2,11 @@ package analysis
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"sort"
@@ -113,10 +116,13 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 	} else {
 		fmt.Printf("[analysis] reading results from %s (schema_version=%d, max_batches=%d, situation=ALL)\n", path, schemaVersion, MaxBatches)
 	}
-	scanner := bufio.NewScanner(f)
+	// Use a dynamic reader to handle long JSONL lines without a fixed max token size.
+	// Defensive cap per-line to avoid pathological memory spikes.
+	reader := bufio.NewReader(f)
+	const MaxLineBytes = 200 * 1024 * 1024 // 200MB; increase here if you truly need larger lines
 	type rec struct {
-		raw                string
 		runTag             string
+		situation          string
 		ipFamily           string
 		proxyName          string
 		usingEnvProxy      bool
@@ -137,16 +143,48 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		warmCacheSuspected bool
 		connReused         bool
 		plateauStable      bool
+		hasError           bool
 	}
 	// Phase 1: scan the JSONL results file and extract only the typed envelope lines
 	// matching the requested schemaVersion. Each valid line becomes a lightweight
 	// 'rec' containing only the numeric fields needed for aggregation. We avoid
 	// retaining full structs / raw maps to keep memory usage low when the file is large.
 	var records []rec
-	for scanner.Scan() {
-		line := scanner.Text()
+readLoop:
+	for {
+		// Accumulate one logical line (may span multiple internal buffers)
+		var line []byte
+		for {
+			part, rerr := reader.ReadBytes('\n')
+			if len(part) > 0 {
+				if len(line)+len(part) > MaxLineBytes {
+					return nil, fmt.Errorf("line too large: %d bytes exceeds limit %d in %s (bump MaxLineBytes in src/analysis/analysis.go if needed)", len(line)+len(part), MaxLineBytes, path)
+				}
+				line = append(line, part...)
+			}
+			if rerr == nil {
+				break // finished one line with newline
+			}
+			if errors.Is(rerr, io.EOF) {
+				// Handle final line without newline
+				if len(line) == 0 {
+					break readLoop
+				}
+				break
+			}
+			if errors.Is(rerr, bufio.ErrBufferFull) {
+				// continue accumulating
+				continue
+			}
+			// Other I/O error: warn and stop processing
+			fmt.Printf("[analysis] read warning: %v (file=%s)\n", rerr, path)
+			if len(line) == 0 {
+				break readLoop
+			}
+			break
+		}
 		var env monitor.ResultEnvelope
-		if err := json.Unmarshal([]byte(line), &env); err != nil || env.Meta == nil || env.SiteResult == nil {
+		if err := json.Unmarshal(line, &env); err != nil || env.Meta == nil || env.SiteResult == nil {
 			continue
 		}
 		if env.Meta.SchemaVersion != schemaVersion {
@@ -165,7 +203,11 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 				ts = parsed
 			}
 		}
-		bs := rec{raw: line, runTag: env.Meta.RunTag, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
+		bs := rec{runTag: env.Meta.RunTag, situation: env.Meta.Situation, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
+		// Track error presence without storing the raw line to reduce memory usage.
+		if bytes.Contains(line, []byte("tcp_error")) || bytes.Contains(line, []byte("http_error")) {
+			bs.hasError = true
+		}
 		if sa := sr.SpeedAnalysis; sa != nil {
 			bs.p50 = sa.P50Kbps
 			if sa.P99Kbps > 0 {
@@ -257,6 +299,8 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		proxyNameCounts := map[string]int{}
 		proxyUsingEnv := 0
 		proxyClassified := 0
+		// capture situation for this batch (prefer first non-empty)
+		batchSituation := ""
 
 		buildFamily := func(filter string) *FamilySummary {
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
@@ -342,7 +386,7 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 				if r.plateauStable {
 					plateauStableCnt++
 				}
-				if strings.Contains(r.raw, "tcp_error") || strings.Contains(r.raw, "http_error") {
+				if r.hasError {
 					errorLines++
 				}
 			}
@@ -375,6 +419,9 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		var errorLines int
 		var minTS, maxTS time.Time
 		for _, r := range recs {
+			if batchSituation == "" && r.situation != "" {
+				batchSituation = r.situation
+			}
 			if !r.timestamp.IsZero() {
 				if minTS.IsZero() || r.timestamp.Before(minTS) {
 					minTS = r.timestamp
@@ -456,7 +503,7 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 			if r.plateauStable {
 				plateauStableCnt++
 			}
-			if strings.Contains(r.raw, "tcp_error") || strings.Contains(r.raw, "http_error") {
+			if r.hasError {
 				errorLines++
 			}
 		}
@@ -481,6 +528,10 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 			BatchDurationMs: durationMs,
 			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
 		}
+		if batchSituation != "" {
+			summary.Situation = batchSituation
+		}
+		// Situation is expected to be provided by upstream logic populating BatchSummary
 		// Fill proxy aggregation
 		if len(proxyNameCounts) > 0 {
 			summary.ProxyNameCounts = proxyNameCounts

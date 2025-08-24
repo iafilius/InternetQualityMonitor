@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -13,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,6 +133,8 @@ func main() {
 		showIPv6:    true,
 		speedUnit:   "kbps",
 	}
+	// Ensure crosshair preference is loaded before creating overlays/controls
+	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 
 	// top bar controls
 	fileLabel := widget.NewLabel(truncatePath(state.filePath, 60))
@@ -153,6 +154,8 @@ func main() {
 	ipv4Chk := widget.NewCheck("IPv4", nil)
 	ipv6Chk := widget.NewCheck("IPv6", nil)
 	crosshairChk := widget.NewCheck("Crosshair", nil)
+	// initialize crosshair check from preloaded preference before wiring events
+	crosshairChk.SetChecked(state.crosshairEnabled)
 
 	// axis mode selectors
 	xAxisSelect := widget.NewSelect([]string{"Batch", "RunTag", "Time"}, func(v string) {
@@ -384,7 +387,11 @@ func main() {
 	if w.Canvas() != nil {
 		prevW := int(w.Canvas().Size().Width)
 		done := make(chan struct{})
-		w.SetOnClosed(func() { close(done) })
+		w.SetOnClosed(func() {
+			// ensure latest UI state (including crosshair) is persisted
+			savePrefs(state)
+			close(done)
+		})
 		go func() {
 			t := time.NewTicker(300 * time.Millisecond)
 			defer t.Stop()
@@ -539,19 +546,40 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 		return
 	}
 	state.summaries = summaries
-	// refresh runTag->situation mapping from meta
-	populateRunTagSituations(state)
-	state.situations = uniqueSituationsFromMap(state.runTagSituation)
-	if state.situation == "" && len(state.situations) > 0 {
-		// default to first real situation if present; else All
-		state.situation = state.situations[0]
+	// Build situation index directly from summaries to avoid re-scanning and mismatches
+	state.runTagSituation = map[string]string{}
+	for _, s := range state.summaries {
+		state.runTagSituation[s.RunTag] = s.Situation
 	}
+	state.situations = uniqueSituationsFromMap(state.runTagSituation)
+	// Log counts by situation to help verify filtering covers all batches
+	if len(state.summaries) > 0 {
+		counts := map[string]int{}
+		for _, s := range state.summaries {
+			k := s.Situation
+			if k == "" {
+				k = "(none)"
+			}
+			counts[k]++
+		}
+		var parts []string
+		for _, k := range state.situations {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))
+		}
+		// include empty situation bucket if present
+		if counts["(none)"] > 0 {
+			parts = append(parts, fmt.Sprintf("(none)=%d", counts["(none)"]))
+		}
+		fmt.Printf("[viewer] loaded %d batches. Situation counts: %s\n", len(state.summaries), strings.Join(parts, ", "))
+	}
+	// Do not auto-select a specific situation; keep default as All
 	// update situation selector
 	if state.situationSelect != nil {
 		opts := make([]string, 0, len(state.situations)+1)
 		opts = append(opts, "All")
 		opts = append(opts, state.situations...)
 		state.situationSelect.Options = opts
+		// Default to All unless a specific situation was previously chosen
 		if state.situation == "" {
 			state.situationSelect.Selected = "All"
 		} else {
@@ -906,12 +934,37 @@ func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, [
 	case "time":
 		ts := make([]time.Time, len(rows))
 		for i, r := range rows {
-			ts[i] = parseRunTagTime(r.RunTag)
+			t := parseRunTagTime(r.RunTag)
+			if idx := strings.LastIndex(r.RunTag, "_i"); idx >= 0 {
+				if n, err := strconv.Atoi(r.RunTag[idx+2:]); err == nil {
+					t = t.Add(time.Duration(n) * time.Second)
+				}
+			}
+			ts[i] = t
 		}
-		xa := chart.XAxis{
-			Name:           "Time",
-			ValueFormatter: chart.TimeValueFormatterWithFormat("01-02 15:04:05"),
+		// Ensure strictly non-decreasing sequence
+		for i := 1; i < len(ts); i++ {
+			if !ts[i].After(ts[i-1]) {
+				ts[i] = ts[i-1].Add(1 * time.Second)
+			}
 		}
+		// Build nice rounded ticks across the time span
+		if len(ts) == 0 {
+			return true, ts, nil, chart.XAxis{Name: "Time"}
+		}
+		minT := ts[0]
+		maxT := ts[0]
+		for _, t := range ts[1:] {
+			if t.Before(minT) {
+				minT = t
+			}
+			if t.After(maxT) {
+				maxT = t
+			}
+		}
+		step, labFmt := pickTimeStep(maxT.Sub(minT))
+		ticks := makeNiceTimeTicks(minT, maxT, step, labFmt)
+		xa := chart.XAxis{Name: "Time", Ticks: ticks}
 		return true, ts, nil, xa
 	case "run_tag":
 		xs := make([]float64, len(rows))
@@ -1049,57 +1102,58 @@ func formatTick(v float64) string {
 	}
 }
 
-// populateRunTagSituations scans the results file's meta to map run_tag -> situation
-func populateRunTagSituations(state *uiState) {
-	if state == nil {
-		return
-	}
-	state.runTagSituation = map[string]string{}
-	if state.filePath == "" || len(state.summaries) == 0 {
-		return
-	}
-	// build set of run_tags of interest (current summaries)
-	needed := map[string]struct{}{}
-	for _, s := range state.summaries {
-		needed[s.RunTag] = struct{}{}
-	}
-	remaining := len(needed)
-	f, err := os.Open(state.filePath)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	type metaOnly struct {
-		Meta struct {
-			RunTag        string `json:"run_tag"`
-			Situation     string `json:"situation"`
-			SchemaVersion int    `json:"schema_version"`
-		} `json:"meta"`
-	}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var mo metaOnly
-		if err := json.Unmarshal(sc.Bytes(), &mo); err != nil {
-			continue
-		}
-		if mo.Meta.SchemaVersion != monitor.SchemaVersion {
-			continue
-		}
-		if _, ok := needed[mo.Meta.RunTag]; !ok {
-			continue
-		}
-		if mo.Meta.Situation != "" {
-			// set if not set yet
-			if _, exists := state.runTagSituation[mo.Meta.RunTag]; !exists {
-				state.runTagSituation[mo.Meta.RunTag] = mo.Meta.Situation
-				remaining--
-				if remaining <= 0 {
-					break
-				}
-			}
-		}
+// pickTimeStep selects a readable step and label format for a given time span.
+func pickTimeStep(span time.Duration) (time.Duration, string) {
+	// Heuristic thresholds for span to step mapping
+	switch {
+	case span <= 2*time.Minute:
+		return 10 * time.Second, "15:04:05"
+	case span <= 10*time.Minute:
+		return 1 * time.Minute, "15:04"
+	case span <= 30*time.Minute:
+		return 5 * time.Minute, "15:04"
+	case span <= 2*time.Hour:
+		return 10 * time.Minute, "15:04"
+	case span <= 6*time.Hour:
+		return 30 * time.Minute, "Jan 2 15:04"
+	case span <= 24*time.Hour:
+		return 1 * time.Hour, "Jan 2 15:04"
+	case span <= 3*24*time.Hour:
+		return 6 * time.Hour, "Jan 2 15:04"
+	case span <= 14*24*time.Hour:
+		return 1 * 24 * time.Hour, "Jan 2"
+	default:
+		return 7 * 24 * time.Hour, "Jan 2"
 	}
 }
+
+// makeNiceTimeTicks returns rounded ticks between min and max at the given step with labels.
+func makeNiceTimeTicks(minT, maxT time.Time, step time.Duration, labelFmt string) []chart.Tick {
+	if step <= 0 {
+		return nil
+	}
+	// Round start down to step boundary
+	// We align to UTC to avoid DST/local anomalies in labels
+	start := minT.UTC()
+	// Convert to Unix seconds and round down by step
+	s := start.Unix()
+	st := int64(step.Seconds())
+	if st <= 0 {
+		st = 1
+	}
+	aligned := time.Unix((s/st)*st, 0).UTC()
+	// Generate ticks up to max
+	ticks := []chart.Tick{}
+	for t := aligned; !t.After(maxT.UTC().Add(step)); t = t.Add(step) {
+		ticks = append(ticks, chart.Tick{Value: float64(chart.TimeToFloat64(t)), Label: t.Local().Format(labelFmt)})
+		if len(ticks) > 20 { // keep it readable
+			break
+		}
+	}
+	return ticks
+}
+
+// (removed obsolete populateRunTagSituations; we now derive mapping from summaries)
 
 func blank(w, h int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -1312,10 +1366,11 @@ func updateColumnVisibility(state *uiState) {
 // It tracks mouse position and shows a small label near the cursor with the pixel coordinates.
 type crosshairOverlay struct {
 	widget.BaseWidget
-	state   *uiState
-	enabled bool
-	isSpeed bool // true for speed chart, false for TTFB
-	mouse   fyne.Position
+	state    *uiState
+	enabled  bool
+	isSpeed  bool // true for speed chart, false for TTFB
+	mouse    fyne.Position
+	hovering bool
 }
 
 func newCrosshairOverlay(state *uiState, isSpeed bool) *crosshairOverlay {
@@ -1334,23 +1389,25 @@ func (c *crosshairOverlay) CreateRenderer() fyne.WidgetRenderer {
 	dot := canvas.NewCircle(color.RGBA{R: 240, G: 240, B: 240, A: 220})
 	dot.StrokeColor = color.RGBA{R: 0, G: 0, B: 0, A: 0}
 	dot.StrokeWidth = 0
-	txt := canvas.NewText("", color.White)
-	txt.Alignment = fyne.TextAlignLeading
-	txt.TextSize = 12
+	label := widget.NewRichText()
+	label.Wrapping = fyne.TextWrapOff
+	label.Segments = []widget.RichTextSegment{}
 	labelBG := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 170})
-	objs := []fyne.CanvasObject{bg, lineV, lineH, dot, labelBG, txt}
-	r := &crosshairRenderer{c: c, bg: bg, lineV: lineV, lineH: lineH, dot: dot, labelBG: labelBG, txt: txt, objs: objs}
+	// No axis marker to avoid misaligned highlighting; keep it simple and accurate
+	objs := []fyne.CanvasObject{bg, lineV, lineH, dot, labelBG, label}
+	r := &crosshairRenderer{c: c, bg: bg, lineV: lineV, lineH: lineH, dot: dot, labelBG: labelBG, label: label, objs: objs}
 	return r
 }
 
 type crosshairRenderer struct {
-	c       *crosshairOverlay
-	bg      *canvas.Rectangle
-	lineV   *canvas.Line
-	lineH   *canvas.Line
-	dot     *canvas.Circle
+	c     *crosshairOverlay
+	bg    *canvas.Rectangle
+	lineV *canvas.Line
+	lineH *canvas.Line
+	dot   *canvas.Circle
+	// axisMarker removed
 	labelBG *canvas.Rectangle
-	txt     *canvas.Text
+	label   *widget.RichText
 	objs    []fyne.CanvasObject
 }
 
@@ -1363,14 +1420,18 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 		r.bg.Resize(size)
 		r.bg.Move(fyne.NewPos(0, 0))
 	}
-	if !r.c.enabled {
+	if !r.c.enabled || !r.c.hovering {
 		// move lines out of view
 		r.lineV.Position1 = fyne.NewPos(-10, -10)
 		r.lineV.Position2 = fyne.NewPos(-10, -10)
 		r.lineH.Position1 = fyne.NewPos(-10, -10)
 		r.lineH.Position2 = fyne.NewPos(-10, -10)
 		r.dot.Move(fyne.NewPos(-10, -10))
-		r.txt.Move(fyne.NewPos(-1000, -1000))
+		r.label.Move(fyne.NewPos(-1000, -1000))
+		if r.labelBG != nil {
+			r.labelBG.Resize(fyne.NewSize(0, 0))
+			r.labelBG.Move(fyne.NewPos(-1000, -1000))
+		}
 		return
 	}
 	x := r.c.mouse.X
@@ -1387,28 +1448,120 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 	if y > size.Height {
 		y = size.Height
 	}
-	// vertical line
-	r.lineV.Position1 = fyne.NewPos(x, 0)
-	r.lineV.Position2 = fyne.NewPos(x, size.Height)
-	// horizontal line
+	// Prepare data for nearest index using actual drawn image rect (ImageFillContain aware)
+	rows := filteredSummaries(r.c.state)
+	n := len(rows)
+	// Determine the underlying image size and the drawn rectangle inside this overlay
+	var imgW, imgH float32
+	var drawX, drawY, drawW, drawH, scale float32
+	if r.c != nil && r.c.state != nil {
+		var imgCanvas *canvas.Image
+		if r.c.isSpeed {
+			imgCanvas = r.c.state.speedImgCanvas
+		} else {
+			imgCanvas = r.c.state.ttfbImgCanvas
+		}
+		if imgCanvas != nil && imgCanvas.Image != nil {
+			b := imgCanvas.Image.Bounds()
+			imgW = float32(b.Dx())
+			imgH = float32(b.Dy())
+		}
+	}
+	if imgW <= 0 || imgH <= 0 {
+		imgW, imgH = float32(size.Width), float32(size.Height)
+	}
+	// Compute contain scaling
+	if imgW > 0 && imgH > 0 {
+		sx := float32(size.Width) / imgW
+		sy := float32(size.Height) / imgH
+		scale = sx
+		if sy < sx {
+			scale = sy
+		}
+		drawW = imgW * scale
+		drawH = imgH * scale
+		drawX = (float32(size.Width) - drawW) / 2
+		drawY = (float32(size.Height) - drawH) / 2
+	}
+	// Hide crosshair when cursor is outside drawn image rect (contain-fit area)
+	if !(float32(x) >= drawX && float32(x) <= drawX+drawW && float32(y) >= drawY && float32(y) <= drawY+drawH) {
+		r.lineV.Position1 = fyne.NewPos(-10, -10)
+		r.lineV.Position2 = fyne.NewPos(-10, -10)
+		r.lineH.Position1 = fyne.NewPos(-10, -10)
+		r.lineH.Position2 = fyne.NewPos(-10, -10)
+		r.dot.Move(fyne.NewPos(-10, -10))
+		if r.labelBG != nil {
+			r.labelBG.Resize(fyne.NewSize(0, 0))
+			r.labelBG.Move(fyne.NewPos(-1000, -1000))
+		}
+		r.label.Move(fyne.NewPos(-1000, -1000))
+		return
+	}
+	// chart paddings used when rendering the image (in image pixel space)
+	leftPadImg, rightPadImg := float32(16), float32(12)
+	plotWImg := imgW - leftPadImg - rightPadImg
+	if plotWImg < 1 {
+		plotWImg = imgW
+	}
+	// Build X positions per point in image pixel space, then map to overlay space
+	idx := 0
+	// cx removed, we follow mouse for vertical line
+	if n > 0 && plotWImg > 0 {
+		pxView := make([]float32, n)
+		timeMode, times, _, _ := buildXAxis(rows, r.c.state.xAxisMode)
+		if timeMode {
+			minT := times[0]
+			maxT := times[0]
+			for _, t := range times[1:] {
+				if t.Before(minT) {
+					minT = t
+				}
+				if t.After(maxT) {
+					maxT = t
+				}
+			}
+			span := maxT.Sub(minT)
+			for i, t := range times {
+				var fx float64
+				if span > 0 {
+					fx = float64(t.Sub(minT)) / float64(span)
+				} else {
+					fx = 0
+				}
+				pxImg := leftPadImg + float32(fx)*plotWImg
+				pxView[i] = drawX + pxImg*scale
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				pxImg := leftPadImg + plotWImg*(float32(i)+0.5)/float32(n)
+				pxView[i] = drawX + pxImg*scale
+			}
+		}
+		// Nearest by pixel distance in overlay coords
+		bestD := float32(math.MaxFloat32)
+		mx := float32(x)
+		for i := 0; i < n; i++ {
+			d := float32(math.Abs(float64(pxView[i] - mx)))
+			if d < bestD {
+				bestD = d
+				idx = i
+				// keep idx only; vertical line follows mouse
+			}
+		}
+	}
+	// vertical line follows mouse to avoid false precision when scaling is applied
+	r.lineV.Position1 = fyne.NewPos(float32(x), 0)
+	r.lineV.Position2 = fyne.NewPos(float32(x), size.Height)
+	// horizontal line follows mouse Y
 	r.lineH.Position1 = fyne.NewPos(0, y)
 	r.lineH.Position2 = fyne.NewPos(size.Width, y)
 	// dot at intersection
 	r.dot.Resize(fyne.NewSize(6, 6))
 	r.dot.Move(fyne.NewPos(x-3, y-3))
+	// Draw a short underline marker at the bottom axis to indicate the active tick
+	// no axis underline marker
 	// Determine nearest data index and show values
-	rows := filteredSummaries(r.c.state)
-	n := len(rows)
 	if n > 0 && size.Width > 0 {
-		// map x in [0,width] -> idx in [0,n-1]
-		fx := float64(x) / float64(size.Width)
-		idx := int(math.Round(fx * float64(n-1)))
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= n {
-			idx = n - 1
-		}
 		bs := rows[idx]
 		// X label by mode
 		var xLabel string
@@ -1438,7 +1591,7 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit))
 			}
-			r.txt.Text = strings.Join(lines, "\n")
+			r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 		} else {
 			var lines []string
 			lines = append(lines, xLabel)
@@ -1451,15 +1604,15 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB))
 			}
-			r.txt.Text = strings.Join(lines, "\n")
+			r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 		}
 	} else {
-		r.txt.Text = ""
+		r.label.Segments = nil
 	}
-	r.txt.Refresh()
+	r.label.Refresh()
 	// draw a semi-transparent background to improve readability
 	pad := float32(6)
-	ts := r.txt.MinSize()
+	ts := r.label.MinSize()
 	bgW := ts.Width + 2*pad
 	bgH := ts.Height + 2*pad
 	tx, ty := x+8, y+8
@@ -1469,14 +1622,14 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 	if ty+bgH > size.Height {
 		ty = size.Height - bgH
 	}
-	if r.txt.Text == "" {
+	if len(r.label.Segments) == 0 {
 		r.labelBG.Resize(fyne.NewSize(0, 0))
 		r.labelBG.Move(fyne.NewPos(-1000, -1000))
-		r.txt.Move(fyne.NewPos(-1000, -1000))
+		r.label.Move(fyne.NewPos(-1000, -1000))
 	} else {
 		r.labelBG.Resize(fyne.NewSize(bgW, bgH))
 		r.labelBG.Move(fyne.NewPos(tx, ty))
-		r.txt.Move(fyne.NewPos(tx+pad, ty+pad))
+		r.label.Move(fyne.NewPos(tx+pad, ty+pad))
 	}
 }
 func (r *crosshairRenderer) MinSize() fyne.Size           { return fyne.NewSize(10, 10) }
@@ -1488,13 +1641,20 @@ func (r *crosshairRenderer) Refresh() {
 	if r.bg != nil {
 		r.bg.Refresh()
 	}
+	// Update colors to match theme each refresh
+	r.lineV.StrokeColor = theme.Color(theme.ColorNameDisabled)
+	r.lineV.StrokeWidth = 1
+	r.lineH.StrokeColor = theme.Color(theme.ColorNameDisabled)
+	r.lineH.StrokeWidth = 1
+	// no axis marker
 	r.lineV.Refresh()
 	r.lineH.Refresh()
 	r.dot.Refresh()
+	// no axis marker
 	if r.labelBG != nil {
 		r.labelBG.Refresh()
 	}
-	r.txt.Refresh()
+	r.label.Refresh()
 }
 
 // Implement mouse movement handling
@@ -1502,11 +1662,12 @@ func (c *crosshairOverlay) MouseMoved(ev *desktop.MouseEvent) {
 	if !c.enabled {
 		return
 	}
+	c.hovering = true
 	c.mouse = ev.Position
 	c.Refresh()
 }
-func (c *crosshairOverlay) MouseIn(ev *desktop.MouseEvent) { /* no-op */ }
-func (c *crosshairOverlay) MouseOut()                      { /* keep last pos */ }
+func (c *crosshairOverlay) MouseIn(ev *desktop.MouseEvent) { c.hovering = true; c.Refresh() }
+func (c *crosshairOverlay) MouseOut()                      { c.hovering = false; c.Refresh() }
 
 // Assert that crosshairOverlay implements desktop.Hoverable
 var _ desktop.Hoverable = (*crosshairOverlay)(nil)

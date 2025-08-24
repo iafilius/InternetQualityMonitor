@@ -1,0 +1,25 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "go-test-analysis-only",
+			"type": "shell",
+			"command": "go test ./src/analysis -run Test -v",
+			"args": [],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "go-test-analysis-only",
+			"type": "shell",
+			"command": "go test ./src/analysis -run Test -v",
+			"args": [],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		}
+	]
+}
