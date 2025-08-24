@@ -9,7 +9,7 @@
 ## highlights
 - Crosshair UX: subtle theme-aware lines + dot + label on semi-transparent bg; no X-band highlight; hidden outside drawn image rect.
 - Time axis: rounded, readable ticks via pickTimeStep/makeNiceTimeTicks while plotting with true timestamps.
-- Stability: increased JSONL scanner buffer (8MB) and propagated Situation into batch summaries to avoid rescans.
+- Stability: switched to a dynamic JSONL reader (no fixed token cap) with a defensive 200MB per-line limit; propagated Situation into batch summaries to avoid rescans.
 - Filtering: Situation selection defaults to All; mapping is derived from summaries, not by rescanning the file.
 - Docs/Separation: Added focused READMEs and REQUIREMENTS for Reader/Viewer; introduced a tiny iqmreader CLI.
 

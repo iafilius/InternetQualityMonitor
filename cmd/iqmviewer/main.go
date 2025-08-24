@@ -202,11 +202,20 @@ func main() {
 		} else {
 			state.situation = v
 		}
+		// small debug to verify selection behavior and filtered counts
+		fmt.Printf("[viewer] situation changed to: %q; filtered batches=%d\n", v, len(filteredSummaries(state)))
 		savePrefs(state)
 		if state.table != nil {
 			state.table.Refresh()
 		}
 		redrawCharts(state)
+		// ensure overlays re-evaluate filtered data immediately
+		if state.speedOverlay != nil {
+			state.speedOverlay.Refresh()
+		}
+		if state.ttfbOverlay != nil {
+			state.ttfbOverlay.Refresh()
+		}
 	})
 	sitSelect.PlaceHolder = "All"
 	state.situationSelect = sitSelect
@@ -616,12 +625,20 @@ func uniqueSituationsFromMap(m map[string]string) []string {
 }
 
 func filteredSummaries(state *uiState) []analysis.BatchSummary {
+	if state == nil {
+		return nil
+	}
 	if state.situation == "" {
 		return state.summaries
 	}
 	out := make([]analysis.BatchSummary, 0, len(state.summaries))
 	for _, s := range state.summaries {
-		if sit, ok := state.runTagSituation[s.RunTag]; ok && sit == state.situation {
+		// Prefer the situation embedded in the summary, fall back to the mapping if needed
+	if strings.EqualFold(s.Situation, state.situation) {
+			out = append(out, s)
+			continue
+		}
+	if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
 			out = append(out, s)
 		}
 	}
@@ -633,17 +650,24 @@ func redrawCharts(state *uiState) {
 	spImg := renderSpeedChart(state)
 	if spImg != nil {
 		state.speedImgCanvas.Image = spImg
-		state.speedImgCanvas.Refresh()
 		// ensure the image reserves enough width/height to show the rendered chart
 		cw, chh := chartSize(state)
 		state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+		state.speedImgCanvas.Refresh()
+		// also refresh overlay so crosshair rebinds to new image rects
+		if state.speedOverlay != nil {
+			state.speedOverlay.Refresh()
+		}
 	}
 	ttImg := renderTTFBChart(state)
 	if ttImg != nil {
 		state.ttfbImgCanvas.Image = ttImg
-		state.ttfbImgCanvas.Refresh()
 		cw, chh := chartSize(state)
 		state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+		state.ttfbImgCanvas.Refresh()
+		if state.ttfbOverlay != nil {
+			state.ttfbOverlay.Refresh()
+		}
 	}
 }
 
@@ -684,6 +708,7 @@ func renderSpeedChart(state *uiState) image.Image {
 
 	if state.showOverall {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			v := r.AvgSpeed * factor
 			ys[i] = v
@@ -694,16 +719,35 @@ func renderSpeedChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorAlternateGray)
+		if countValid == 1 { // emphasize single-point sets
+			st.DotWidth = 6
+		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
+			// Pad to at least two X values for go-chart
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "Overall", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 	if state.showIPv4 {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			var v float64
 			if r.IPv4 != nil {
@@ -719,16 +763,34 @@ func renderSpeedChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorBlue)
+		if countValid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: pointStyle(chart.ColorBlue)})
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorBlue)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 	if state.showIPv6 {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			var v float64
 			if r.IPv6 != nil {
@@ -744,27 +806,48 @@ func renderSpeedChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorGreen)
+		if countValid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: pointStyle(chart.ColorGreen)})
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorGreen)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 
-	yMin := 0.0
-	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	var yAxisRange *chart.ContinuousRange
 	var yTicks []chart.Tick
-	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && maxY != -math.MaxFloat64 {
+	} else if !state.useRelative && haveY {
 		// Absolute mode: baseline at 0 with a nice rounded max
+		// Ensure a minimal positive height when there's a single value
+		if maxY <= 0 {
+			maxY = 1
+		}
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
@@ -778,10 +861,23 @@ func renderSpeedChart(state *uiState) image.Image {
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
-		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
-		XAxis:      xAxis,
-		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
+	Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+	XAxis:      xAxis,
+	YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
+	}
+	if len(rows) == 1 {
+		// Debug series lengths to understand x-range errors
+		for i, s := range series {
+			switch ss := s.(type) {
+			case chart.TimeSeries:
+				fmt.Printf("[viewer] speed series[%d] TimeSeries X=%d Y=%d\n", i, len(ss.XValues), len(ss.YValues))
+			case chart.ContinuousSeries:
+				fmt.Printf("[viewer] speed series[%d] Continuous X=%d Y=%d\n", i, len(ss.XValues), len(ss.YValues))
+			default:
+				fmt.Printf("[viewer] speed series[%d] type=%T\n", i, s)
+			}
+		}
 	}
 	// Size chart to use window width so X-axis has more space
 	cw, chh := chartSize(state)
@@ -791,11 +887,16 @@ func renderSpeedChart(state *uiState) image.Image {
 
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
-		return nil
+		// Fallback to a blank image so the UI visibly updates even on render errors (e.g., single-point edge cases)
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] speed chart render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
 	if err != nil {
-		return nil
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] speed chart decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
 	}
 	return img
 }
@@ -812,6 +913,7 @@ func renderTTFBChart(state *uiState) image.Image {
 
 	if state.showOverall {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			v := r.AvgTTFB
 			ys[i] = v
@@ -822,16 +924,32 @@ func renderTTFBChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorAlternateGray)
+		if countValid == 1 { st.DotWidth = 6 }
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "Overall", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 	if state.showIPv4 {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			var v float64
 			if r.IPv4 != nil {
@@ -847,16 +965,32 @@ func renderTTFBChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorBlue)
+		if countValid == 1 { st.DotWidth = 6 }
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: pointStyle(chart.ColorBlue)})
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorBlue)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 	if state.showIPv6 {
 		ys := make([]float64, len(rows))
+		countValid := 0
 		for i, r := range rows {
 			var v float64
 			if r.IPv6 != nil {
@@ -872,27 +1006,45 @@ func renderTTFBChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
+				countValid++
 			}
 		}
+	st := pointStyle(chart.ColorGreen)
+		if countValid == 1 { st.DotWidth = 6 }
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: pointStyle(chart.ColorGreen)})
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorGreen)})
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 
-	yMin := 0.0
-	yAxisRange := &chart.ContinuousRange{Min: yMin}
+	var yAxisRange *chart.ContinuousRange
 	var yTicks []chart.Tick
-	if state.useRelative && minY != math.MaxFloat64 && maxY != -math.MaxFloat64 {
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && maxY != -math.MaxFloat64 {
+	} else if !state.useRelative && haveY {
 		// Absolute mode: baseline at 0 with a nice rounded max
+		if maxY <= 0 {
+			maxY = 1
+		}
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
@@ -910,6 +1062,18 @@ func renderTTFBChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	if len(rows) == 1 {
+		for i, s := range series {
+			switch ss := s.(type) {
+			case chart.TimeSeries:
+				fmt.Printf("[viewer] ttfb series[%d] TimeSeries X=%d Y=%d\n", i, len(ss.XValues), len(ss.YValues))
+			case chart.ContinuousSeries:
+				fmt.Printf("[viewer] ttfb series[%d] Continuous X=%d Y=%d\n", i, len(ss.XValues), len(ss.YValues))
+			default:
+				fmt.Printf("[viewer] ttfb series[%d] type=%T\n", i, s)
+			}
+		}
+	}
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
@@ -917,11 +1081,15 @@ func renderTTFBChart(state *uiState) image.Image {
 
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
-		return nil
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] ttfb chart render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
 	if err != nil {
-		return nil
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] ttfb chart decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
 	}
 	return img
 }
@@ -964,31 +1132,62 @@ func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, [
 		}
 		step, labFmt := pickTimeStep(maxT.Sub(minT))
 		ticks := makeNiceTimeTicks(minT, maxT, step, labFmt)
-		xa := chart.XAxis{Name: "Time", Ticks: ticks}
+		if len(ts) == 1 && len(ticks) < 2 {
+			// add a second tick one step later to keep axis happy
+			ticks = append(ticks, chart.Tick{Value: float64(chart.TimeToFloat64(minT.Add(step))), Label: minT.Add(step).Local().Format(labFmt)})
+		}
+		// Ensure non-zero X range even when there's only one timestamp
+		minF := float64(chart.TimeToFloat64(minT))
+		maxF := float64(chart.TimeToFloat64(maxT))
+		if maxF <= minF {
+			maxF = minF + float64(step/time.Second)
+			if maxF <= minF { // fallback to +1s
+				maxF = minF + 1
+			}
+		}
+		xa := chart.XAxis{Name: "Time", Ticks: ticks, Range: &chart.ContinuousRange{Min: minF, Max: maxF}}
+		if len(ts) == 1 {
+			fmt.Printf("[viewer] time axis padded: min=%v max=%v ticks=%d\n", minT, maxT, len(ticks))
+		}
 		return true, ts, nil, xa
 	case "run_tag":
-		xs := make([]float64, len(rows))
-		ticks := make([]chart.Tick, len(rows))
+		n := len(rows)
+		xs := make([]float64, n)
+		ticks := make([]chart.Tick, 0, n+1)
 		for i, r := range rows {
 			x := float64(i + 1)
 			xs[i] = x
-			ticks[i] = chart.Tick{Value: x, Label: r.RunTag}
+			ticks = append(ticks, chart.Tick{Value: x, Label: r.RunTag})
 		}
-		xa := chart.XAxis{Name: "RunTag", Ticks: ticks}
+		// Provide an explicit range so n=1 still renders with non-zero width
+		minR := 0.5
+		maxR := float64(n) + 0.5
+		if n == 1 {
+			maxR = 2.0 // make sure delta > 0
+			ticks = append(ticks, chart.Tick{Value: 2, Label: ""})
+		}
+		xa := chart.XAxis{Name: "RunTag", Ticks: ticks, Range: &chart.ContinuousRange{Min: minR, Max: maxR}}
 		return false, nil, xs, xa
 	default:
 		n := len(rows)
 		xs := make([]float64, n)
-		ticks := make([]chart.Tick, n)
+		ticks := make([]chart.Tick, 0, n+1)
 		for i := 0; i < n; i++ {
 			x := float64(i + 1)
 			xs[i] = x
-			ticks[i] = chart.Tick{Value: x, Label: fmt.Sprintf("%d", i+1)}
+			ticks = append(ticks, chart.Tick{Value: x, Label: fmt.Sprintf("%d", i+1)})
 		}
-		// Provide explicit integer ticks to avoid fractional labels on the Batch axis
+		// Provide explicit integer ticks and a padded range so n=1 renders properly
+		minR := 0.5
+		maxR := float64(n) + 0.5
+		if n == 1 {
+			maxR = 2.0
+			ticks = append(ticks, chart.Tick{Value: 2, Label: ""})
+		}
 		xa := chart.XAxis{
 			Name:  "Batch",
 			Ticks: ticks,
+			Range: &chart.ContinuousRange{Min: minR, Max: maxR},
 		}
 		return false, nil, xs, xa
 	}
