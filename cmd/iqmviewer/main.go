@@ -373,7 +373,9 @@ func main() {
 					return
 				case <-t.C:
 					c := w.Canvas()
-					if c == nil { continue }
+					if c == nil {
+						continue
+					}
 					sz := c.Size()
 					curW := int(sz.Width)
 					if curW != prevW {
@@ -869,11 +871,19 @@ func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, [
 		xa := chart.XAxis{Name: "RunTag", Ticks: ticks}
 		return false, nil, xs, xa
 	default:
-		xs := make([]float64, len(rows))
-		for i := range rows {
-			xs[i] = float64(i + 1)
+		n := len(rows)
+		xs := make([]float64, n)
+		ticks := make([]chart.Tick, n)
+		for i := 0; i < n; i++ {
+			x := float64(i + 1)
+			xs[i] = x
+			ticks[i] = chart.Tick{Value: x, Label: fmt.Sprintf("%d", i+1)}
 		}
-		xa := chart.XAxis{Name: "Batch"}
+		// Provide explicit integer ticks to avoid fractional labels on the Batch axis
+		xa := chart.XAxis{
+			Name:  "Batch",
+			Ticks: ticks,
+		}
 		return false, nil, xs, xa
 	}
 }
