@@ -25,10 +25,20 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	chart "github.com/wcharczuk/go-chart/v2"
+	"github.com/wcharczuk/go-chart/v2/drawing"
 
 	"github.com/iafilius/InternetQualityMonitor/src/analysis"
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
+
+// pointStyle returns a style that renders points only (no connecting line)
+func pointStyle(col drawing.Color) chart.Style {
+	return chart.Style{
+		StrokeWidth: 0,
+		DotWidth:    4,
+		DotColor:    col,
+	}
+}
 
 type uiState struct {
 	app      fyne.App
@@ -57,6 +67,13 @@ type uiState struct {
 	situationSelect *widget.Select
 	speedImgCanvas  *canvas.Image
 	ttfbImgCanvas   *canvas.Image
+
+	// crosshair
+	crosshairEnabled bool
+	speedOverlay     *crosshairOverlay
+	ttfbOverlay      *crosshairOverlay
+	lastSpeedPopup   *widget.PopUp
+	lastTTFBPopup    *widget.PopUp
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
@@ -135,6 +152,7 @@ func main() {
 	overallChk := widget.NewCheck("Overall", nil)
 	ipv4Chk := widget.NewCheck("IPv4", nil)
 	ipv6Chk := widget.NewCheck("IPv6", nil)
+	crosshairChk := widget.NewCheck("Crosshair", nil)
 
 	// axis mode selectors
 	xAxisSelect := widget.NewSelect([]string{"Batch", "RunTag", "Time"}, func(v string) {
@@ -330,17 +348,20 @@ func main() {
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
-		overallChk, ipv4Chk, ipv6Chk,
+		overallChk, ipv4Chk, ipv6Chk, crosshairChk,
 		widget.NewLabel("File:"), fileLabel,
 	)
 	// charts stacked vertically with scroll for future additions
 	// ensure reasonable minimum heights for readability
 	state.speedImgCanvas.SetMinSize(fyne.NewSize(900, 320))
 	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(900, 320))
+	// overlays for crosshair
+	state.speedOverlay = newCrosshairOverlay(state, true)
+	state.ttfbOverlay = newCrosshairOverlay(state, false)
 	chartsColumn := container.NewVBox(
-		state.speedImgCanvas,
+		container.NewStack(state.speedImgCanvas, state.speedOverlay),
 		widget.NewSeparator(),
-		state.ttfbImgCanvas,
+		container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay),
 	)
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
@@ -396,6 +417,28 @@ func main() {
 	}
 	ipv4Chk.OnChanged = func(b bool) { state.showIPv4 = b; savePrefs(state); updateColumnVisibility(state); redrawCharts(state) }
 	ipv6Chk.OnChanged = func(b bool) { state.showIPv6 = b; savePrefs(state); updateColumnVisibility(state); redrawCharts(state) }
+	crosshairChk.OnChanged = func(b bool) {
+		state.crosshairEnabled = b
+		savePrefs(state)
+		if state.speedOverlay != nil {
+			state.speedOverlay.enabled = b
+			state.speedOverlay.Refresh()
+		}
+		if state.ttfbOverlay != nil {
+			state.ttfbOverlay.enabled = b
+			state.ttfbOverlay.Refresh()
+		}
+		if !b { // close popups
+			if state.lastSpeedPopup != nil {
+				state.lastSpeedPopup.Hide()
+				state.lastSpeedPopup = nil
+			}
+			if state.lastTTFBPopup != nil {
+				state.lastTTFBPopup.Hide()
+				state.lastTTFBPopup = nil
+			}
+		}
+	}
 
 	// menus, prefs, initial load
 	buildMenus(state, fileLabel)
@@ -404,6 +447,16 @@ func main() {
 	overallChk.SetChecked(state.showOverall)
 	ipv4Chk.SetChecked(state.showIPv4)
 	ipv6Chk.SetChecked(state.showIPv6)
+	crosshairChk.SetChecked(state.crosshairEnabled)
+	// Ensure overlays reflect current preference immediately
+	if state.speedOverlay != nil {
+		state.speedOverlay.enabled = state.crosshairEnabled
+		state.speedOverlay.Refresh()
+	}
+	if state.ttfbOverlay != nil {
+		state.ttfbOverlay.enabled = state.crosshairEnabled
+		state.ttfbOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -616,9 +669,9 @@ func renderSpeedChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorAlternateGray, StrokeWidth: 2.0, StrokeDashArray: []float64{5, 3}}})
+			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorAlternateGray, StrokeWidth: 2.0, StrokeDashArray: []float64{5, 3}}})
+			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
 		}
 	}
 	if state.showIPv4 {
@@ -641,9 +694,9 @@ func renderSpeedChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorBlue, StrokeWidth: 2.0}})
+			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: pointStyle(chart.ColorBlue)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorBlue, StrokeWidth: 2.0}})
+			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorBlue)})
 		}
 	}
 	if state.showIPv6 {
@@ -666,9 +719,9 @@ func renderSpeedChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorGreen, StrokeWidth: 2.0}})
+			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: pointStyle(chart.ColorGreen)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorGreen, StrokeWidth: 2.0}})
+			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorGreen)})
 		}
 	}
 
@@ -744,9 +797,9 @@ func renderTTFBChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorAlternateGray, StrokeWidth: 2.0, StrokeDashArray: []float64{5, 3}}})
+			series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorAlternateGray, StrokeWidth: 2.0, StrokeDashArray: []float64{5, 3}}})
+			series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorAlternateGray)})
 		}
 	}
 	if state.showIPv4 {
@@ -769,9 +822,9 @@ func renderTTFBChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorBlue, StrokeWidth: 2.0}})
+			series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: pointStyle(chart.ColorBlue)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorBlue, StrokeWidth: 2.0}})
+			series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorBlue)})
 		}
 	}
 	if state.showIPv6 {
@@ -794,9 +847,9 @@ func renderTTFBChart(state *uiState) image.Image {
 			}
 		}
 		if timeMode {
-			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorGreen, StrokeWidth: 2.0}})
+			series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: pointStyle(chart.ColorGreen)})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorGreen, StrokeWidth: 2.0}})
+			series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: pointStyle(chart.ColorGreen)})
 		}
 	}
 
@@ -1128,6 +1181,7 @@ func savePrefs(state *uiState) {
 	prefs.SetString("xAxisMode", state.xAxisMode)
 	prefs.SetString("yScaleMode", state.yScaleMode)
 	prefs.SetString("speedUnit", state.speedUnit)
+	prefs.SetBool("crosshair", state.crosshairEnabled)
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, xAxis *widget.Select, yScale *widget.Select, tabs *container.AppTabs, speedUnitSel *widget.Select) {
@@ -1194,6 +1248,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	if speedUnitSel != nil {
 		speedUnitSel.Selected = state.speedUnit
 	}
+	state.crosshairEnabled = prefs.BoolWithFallback("crosshair", state.crosshairEnabled)
 	if tabs != nil {
 		idx := prefs.IntWithFallback("selectedTabIndex", 0)
 		if idx >= 0 && idx < len(tabs.Items) {
@@ -1252,3 +1307,206 @@ func updateColumnVisibility(state *uiState) {
 	}
 	state.table.Refresh()
 }
+
+// crosshairOverlay draws a simple crosshair on top of a chart image when enabled.
+// It tracks mouse position and shows a small label near the cursor with the pixel coordinates.
+type crosshairOverlay struct {
+	widget.BaseWidget
+	state   *uiState
+	enabled bool
+	isSpeed bool // true for speed chart, false for TTFB
+	mouse   fyne.Position
+}
+
+func newCrosshairOverlay(state *uiState, isSpeed bool) *crosshairOverlay {
+	c := &crosshairOverlay{state: state, enabled: state != nil && state.crosshairEnabled, isSpeed: isSpeed}
+	c.ExtendBaseWidget(c)
+	return c
+}
+
+func (c *crosshairOverlay) CreateRenderer() fyne.WidgetRenderer {
+	// background to ensure full hit-area for hover events
+	bg := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 0})
+	lineV := canvas.NewLine(color.RGBA{R: 200, G: 200, B: 200, A: 220})
+	lineV.StrokeWidth = 1.0
+	lineH := canvas.NewLine(color.RGBA{R: 200, G: 200, B: 200, A: 220})
+	lineH.StrokeWidth = 1.0
+	dot := canvas.NewCircle(color.RGBA{R: 240, G: 240, B: 240, A: 220})
+	dot.StrokeColor = color.RGBA{R: 0, G: 0, B: 0, A: 0}
+	dot.StrokeWidth = 0
+	txt := canvas.NewText("", color.White)
+	txt.Alignment = fyne.TextAlignLeading
+	txt.TextSize = 12
+	labelBG := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 170})
+	objs := []fyne.CanvasObject{bg, lineV, lineH, dot, labelBG, txt}
+	r := &crosshairRenderer{c: c, bg: bg, lineV: lineV, lineH: lineH, dot: dot, labelBG: labelBG, txt: txt, objs: objs}
+	return r
+}
+
+type crosshairRenderer struct {
+	c       *crosshairOverlay
+	bg      *canvas.Rectangle
+	lineV   *canvas.Line
+	lineH   *canvas.Line
+	dot     *canvas.Circle
+	labelBG *canvas.Rectangle
+	txt     *canvas.Text
+	objs    []fyne.CanvasObject
+}
+
+func (r *crosshairRenderer) Destroy() {}
+func (r *crosshairRenderer) Layout(size fyne.Size) {
+	if r.c == nil {
+		return
+	}
+	if r.bg != nil {
+		r.bg.Resize(size)
+		r.bg.Move(fyne.NewPos(0, 0))
+	}
+	if !r.c.enabled {
+		// move lines out of view
+		r.lineV.Position1 = fyne.NewPos(-10, -10)
+		r.lineV.Position2 = fyne.NewPos(-10, -10)
+		r.lineH.Position1 = fyne.NewPos(-10, -10)
+		r.lineH.Position2 = fyne.NewPos(-10, -10)
+		r.dot.Move(fyne.NewPos(-10, -10))
+		r.txt.Move(fyne.NewPos(-1000, -1000))
+		return
+	}
+	x := r.c.mouse.X
+	y := r.c.mouse.Y
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x > size.Width {
+		x = size.Width
+	}
+	if y > size.Height {
+		y = size.Height
+	}
+	// vertical line
+	r.lineV.Position1 = fyne.NewPos(x, 0)
+	r.lineV.Position2 = fyne.NewPos(x, size.Height)
+	// horizontal line
+	r.lineH.Position1 = fyne.NewPos(0, y)
+	r.lineH.Position2 = fyne.NewPos(size.Width, y)
+	// dot at intersection
+	r.dot.Resize(fyne.NewSize(6, 6))
+	r.dot.Move(fyne.NewPos(x-3, y-3))
+	// Determine nearest data index and show values
+	rows := filteredSummaries(r.c.state)
+	n := len(rows)
+	if n > 0 && size.Width > 0 {
+		// map x in [0,width] -> idx in [0,n-1]
+		fx := float64(x) / float64(size.Width)
+		idx := int(math.Round(fx * float64(n-1)))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= n {
+			idx = n - 1
+		}
+		bs := rows[idx]
+		// X label by mode
+		var xLabel string
+		switch r.c.state.xAxisMode {
+		case "run_tag":
+			xLabel = bs.RunTag
+		case "time":
+			t := parseRunTagTime(bs.RunTag)
+			if !t.IsZero() {
+				xLabel = t.Format("01-02 15:04:05")
+			} else {
+				xLabel = bs.RunTag
+			}
+		default:
+			xLabel = fmt.Sprintf("Batch %d", idx+1)
+		}
+		if r.c.isSpeed {
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			var lines []string
+			lines = append(lines, xLabel)
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.1f %s", bs.AvgSpeed*factor, unit))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.1f %s", bs.IPv4.AvgSpeed*factor, unit))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit))
+			}
+			r.txt.Text = strings.Join(lines, "\n")
+		} else {
+			var lines []string
+			lines = append(lines, xLabel)
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTTFB))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTTFB))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB))
+			}
+			r.txt.Text = strings.Join(lines, "\n")
+		}
+	} else {
+		r.txt.Text = ""
+	}
+	r.txt.Refresh()
+	// draw a semi-transparent background to improve readability
+	pad := float32(6)
+	ts := r.txt.MinSize()
+	bgW := ts.Width + 2*pad
+	bgH := ts.Height + 2*pad
+	tx, ty := x+8, y+8
+	if tx+bgW > size.Width {
+		tx = size.Width - bgW
+	}
+	if ty+bgH > size.Height {
+		ty = size.Height - bgH
+	}
+	if r.txt.Text == "" {
+		r.labelBG.Resize(fyne.NewSize(0, 0))
+		r.labelBG.Move(fyne.NewPos(-1000, -1000))
+		r.txt.Move(fyne.NewPos(-1000, -1000))
+	} else {
+		r.labelBG.Resize(fyne.NewSize(bgW, bgH))
+		r.labelBG.Move(fyne.NewPos(tx, ty))
+		r.txt.Move(fyne.NewPos(tx+pad, ty+pad))
+	}
+}
+func (r *crosshairRenderer) MinSize() fyne.Size           { return fyne.NewSize(10, 10) }
+func (r *crosshairRenderer) Objects() []fyne.CanvasObject { return r.objs }
+func (r *crosshairRenderer) Refresh() {
+	// Recompute positions based on latest mouse and enabled state
+	r.Layout(r.c.Size())
+	// Refresh primitives
+	if r.bg != nil {
+		r.bg.Refresh()
+	}
+	r.lineV.Refresh()
+	r.lineH.Refresh()
+	r.dot.Refresh()
+	if r.labelBG != nil {
+		r.labelBG.Refresh()
+	}
+	r.txt.Refresh()
+}
+
+// Implement mouse movement handling
+func (c *crosshairOverlay) MouseMoved(ev *desktop.MouseEvent) {
+	if !c.enabled {
+		return
+	}
+	c.mouse = ev.Position
+	c.Refresh()
+}
+func (c *crosshairOverlay) MouseIn(ev *desktop.MouseEvent) { /* no-op */ }
+func (c *crosshairOverlay) MouseOut()                      { /* keep last pos */ }
+
+// Assert that crosshairOverlay implements desktop.Hoverable
+var _ desktop.Hoverable = (*crosshairOverlay)(nil)
