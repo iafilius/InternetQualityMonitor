@@ -1060,10 +1060,22 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		state.ttfbTailRatioOverlay.enabled = state.crosshairEnabled
 		state.ttfbTailRatioOverlay.Refresh()
 	}
-	if state.speedDeltaPctOverlay != nil { state.speedDeltaPctOverlay.enabled = state.crosshairEnabled; state.speedDeltaPctOverlay.Refresh() }
-	if state.ttfbDeltaPctOverlay != nil { state.ttfbDeltaPctOverlay.enabled = state.crosshairEnabled; state.ttfbDeltaPctOverlay.Refresh() }
-	if state.slaSpeedDeltaOverlay != nil { state.slaSpeedDeltaOverlay.enabled = state.crosshairEnabled; state.slaSpeedDeltaOverlay.Refresh() }
-	if state.slaTTFBDeltaOverlay != nil { state.slaTTFBDeltaOverlay.enabled = state.crosshairEnabled; state.slaTTFBDeltaOverlay.Refresh() }
+	if state.speedDeltaPctOverlay != nil {
+		state.speedDeltaPctOverlay.enabled = state.crosshairEnabled
+		state.speedDeltaPctOverlay.Refresh()
+	}
+	if state.ttfbDeltaPctOverlay != nil {
+		state.ttfbDeltaPctOverlay.enabled = state.crosshairEnabled
+		state.ttfbDeltaPctOverlay.Refresh()
+	}
+	if state.slaSpeedDeltaOverlay != nil {
+		state.slaSpeedDeltaOverlay.enabled = state.crosshairEnabled
+		state.slaSpeedDeltaOverlay.Refresh()
+	}
+	if state.slaTTFBDeltaOverlay != nil {
+		state.slaTTFBDeltaOverlay.enabled = state.crosshairEnabled
+		state.slaTTFBDeltaOverlay.Refresh()
+	}
 	if state.speedDeltaOverlay != nil {
 		state.speedDeltaOverlay.enabled = state.crosshairEnabled
 		state.speedDeltaOverlay.Refresh()
@@ -1260,7 +1272,7 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 		opts = append(opts, state.situations...)
 		state.situationSelect.Options = opts
 		fmt.Printf("[viewer] situations available: %v\n", opts)
-	// Default to All unless a specific situation was previously chosen
+		// Default to All unless a specific situation was previously chosen
 		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
 			state.situation = "All"
 			state.initializing = true
@@ -1565,7 +1577,9 @@ func redrawCharts(state *uiState) {
 			cw, chh := chartSize(state)
 			state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.speedDeltaPctImgCanvas.Refresh()
-			if state.speedDeltaPctOverlay != nil { state.speedDeltaPctOverlay.Refresh() }
+			if state.speedDeltaPctOverlay != nil {
+				state.speedDeltaPctOverlay.Refresh()
+			}
 		}
 	}
 	// Family Delta – TTFB %
@@ -1576,7 +1590,9 @@ func redrawCharts(state *uiState) {
 			cw, chh := chartSize(state)
 			state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.ttfbDeltaPctImgCanvas.Refresh()
-			if state.ttfbDeltaPctOverlay != nil { state.ttfbDeltaPctOverlay.Refresh() }
+			if state.ttfbDeltaPctOverlay != nil {
+				state.ttfbDeltaPctOverlay.Refresh()
+			}
 		}
 	}
 	// SLA Compliance – Speed
@@ -1613,7 +1629,9 @@ func redrawCharts(state *uiState) {
 			cw, chh := chartSize(state)
 			state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.slaSpeedDeltaImgCanvas.Refresh()
-			if state.slaSpeedDeltaOverlay != nil { state.slaSpeedDeltaOverlay.Refresh() }
+			if state.slaSpeedDeltaOverlay != nil {
+				state.slaSpeedDeltaOverlay.Refresh()
+			}
 		}
 	}
 	// SLA Compliance Delta – TTFB
@@ -1624,7 +1642,9 @@ func redrawCharts(state *uiState) {
 			cw, chh := chartSize(state)
 			state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.slaTTFBDeltaImgCanvas.Refresh()
-			if state.slaTTFBDeltaOverlay != nil { state.slaTTFBDeltaOverlay.Refresh() }
+			if state.slaTTFBDeltaOverlay != nil {
+				state.slaTTFBDeltaOverlay.Refresh()
+			}
 		}
 	}
 	// TTFB P95−P50 Gap (ms)
@@ -4033,8 +4053,12 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 		}
 		v := (r.IPv6.AvgSpeed - r.IPv4.AvgSpeed) / r.IPv4.AvgSpeed * 100.0
 		ys[i] = v
-		if v < minY { minY = v }
-		if v > maxY { maxY = v }
+		if v < minY {
+			minY = v
+		}
+		if v > maxY {
+			maxY = v
+		}
 	}
 	st := pointStyle(chart.ColorRed)
 	var series chart.Series
@@ -4061,114 +4085,303 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 	if haveY {
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		if !state.useRelative {
-			if nMin > 0 { nMin = 0 }
-			if nMax < 0 { nMax = 0 }
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
 		}
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 6)
 	}
 	padBottom := 28
-	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
-	if state.showHints { padBottom += 18 }
-	ch := chart.Chart{Title: "Family Delta – Speed % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
-	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
-	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
-	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Positive % means IPv6 is faster vs IPv4.") }
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Family Delta – Speed % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive % means IPv6 is faster vs IPv4.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderFamilyDeltaTTFBPctChart plots percent delta: (IPv4−IPv6)/IPv6 * 100 (positive = IPv6 lower/better latency)
 func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
-	if len(rows) == 0 { return blank(800, 320) }
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
 	minY, maxY := math.MaxFloat64, -math.MaxFloat64
 	for i, r := range rows {
 		if r.IPv4 == nil || r.IPv6 == nil || r.IPv6.AvgTTFB == 0 {
-			ys[i] = math.NaN(); continue
+			ys[i] = math.NaN()
+			continue
 		}
 		v := (r.IPv4.AvgTTFB - r.IPv6.AvgTTFB) / r.IPv6.AvgTTFB * 100.0
 		ys[i] = v
-		if v < minY { minY = v }
-		if v > maxY { maxY = v }
+		if v < minY {
+			minY = v
+		}
+		if v > maxY {
+			maxY = v
+		}
 	}
 	st := pointStyle(chart.ColorBlue)
 	var series chart.Series
-	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6 vs IPv4 %", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6 vs IPv4 %", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6 vs IPv4 %", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6 vs IPv4 %", XValues:xs, YValues:ys, Style:st} } }
-	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv6 vs IPv4 %", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv6 vs IPv4 %", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
-	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
-	ch := chart.Chart{Title: "Family Delta – TTFB % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
-	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
-	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
-	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Positive % means IPv6 has lower (better) TTFB.") }
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Family Delta – TTFB % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive % means IPv6 has lower (better) TTFB.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderSLASpeedDeltaChart computes IPv6−IPv4 delta in percentage points using configured threshold
 func renderSLASpeedDeltaChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
-	if len(rows) == 0 { return blank(800, 320) }
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
 	minY, maxY := math.MaxFloat64, -math.MaxFloat64
 	for i, r := range rows {
-		if r.IPv4 == nil || r.IPv6 == nil { ys[i] = math.NaN(); continue }
-		v4 := estimateCompliance(map[int]float64{50:r.IPv4.AvgP50Speed,90:r.IPv4.AvgP90Speed,95:r.IPv4.AvgP95Speed,99:r.IPv4.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
-		v6 := estimateCompliance(map[int]float64{50:r.IPv6.AvgP50Speed,90:r.IPv6.AvgP90Speed,95:r.IPv6.AvgP95Speed,99:r.IPv6.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
+		if r.IPv4 == nil || r.IPv6 == nil {
+			ys[i] = math.NaN()
+			continue
+		}
+		v4 := estimateCompliance(map[int]float64{50: r.IPv4.AvgP50Speed, 90: r.IPv4.AvgP90Speed, 95: r.IPv4.AvgP95Speed, 99: r.IPv4.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
+		v6 := estimateCompliance(map[int]float64{50: r.IPv6.AvgP50Speed, 90: r.IPv6.AvgP90Speed, 95: r.IPv6.AvgP95Speed, 99: r.IPv6.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
 		val := v6 - v4
 		ys[i] = val
-		if val < minY { minY = val }
-		if val > maxY { maxY = val }
+		if val < minY {
+			minY = val
+		}
+		if val > maxY {
+			maxY = val
+		}
 	}
 	st := pointStyle(chart.ColorRed)
 	var series chart.Series
-	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:xs, YValues:ys, Style:st} } }
-	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv6−IPv4 pp", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv6−IPv4 pp", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
-	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
-	ch := chart.Chart{Title: "SLA Compliance Delta – Speed (pp)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
-	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
-	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
-	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.") }
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "SLA Compliance Delta – Speed (pp)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderSLATTFBDeltaChart computes IPv6−IPv4 delta in percentage points using configured threshold
 func renderSLATTFBDeltaChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
-	if len(rows) == 0 { return blank(800, 320) }
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
 	minY, maxY := math.MaxFloat64, -math.MaxFloat64
 	for i, r := range rows {
-		if r.IPv4 == nil || r.IPv6 == nil { ys[i] = math.NaN(); continue }
-		v4 := estimateCompliance(map[int]float64{50:r.IPv4.AvgP50TTFBMs,90:r.IPv4.AvgP90TTFBMs,95:r.IPv4.AvgP95TTFBMs,99:r.IPv4.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
-		v6 := estimateCompliance(map[int]float64{50:r.IPv6.AvgP50TTFBMs,90:r.IPv6.AvgP90TTFBMs,95:r.IPv6.AvgP95TTFBMs,99:r.IPv6.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
+		if r.IPv4 == nil || r.IPv6 == nil {
+			ys[i] = math.NaN()
+			continue
+		}
+		v4 := estimateCompliance(map[int]float64{50: r.IPv4.AvgP50TTFBMs, 90: r.IPv4.AvgP90TTFBMs, 95: r.IPv4.AvgP95TTFBMs, 99: r.IPv4.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
+		v6 := estimateCompliance(map[int]float64{50: r.IPv6.AvgP50TTFBMs, 90: r.IPv6.AvgP90TTFBMs, 95: r.IPv6.AvgP95TTFBMs, 99: r.IPv6.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
 		val := v6 - v4
 		ys[i] = val
-		if val < minY { minY = val }
-		if val > maxY { maxY = val }
+		if val < minY {
+			minY = val
+		}
+		if val > maxY {
+			maxY = val
+		}
 	}
 	st := pointStyle(chart.ColorBlue)
 	var series chart.Series
-	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:xs, YValues:ys, Style:st} }
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv6−IPv4 pp", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv6−IPv4 pp", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
+		}
 	}
-	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
-	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
-	ch := chart.Chart{Title: "SLA Compliance Delta – TTFB (pp)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
-	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
-	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
-	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.") }
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "SLA Compliance Delta – TTFB (pp)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
