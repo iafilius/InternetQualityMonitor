@@ -498,19 +498,36 @@ func main() {
 	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 
-	// Help text for charts
-	helpSpeed := "Transfer speed per batch (average/IPv4/IPv6). Use percentiles below to see distribution variability."
-	helpTTFB := "Average Time To First Byte (ms) per batch. Reflects latency before payload begins. High values indicate slow setup (DNS/TLS) or backend delay."
-	helpTTFBPct := "TTFB Percentiles (ms). P50/P90/P95/P99 summarize latency distribution. Expect P99 ≥ P50. Wide gaps reveal tail latency spikes."
-	helpErr := "Error Rate per batch (Overall/IPv4/IPv6). Percentage of requests with errors."
-	helpJitter := "Jitter (%): mean absolute relative variation between request speeds in a batch. Higher is more erratic."
-	helpCoV := "Coefficient of Variation (%): stdev/mean of speeds. Another measure of variability; higher means less consistent."
-	helpCache := "Cache Hit Rate (%): fraction of requests served from a cache (heuristics). High values can mask origin latency."
-	helpProxy := "Proxy Suspected Rate (%): fraction of requests that appear to traverse a proxy (heuristics)."
-	helpWarm := "Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches along the path."
-	helpPlCount := "Plateau Count: average number of intra-transfer speed plateaus per batch. More plateaus can indicate buffering or flow control issues."
-	helpPlLongest := "Longest Plateau (ms): length of the longest detected plateau in a transfer. Long values can indicate stalls."
-	helpPlStable := "Plateau Stable Rate (%): fraction of time in stable plateaus during transfer. Higher can mean smoother throughput."
+	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
+	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in the title and watermark.\n"
+	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
+- Useful for tracking overall performance trends over time or across runs.
+- Pair with Speed Percentiles to understand variability not visible in averages.
+References: https://en.wikipedia.org/wiki/Throughput` + axesTip
+	helpTTFB := `Average Time To First Byte (TTFB, in ms) for all requests in each batch (Overall/IPv4/IPv6).
+- Captures latency before payload begins (DNS, TCP, TLS, server think time). Spikes often indicate setup or backend delays.
+- Use TTFB Percentiles to see tail latency beyond the average (rare but impactful slow requests).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte"
+	helpTTFBPct := `Percentiles of TTFB (ms): P50 (median), P90, P95, P99 per batch.
+- Expect P99 ≥ P95 ≥ P90 ≥ P50 by definition; bigger gaps mean heavier tail latency (spikes/outliers).
+- Investigate large P99 when the average looks fine; tail latency hurts user experience and systems throughput.
+References: https://en.wikipedia.org/wiki/Percentile , https://research.google/pubs/pub40801/` + axesTip
+	helpErr := `Error Rate per batch (Overall/IPv4/IPv6) as a percentage of lines with errors (TCP/HTTP failures).
+- Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip
+	helpJitter := `Jitter (%): mean absolute relative variation between consecutive sampled speeds within a transfer.
+- Higher jitter means more erratic throughput (bursts, stalls), often due to contention or queueing.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Jitter"
+	helpCoV := `Coefficient of Variation (%): standard deviation / mean of speeds.
+- Another variability measure; higher values indicate less consistent throughput across samples.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Coefficient_of_variation"
+	helpCache := `Cache Hit Rate (%): fraction of requests likely served from intermediary caches (heuristics).
+- High cache rates can hide origin latency; useful context when TTFB or speed looks unexpectedly good.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching"
+	helpProxy := `Proxy Suspected Rate (%): fraction of requests that appear to traverse enterprise/CDN proxies based on header/IP heuristics.
+- Proxies can add overhead or improve cache locality; correlate with TTFB and speed changes.` + axesTip
+	helpWarm := `Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches or connection reuse along the path.` + axesTip
+	helpPlCount := `Plateau Count: average number of intra-transfer ‘stable’ speed segments detected per batch.
+- Many plateaus can indicate buffering/flow control behavior or route/policy changes mid-transfer.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
+	helpPlLongest := `Longest Plateau (ms): duration of the longest stable segment in a transfer.
+- Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip
+	helpPlStable := `Plateau Stable Rate (%): fraction of time spent in stable plateaus during a transfer.
+- Higher values often mean smoother throughput (less variability).` + axesTip
 
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
@@ -518,8 +535,8 @@ func main() {
 		widget.NewSeparator(),
 		makeChartSection("TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
 		widget.NewSeparator(),
-		// Percentiles stack wrapper with single title area explaining both blocks
-		makeChartSection("TTFB Percentiles", helpTTFBPct, state.pctlGrid),
+	// Percentiles stack: TTFB (3 panels) followed by Speed (3 panels)
+	makeChartSection("Percentiles (TTFB + Speed)", helpTTFBPct+"\n\nAlso see Speed Percentiles for throughput distribution.", state.pctlGrid),
 		widget.NewSeparator(),
 		makeChartSection("Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
 		widget.NewSeparator(),
@@ -1443,7 +1460,8 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	if state.showHints {
 		img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.")
 	}
-	return img
+	// always watermark with active situation
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderCacheHitRateChart draws CacheHitRatePct per batch (overall/IPv4/IPv6).
@@ -1561,9 +1579,9 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Cache hit rate. Higher can mean content already cached near you.")
+		img = drawHint(img, "Hint: Cache hit rate. Higher can mean content already cached near you.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderProxySuspectedRateChart draws ProxySuspectedRatePct per batch (overall/IPv4/IPv6).
@@ -1681,9 +1699,9 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: How often a proxy is suspected. Spikes can indicate transit via middleboxes.")
+		img = drawHint(img, "Hint: How often a proxy is suspected. Spikes can indicate transit via middleboxes.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderWarmCacheSuspectedRateChart draws WarmCacheSuspectedRatePct per batch (overall/IPv4/IPv6).
@@ -1801,9 +1819,9 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Warm-cache suspected rate. Higher suggests repeated content or prior fetch effects.")
+		img = drawHint(img, "Hint: Warm-cache suspected rate. Higher suggests repeated content or prior fetch effects.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // chartSize computes a chart size based on the current window width so charts use more X-axis space.
@@ -2038,9 +2056,9 @@ func renderSpeedChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Speed trends. Drops may indicate congestion, Wi‑Fi issues, or ISP problems.")
+		img = drawHint(img, "Hint: Speed trends. Drops may indicate congestion, Wi‑Fi issues, or ISP problems.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 func renderTTFBChart(state *uiState) image.Image {
@@ -2243,9 +2261,9 @@ func renderTTFBChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
+		img = drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderErrorRateChart draws error percentage per batch for overall, IPv4, IPv6.
@@ -2378,9 +2396,9 @@ func renderErrorRateChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Error rate per batch (overall and per‑family). Spikes often correlate with outages or auth/firewall issues.")
+		img = drawHint(img, "Hint: Error rate per batch (overall and per‑family). Spikes often correlate with outages or auth/firewall issues.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderJitterChart draws AvgJitterPct per batch for overall, IPv4, IPv6.
@@ -2498,9 +2516,9 @@ func renderJitterChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Jitter measures volatility per batch. Lower is more stable.")
+		img = drawHint(img, "Hint: Jitter measures volatility per batch. Lower is more stable.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderCoVChart draws AvgCoefVariationPct per batch (overall/IPv4/IPv6).
@@ -2617,9 +2635,9 @@ func renderCoVChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: CoV shows relative variability (stddev/mean). Lower is steadier.")
+		img = drawHint(img, "Hint: CoV shows relative variability (stddev/mean). Lower is steadier.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderPlateauCountChart plots AvgPlateauCount per batch.
@@ -2735,9 +2753,9 @@ func renderPlateauCountChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Number of distinct speed plateaus per batch. Fewer can indicate steadier transfer.")
+		img = drawHint(img, "Hint: Number of distinct speed plateaus per batch. Fewer can indicate steadier transfer.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderPlateauLongestChart plots AvgLongestPlateau (ms) per batch.
@@ -2852,9 +2870,9 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Longest plateau duration in ms. Longer plateaus may indicate throttling or buffering.")
+		img = drawHint(img, "Hint: Longest plateau duration in ms. Longer plateaus may indicate throttling or buffering.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // renderPlateauStableChart plots PlateauStableRatePct (percentage) per batch for overall/IPv4/IPv6.
@@ -2973,9 +2991,9 @@ func renderPlateauStableChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Share of lines with stable speed plateau within batch. Higher is steadier.")
+		img = drawHint(img, "Hint: Share of lines with stable speed plateau within batch. Higher is steadier.")
 	}
-	return img
+	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
 }
 
 // buildXAxis constructs X values and axis config based on the selected mode.
@@ -3218,6 +3236,44 @@ func drawHint(img image.Image, text string) image.Image {
 	return rgba
 }
 
+// drawWatermark draws a small bottom-right watermark with the given text.
+func drawWatermark(img image.Image, text string) image.Image {
+	if img == nil || strings.TrimSpace(text) == "" {
+		return img
+	}
+	b := img.Bounds()
+	rgba := image.NewRGBA(b)
+	draw.Draw(rgba, b, img, b.Min, draw.Src)
+	// styling
+	pad := 4
+	face := basicfont.Face7x13
+	// Subtle light gray text, not bold
+	textCol := image.NewUniform(color.RGBA{R: 230, G: 230, B: 230, A: 220})
+	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 120})
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
+	tw := dr.MeasureString(text).Ceil()
+	x := b.Max.X - tw - 8
+	y := b.Max.Y - 6
+	// background
+	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
+	rect := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
+	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
+	// shadow and text
+	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + 1), Y: fixed.I(y + 1)}}
+	drShadow.DrawString(text)
+	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	dr.DrawString(text)
+	return rgba
+}
+
+// activeSituationLabel returns the visible label for the current situation (or "All").
+func activeSituationLabel(state *uiState) string {
+	if state == nil || strings.TrimSpace(state.situation) == "" {
+		return "All"
+	}
+	return state.situation
+}
+
 // drawCaption draws a small caption near the top-left of the image.
 // (caption overlay removed for cleaner look)
 
@@ -3397,7 +3453,7 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Speed percentiles surface variability. Wider gaps (P99>>P50) mean jittery performance.")
 	}
-	return img
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // compareChartSize returns a compact size for side-by-side percentiles charts
