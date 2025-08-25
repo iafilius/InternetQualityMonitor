@@ -75,19 +75,26 @@ type uiState struct {
 	pctlIPv4Img     *canvas.Image
 	pctlIPv6Img     *canvas.Image
 	errImgCanvas    *canvas.Image
+	jitterImgCanvas *canvas.Image
+	covImgCanvas    *canvas.Image
+
+	// overlays for additional charts
+	errOverlay    *crosshairOverlay
+	jitterOverlay *crosshairOverlay
+	covOverlay    *crosshairOverlay
 
 	// containers
 	pctlGrid *fyne.Container
 
 	// crosshair
-	crosshairEnabled bool
-	speedOverlay     *crosshairOverlay
-	ttfbOverlay      *crosshairOverlay
+	crosshairEnabled   bool
+	speedOverlay       *crosshairOverlay
+	ttfbOverlay        *crosshairOverlay
 	pctlOverallOverlay *crosshairOverlay
 	pctlIPv4Overlay    *crosshairOverlay
 	pctlIPv6Overlay    *crosshairOverlay
-	lastSpeedPopup   *widget.PopUp
-	lastTTFBPopup    *widget.PopUp
+	lastSpeedPopup     *widget.PopUp
+	lastTTFBPopup      *widget.PopUp
 
 	// chart hints toggle
 	showHints bool
@@ -399,6 +406,17 @@ func main() {
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errImgCanvas.FillMode = canvas.ImageFillContain
 	state.errImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	// overlay for error rate
+	state.errOverlay = newCrosshairOverlay(state, "error")
+	// jitter & coefficient of variation charts
+	state.jitterImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.jitterImgCanvas.FillMode = canvas.ImageFillContain
+	state.jitterImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.jitterOverlay = newCrosshairOverlay(state, "jitter")
+	state.covImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.covImgCanvas.FillMode = canvas.ImageFillContain
+	state.covImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.covOverlay = newCrosshairOverlay(state, "cov")
 
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
@@ -408,7 +426,11 @@ func main() {
 		widget.NewSeparator(),
 		state.pctlGrid,
 		widget.NewSeparator(),
-		state.errImgCanvas,
+		container.NewStack(state.errImgCanvas, state.errOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.jitterImgCanvas, state.jitterOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.covImgCanvas, state.covOverlay),
 	)
 	// Always show stacked percentiles
 	state.pctlGrid.Show()
@@ -473,7 +495,9 @@ func main() {
 	speedSelect.OnChanged = func(v string) {
 		state.speedUnit = v
 		savePrefs(state)
-		if state.table != nil { state.table.Refresh() }
+		if state.table != nil {
+			state.table.Refresh()
+		}
 		redrawCharts(state)
 	}
 	xAxisSelect.OnChanged = func(v string) {
@@ -518,9 +542,30 @@ func main() {
 			state.ttfbOverlay.enabled = b
 			state.ttfbOverlay.Refresh()
 		}
-		if state.pctlOverallOverlay != nil { state.pctlOverallOverlay.enabled = b; state.pctlOverallOverlay.Refresh() }
-		if state.pctlIPv4Overlay != nil { state.pctlIPv4Overlay.enabled = b; state.pctlIPv4Overlay.Refresh() }
-		if state.pctlIPv6Overlay != nil { state.pctlIPv6Overlay.enabled = b; state.pctlIPv6Overlay.Refresh() }
+		if state.pctlOverallOverlay != nil {
+			state.pctlOverallOverlay.enabled = b
+			state.pctlOverallOverlay.Refresh()
+		}
+		if state.pctlIPv4Overlay != nil {
+			state.pctlIPv4Overlay.enabled = b
+			state.pctlIPv4Overlay.Refresh()
+		}
+		if state.pctlIPv6Overlay != nil {
+			state.pctlIPv6Overlay.enabled = b
+			state.pctlIPv6Overlay.Refresh()
+		}
+		if state.errOverlay != nil {
+			state.errOverlay.enabled = b
+			state.errOverlay.Refresh()
+		}
+		if state.jitterOverlay != nil {
+			state.jitterOverlay.enabled = b
+			state.jitterOverlay.Refresh()
+		}
+		if state.covOverlay != nil {
+			state.covOverlay.enabled = b
+			state.covOverlay.Refresh()
+		}
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -551,6 +596,18 @@ func main() {
 	if state.ttfbOverlay != nil {
 		state.ttfbOverlay.enabled = state.crosshairEnabled
 		state.ttfbOverlay.Refresh()
+	}
+	if state.errOverlay != nil {
+		state.errOverlay.enabled = state.crosshairEnabled
+		state.errOverlay.Refresh()
+	}
+	if state.jitterOverlay != nil {
+		state.jitterOverlay.enabled = state.crosshairEnabled
+		state.jitterOverlay.Refresh()
+	}
+	if state.covOverlay != nil {
+		state.covOverlay.enabled = state.crosshairEnabled
+		state.covOverlay.Refresh()
 	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
@@ -583,6 +640,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportPctlIPv4 := fyne.NewMenuItem("Export Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
 	exportPctlIPv6 := fyne.NewMenuItem("Export Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
+	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
+	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
 	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
 	fileMenu := fyne.NewMenu("File",
 		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
@@ -594,6 +653,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportPctlIPv4,
 		exportPctlIPv6,
 		exportErrors,
+		exportJitter,
+		exportCoV,
 		fyne.NewMenuItemSeparator(),
 		exportAll,
 		fyne.NewMenuItemSeparator(),
@@ -779,9 +840,13 @@ func redrawCharts(state *uiState) {
 				state.pctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 				state.pctlOverallImg.Show()
 				state.pctlOverallImg.Refresh()
-				if state.pctlOverallOverlay != nil { state.pctlOverallOverlay.Refresh() }
+				if state.pctlOverallOverlay != nil {
+					state.pctlOverallOverlay.Refresh()
+				}
 			}
-		} else { state.pctlOverallImg.Hide() }
+		} else {
+			state.pctlOverallImg.Hide()
+		}
 	}
 	if state.pctlIPv4Img != nil {
 		if state.showIPv4 {
@@ -792,9 +857,13 @@ func redrawCharts(state *uiState) {
 				state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 				state.pctlIPv4Img.Show()
 				state.pctlIPv4Img.Refresh()
-				if state.pctlIPv4Overlay != nil { state.pctlIPv4Overlay.Refresh() }
+				if state.pctlIPv4Overlay != nil {
+					state.pctlIPv4Overlay.Refresh()
+				}
 			}
-		} else { state.pctlIPv4Img.Hide() }
+		} else {
+			state.pctlIPv4Img.Hide()
+		}
 	}
 	if state.pctlIPv6Img != nil {
 		if state.showIPv6 {
@@ -805,11 +874,17 @@ func redrawCharts(state *uiState) {
 				state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 				state.pctlIPv6Img.Show()
 				state.pctlIPv6Img.Refresh()
-				if state.pctlIPv6Overlay != nil { state.pctlIPv6Overlay.Refresh() }
+				if state.pctlIPv6Overlay != nil {
+					state.pctlIPv6Overlay.Refresh()
+				}
 			}
-		} else { state.pctlIPv6Img.Hide() }
+		} else {
+			state.pctlIPv6Img.Hide()
+		}
 	}
-	if state.pctlGrid != nil { state.pctlGrid.Refresh() }
+	if state.pctlGrid != nil {
+		state.pctlGrid.Refresh()
+	}
 	// Error Rate chart
 	erImg := renderErrorRateChart(state)
 	if erImg != nil {
@@ -820,6 +895,39 @@ func redrawCharts(state *uiState) {
 		if state.errImgCanvas != nil {
 			state.errImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.errImgCanvas.Refresh()
+		}
+		if state.errOverlay != nil {
+			state.errOverlay.Refresh()
+		}
+	}
+	// Jitter chart
+	jitImg := renderJitterChart(state)
+	if jitImg != nil {
+		if state.jitterImgCanvas != nil {
+			state.jitterImgCanvas.Image = jitImg
+		}
+		cw, chh := chartSize(state)
+		if state.jitterImgCanvas != nil {
+			state.jitterImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.jitterImgCanvas.Refresh()
+		}
+		if state.jitterOverlay != nil {
+			state.jitterOverlay.Refresh()
+		}
+	}
+	// Coefficient of Variation chart
+	covImg := renderCoVChart(state)
+	if covImg != nil {
+		if state.covImgCanvas != nil {
+			state.covImgCanvas.Image = covImg
+		}
+		cw, chh := chartSize(state)
+		if state.covImgCanvas != nil {
+			state.covImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.covImgCanvas.Refresh()
+		}
+		if state.covOverlay != nil {
+			state.covOverlay.Refresh()
 		}
 	}
 }
@@ -1325,13 +1433,17 @@ func renderErrorRateChart(state *uiState) image.Image {
 	}
 	if state.showIPv4 {
 		add("IPv4", func(b analysis.BatchSummary) (int, int) {
-			if b.IPv4 == nil { return 0, 0 }
+			if b.IPv4 == nil {
+				return 0, 0
+			}
 			return b.IPv4.ErrorLines, b.IPv4.Lines
 		}, chart.ColorBlue)
 	}
 	if state.showIPv6 {
 		add("IPv6", func(b analysis.BatchSummary) (int, int) {
-			if b.IPv6 == nil { return 0, 0 }
+			if b.IPv6 == nil {
+				return 0, 0
+			}
 			return b.IPv6.ErrorLines, b.IPv6.Lines
 		}, chart.ColorGreen)
 	}
@@ -1340,16 +1452,22 @@ func renderErrorRateChart(state *uiState) image.Image {
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
-		if maxY <= minY { maxY = minY + 1 }
+		if maxY <= minY {
+			maxY = minY + 1
+		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && haveY {
 		// Absolute: clamp 0..100
-		if maxY < 1 { maxY = 1 }
-		if maxY > 100 { maxY = 100 }
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
-		yTicks = []chart.Tick{{Value:0, Label:"0"}, {Value:25, Label:"25"}, {Value:50, Label:"50"}, {Value:75, Label:"75"}, {Value:100, Label:"100"}}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	}
 	padBottom := 28
 	switch state.xAxisMode {
@@ -1387,6 +1505,245 @@ func renderErrorRateChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		return drawHint(img, "Hint: Error rate per batch (overall and per‑family). Spikes often correlate with outages or auth/firewall issues.")
+	}
+	return img
+}
+
+// renderJitterChart draws AvgJitterPct per batch for overall, IPv4, IPv6.
+func renderJitterChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgJitterPct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgJitterPct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgJitterPct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Jitter (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] jitter chart render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] jitter chart decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Jitter measures volatility per batch. Lower is more stable.")
+	}
+	return img
+}
+
+// renderCoVChart draws AvgCoefVariationPct per batch (overall/IPv4/IPv6).
+func renderCoVChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgCoefVariationPct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgCoefVariationPct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgCoefVariationPct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 200 {
+			maxY = 200
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: maxY}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Coefficient of Variation (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] cov chart render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] cov chart decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: CoV shows relative variability (stddev/mean). Lower is steadier.")
 	}
 	return img
 }
@@ -1623,7 +1980,7 @@ func drawHint(img image.Image, text string) image.Image {
 	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
 	// Draw shadow then text for better contrast on varying backgrounds
 	// Shadow
-	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x+1), Y: fixed.I(y+1)}}
+	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + 1), Y: fixed.I(y + 1)}}
 	drShadow.DrawString(text)
 	// Main text
 	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
@@ -1634,14 +1991,13 @@ func drawHint(img image.Image, text string) image.Image {
 // drawCaption draws a small caption near the top-left of the image.
 // (caption overlay removed for cleaner look)
 
-
 // renderPercentilesChartWithFamily draws a compact percentiles chart for the given family (overall/ipv4/ipv6).
 func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := compareChartSize(state)
-	return blank(w, h)
+		w, h := compareChartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -1658,12 +2014,18 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 				continue
 			}
 			ys[i] = v
-			if v < minY { minY = v }
-			if v > maxY { maxY = v }
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
 			valid++
 		}
 		st := pointStyle(color)
-		if valid == 1 { st.DotWidth = 6 }
+		if valid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -1686,15 +2048,55 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	fam = strings.ToLower(strings.TrimSpace(fam))
 	switch fam {
 	case "ipv4":
-		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP50Speed }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP90Speed }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP95Speed }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP99Speed }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP50Speed
+		}, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP90Speed
+		}, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP95Speed
+		}, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP99Speed
+		}, chart.ColorRed)
 	case "ipv6":
-		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP50Speed }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP90Speed }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP95Speed }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP99Speed }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP50Speed
+		}, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP90Speed
+		}, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP95Speed
+		}, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP99Speed
+		}, chart.ColorRed)
 	default:
 		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
 		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
@@ -1706,12 +2108,16 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
-		if maxY <= minY { maxY = minY + 1 }
+		if maxY <= minY {
+			maxY = minY + 1
+		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 4)
 	} else if !state.useRelative && haveY {
-		if maxY <= 0 { maxY = 1 }
+		if maxY <= 0 {
+			maxY = 1
+		}
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
@@ -1722,14 +2128,19 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	case "time":
 		padBottom = 48
 	}
-	if state.showHints { padBottom += 18 }
+	if state.showHints {
+		padBottom += 18
+	}
 
 	// Title to match other charts
 	var titlePrefix string
 	switch strings.ToLower(strings.TrimSpace(fam)) {
-	case "ipv4": titlePrefix = "IPv4 "
-	case "ipv6": titlePrefix = "IPv6 "
-	default: titlePrefix = "Overall "
+	case "ipv4":
+		titlePrefix = "IPv4 "
+	case "ipv6":
+		titlePrefix = "IPv6 "
+	default:
+		titlePrefix = "Overall "
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("%sSpeed Percentiles (%s)%s", titlePrefix, unitName, situationSuffix(state)),
@@ -1766,14 +2177,24 @@ func compareChartSize(state *uiState) (int, int) {
 	}
 	sz := state.window.Canvas().Size()
 	totalW := int(sz.Width*0.95) - 12
-	if totalW < 600 { totalW = 600 }
+	if totalW < 600 {
+		totalW = 600
+	}
 	// Three columns with minimal gutters managed by grid; we just target each panel width
 	w := totalW / 3
-	if w < 260 { w = 260 }
-	if w > 520 { w = 520 }
+	if w < 260 {
+		w = 260
+	}
+	if w > 520 {
+		w = 520
+	}
 	h := int(float32(w) * 0.8)
-	if h < 220 { h = 220 }
-	if h > 420 { h = 420 }
+	if h < 220 {
+		h = 220
+	}
+	if h > 420 {
+		h = 420
+	}
 	return w, h
 }
 
@@ -1891,6 +2312,14 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.errImgCanvas.Image)
 		labels = append(labels, "Error Rate")
 	}
+	if state.jitterImgCanvas != nil && state.jitterImgCanvas.Image != nil {
+		imgs = append(imgs, state.jitterImgCanvas.Image)
+		labels = append(labels, "Jitter")
+	}
+	if state.covImgCanvas != nil && state.covImgCanvas.Image != nil {
+		imgs = append(imgs, state.covImgCanvas.Image)
+		labels = append(labels, "Coefficient of Variation")
+	}
 	if len(imgs) == 0 {
 		dialog.ShowInformation("Export All", "No charts to export.", state.window)
 		return
@@ -1900,12 +2329,16 @@ func exportAllChartsCombined(state *uiState) {
 	totalH := 0
 	for _, im := range imgs {
 		b := im.Bounds()
-		if b.Dx() > maxW { maxW = b.Dx() }
+		if b.Dx() > maxW {
+			maxW = b.Dx()
+		}
 		totalH += b.Dy()
 		// add a separator gap between charts
 		totalH += 8
 	}
-	if totalH > 0 { totalH -= 8 }
+	if totalH > 0 {
+		totalH -= 8
+	}
 	if maxW <= 0 || totalH <= 0 {
 		dialog.ShowInformation("Export All", "Charts have no size to export.", state.window)
 		return
@@ -1932,7 +2365,9 @@ func exportAllChartsCombined(state *uiState) {
 	}
 	// Prompt save
 	fs := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
-		if err != nil || wc == nil { return }
+		if err != nil || wc == nil {
+			return
+		}
 		defer wc.Close()
 		_ = png.Encode(wc, out)
 	}, state.window)
@@ -2129,7 +2564,7 @@ type crosshairOverlay struct {
 	widget.BaseWidget
 	state    *uiState
 	enabled  bool
-	mode     string // "speed", "ttfb", "pctl_overall", "pctl_ipv4", "pctl_ipv6"
+	mode     string // "speed", "ttfb", "error", "jitter", "cov", "pctl_overall", "pctl_ipv4", "pctl_ipv6"
 	mouse    fyne.Position
 	hovering bool
 }
@@ -2228,6 +2663,12 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.pctlIPv4Img
 		case "pctl_ipv6":
 			imgCanvas = r.c.state.pctlIPv6Img
+		case "error":
+			imgCanvas = r.c.state.errImgCanvas
+		case "jitter":
+			imgCanvas = r.c.state.jitterImgCanvas
+		case "cov":
+			imgCanvas = r.c.state.covImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -2351,13 +2792,56 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 		switch r.c.mode {
 		case "speed":
 			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
-			if r.c.state.showOverall { lines = append(lines, fmt.Sprintf("Overall: %.1f %s", bs.AvgSpeed*factor, unit)) }
-			if r.c.state.showIPv4 && bs.IPv4 != nil { lines = append(lines, fmt.Sprintf("IPv4: %.1f %s", bs.IPv4.AvgSpeed*factor, unit)) }
-			if r.c.state.showIPv6 && bs.IPv6 != nil { lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit)) }
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.1f %s", bs.AvgSpeed*factor, unit))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.1f %s", bs.IPv4.AvgSpeed*factor, unit))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit))
+			}
 		case "ttfb":
-			if r.c.state.showOverall { lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTTFB)) }
-			if r.c.state.showIPv4 && bs.IPv4 != nil { lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTTFB)) }
-			if r.c.state.showIPv6 && bs.IPv6 != nil { lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB)) }
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTTFB))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTTFB))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB))
+			}
+		case "error":
+			// percentage values
+			if r.c.state.showOverall && bs.Lines > 0 {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", float64(bs.ErrorLines)/float64(bs.Lines)*100.0))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil && bs.IPv4.Lines > 0 {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", float64(bs.IPv4.ErrorLines)/float64(bs.IPv4.Lines)*100.0))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil && bs.IPv6.Lines > 0 {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", float64(bs.IPv6.ErrorLines)/float64(bs.IPv6.Lines)*100.0))
+			}
+		case "jitter":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.AvgJitterPct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.AvgJitterPct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.AvgJitterPct))
+			}
+		case "cov":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.AvgCoefVariationPct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.AvgCoefVariationPct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.AvgCoefVariationPct))
+			}
 		case "pctl_overall":
 			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
 			lines = append(lines, fmt.Sprintf("P50: %.1f %s", bs.AvgP50Speed*factor, unit))
