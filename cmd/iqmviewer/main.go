@@ -74,6 +74,9 @@ type uiState struct {
 	pctlOverallImg     *canvas.Image
 	pctlIPv4Img        *canvas.Image
 	pctlIPv6Img        *canvas.Image
+	tpctlOverallImg    *canvas.Image
+	tpctlIPv4Img       *canvas.Image
+	tpctlIPv6Img       *canvas.Image
 	errImgCanvas       *canvas.Image
 	jitterImgCanvas    *canvas.Image
 	covImgCanvas       *canvas.Image
@@ -105,6 +108,9 @@ type uiState struct {
 	pctlOverallOverlay *crosshairOverlay
 	pctlIPv4Overlay    *crosshairOverlay
 	pctlIPv6Overlay    *crosshairOverlay
+	tpctlOverallOverlay *crosshairOverlay
+	tpctlIPv4Overlay    *crosshairOverlay
+	tpctlIPv6Overlay    *crosshairOverlay
 	lastSpeedPopup     *widget.PopUp
 	lastTTFBPopup      *widget.PopUp
 
@@ -407,6 +413,20 @@ func main() {
 	state.pctlOverallOverlay = newCrosshairOverlay(state, "pctl_overall")
 	state.pctlIPv4Overlay = newCrosshairOverlay(state, "pctl_ipv4")
 	state.pctlIPv6Overlay = newCrosshairOverlay(state, "pctl_ipv6")
+	// TTFB percentile canvases
+	state.tpctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tpctlOverallImg.FillMode = canvas.ImageFillContain
+	state.tpctlIPv4Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tpctlIPv4Img.FillMode = canvas.ImageFillContain
+	state.tpctlIPv6Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tpctlIPv6Img.FillMode = canvas.ImageFillContain
+	state.tpctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	state.tpctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	state.tpctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	// overlays for TTFB percentiles
+	state.tpctlOverallOverlay = newCrosshairOverlay(state, "tpctl_overall")
+	state.tpctlIPv4Overlay = newCrosshairOverlay(state, "tpctl_ipv4")
+	state.tpctlIPv6Overlay = newCrosshairOverlay(state, "tpctl_ipv6")
 	// Vertical stack with separators for clarity; stack images with overlays
 	state.pctlGrid = container.NewVBox(
 		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
@@ -414,6 +434,12 @@ func main() {
 		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
 		widget.NewSeparator(),
 		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
+		widget.NewSeparator(),
+		container.NewStack(state.tpctlOverallImg, state.tpctlOverallOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.tpctlIPv4Img, state.tpctlIPv4Overlay),
+		widget.NewSeparator(),
+		container.NewStack(state.tpctlIPv6Img, state.tpctlIPv6Overlay),
 	)
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errImgCanvas.FillMode = canvas.ImageFillContain
@@ -617,6 +643,18 @@ func main() {
 			state.covOverlay.enabled = b
 			state.covOverlay.Refresh()
 		}
+		if state.tpctlOverallOverlay != nil {
+			state.tpctlOverallOverlay.enabled = b
+			state.tpctlOverallOverlay.Refresh()
+		}
+		if state.tpctlIPv4Overlay != nil {
+			state.tpctlIPv4Overlay.enabled = b
+			state.tpctlIPv4Overlay.Refresh()
+		}
+		if state.tpctlIPv6Overlay != nil {
+			state.tpctlIPv6Overlay.enabled = b
+			state.tpctlIPv6Overlay.Refresh()
+		}
 		if state.plCountOverlay != nil {
 			state.plCountOverlay.enabled = b
 			state.plCountOverlay.Refresh()
@@ -675,6 +713,18 @@ func main() {
 	if state.errOverlay != nil {
 		state.errOverlay.enabled = state.crosshairEnabled
 		state.errOverlay.Refresh()
+	}
+	if state.tpctlOverallOverlay != nil {
+		state.tpctlOverallOverlay.enabled = state.crosshairEnabled
+		state.tpctlOverallOverlay.Refresh()
+	}
+	if state.tpctlIPv4Overlay != nil {
+		state.tpctlIPv4Overlay.enabled = state.crosshairEnabled
+		state.tpctlIPv4Overlay.Refresh()
+	}
+	if state.tpctlIPv6Overlay != nil {
+		state.tpctlIPv6Overlay.enabled = state.crosshairEnabled
+		state.tpctlIPv6Overlay.Refresh()
 	}
 	if state.jitterOverlay != nil {
 		state.jitterOverlay.enabled = state.crosshairEnabled
@@ -738,6 +788,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportPctlOverall := fyne.NewMenuItem("Export Percentiles – Overall…", func() { exportChartPNG(state, state.pctlOverallImg, "percentiles_overall.png") })
 	exportPctlIPv4 := fyne.NewMenuItem("Export Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
 	exportPctlIPv6 := fyne.NewMenuItem("Export Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
+	// TTFB percentiles exports
+	exportTPctlOverall := fyne.NewMenuItem("Export TTFB Percentiles – Overall…", func() { exportChartPNG(state, state.tpctlOverallImg, "ttfb_percentiles_overall.png") })
+	exportTPctlIPv4 := fyne.NewMenuItem("Export TTFB Percentiles – IPv4…", func() { exportChartPNG(state, state.tpctlIPv4Img, "ttfb_percentiles_ipv4.png") })
+	exportTPctlIPv6 := fyne.NewMenuItem("Export TTFB Percentiles – IPv6…", func() { exportChartPNG(state, state.tpctlIPv6Img, "ttfb_percentiles_ipv6.png") })
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
@@ -757,6 +811,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportPctlOverall,
 		exportPctlIPv4,
 		exportPctlIPv6,
+	exportTPctlOverall,
+	exportTPctlIPv4,
+	exportTPctlIPv6,
 		exportErrors,
 		exportJitter,
 		exportCoV,
@@ -996,6 +1053,58 @@ func redrawCharts(state *uiState) {
 	if state.pctlGrid != nil {
 		state.pctlGrid.Refresh()
 	}
+	// TTFB Percentiles chart(s): Overall, IPv4, IPv6
+	if state.tpctlOverallImg != nil {
+		if state.showOverall {
+			img := renderTTFBPercentilesChartWithFamily(state, "overall")
+			if img != nil {
+				state.tpctlOverallImg.Image = img
+				cw, chh := chartSize(state)
+				state.tpctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.tpctlOverallImg.Show()
+				state.tpctlOverallImg.Refresh()
+				if state.tpctlOverallOverlay != nil {
+					state.tpctlOverallOverlay.Refresh()
+				}
+			}
+		} else {
+			state.tpctlOverallImg.Hide()
+		}
+	}
+	if state.tpctlIPv4Img != nil {
+		if state.showIPv4 {
+			img := renderTTFBPercentilesChartWithFamily(state, "ipv4")
+			if img != nil {
+				state.tpctlIPv4Img.Image = img
+				cw, chh := chartSize(state)
+				state.tpctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.tpctlIPv4Img.Show()
+				state.tpctlIPv4Img.Refresh()
+				if state.tpctlIPv4Overlay != nil {
+					state.tpctlIPv4Overlay.Refresh()
+				}
+			}
+		} else {
+			state.tpctlIPv4Img.Hide()
+		}
+	}
+	if state.tpctlIPv6Img != nil {
+		if state.showIPv6 {
+			img := renderTTFBPercentilesChartWithFamily(state, "ipv6")
+			if img != nil {
+				state.tpctlIPv6Img.Image = img
+				cw, chh := chartSize(state)
+				state.tpctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.tpctlIPv6Img.Show()
+				state.tpctlIPv6Img.Refresh()
+				if state.tpctlIPv6Overlay != nil {
+					state.tpctlIPv6Overlay.Refresh()
+				}
+			}
+		} else {
+			state.tpctlIPv6Img.Hide()
+		}
+	}
 	// Error Rate chart
 	erImg := renderErrorRateChart(state)
 	if erImg != nil {
@@ -1131,6 +1240,112 @@ func redrawCharts(state *uiState) {
 			}
 		}
 	}
+}
+// renderTTFBPercentilesChartWithFamily draws TTFB percentiles (ms) for the given family (overall/ipv4/ipv6).
+func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := compareChartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY { minY = v }
+			if v > maxY { maxY = v }
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 { st.DotWidth = 6 }
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+
+	fam = strings.ToLower(strings.TrimSpace(fam))
+	switch fam {
+	case "ipv4":
+		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP50TTFBMs }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP90TTFBMs }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP95TTFBMs }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP99TTFBMs }, chart.ColorRed)
+	case "ipv6":
+		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP50TTFBMs }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP90TTFBMs }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP95TTFBMs }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP99TTFBMs }, chart.ColorRed)
+	default:
+		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50TTFBMs }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90TTFBMs }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95TTFBMs }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99TTFBMs }, chart.ColorRed)
+	}
+
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY { maxY = minY + 1 }
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 4)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 { maxY = 1 }
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
+	if state.showHints { padBottom += 18 }
+
+	var titlePrefix string
+	switch fam {
+	case "ipv4": titlePrefix = "IPv4 "
+	case "ipv6": titlePrefix = "IPv6 "
+	default: titlePrefix = "Overall "
+	}
+	ch := chart.Chart{
+		Title:      fmt.Sprintf("%sTTFB Percentiles (ms)%s", titlePrefix, situationSuffix(state)),
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
+		Series:     series,
+	}
+	cw, chh := chartSize(state)
+	ch.Width = cw
+	ch.Height = chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.") }
+	return img
 }
 
 // renderCacheHitRateChart draws CacheHitRatePct per batch (overall/IPv4/IPv6).
@@ -3225,6 +3440,19 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.pctlIPv6Img.Image)
 		labels = append(labels, "Percentiles – IPv6")
 	}
+	// TTFB percentiles panels based on visibility
+	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil {
+		imgs = append(imgs, state.tpctlOverallImg.Image)
+		labels = append(labels, "TTFB Percentiles – Overall")
+	}
+	if state.tpctlIPv4Img != nil && state.tpctlIPv4Img.Visible() && state.tpctlIPv4Img.Image != nil {
+		imgs = append(imgs, state.tpctlIPv4Img.Image)
+		labels = append(labels, "TTFB Percentiles – IPv4")
+	}
+	if state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Visible() && state.tpctlIPv6Img.Image != nil {
+		imgs = append(imgs, state.tpctlIPv6Img.Image)
+		labels = append(labels, "TTFB Percentiles – IPv6")
+	}
 	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil {
 		imgs = append(imgs, state.errImgCanvas.Image)
 		labels = append(labels, "Error Rate")
@@ -3604,6 +3832,12 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.pctlIPv4Img
 		case "pctl_ipv6":
 			imgCanvas = r.c.state.pctlIPv6Img
+		case "tpctl_overall":
+			imgCanvas = r.c.state.tpctlOverallImg
+		case "tpctl_ipv4":
+			imgCanvas = r.c.state.tpctlIPv4Img
+		case "tpctl_ipv6":
+			imgCanvas = r.c.state.tpctlIPv6Img
 		case "error":
 			imgCanvas = r.c.state.errImgCanvas
 		case "jitter":
@@ -3818,6 +4052,29 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				lines = append(lines, fmt.Sprintf("P90: %.1f %s", bs.IPv6.AvgP90Speed*factor, unit))
 				lines = append(lines, fmt.Sprintf("P95: %.1f %s", bs.IPv6.AvgP95Speed*factor, unit))
 				lines = append(lines, fmt.Sprintf("P99: %.1f %s", bs.IPv6.AvgP99Speed*factor, unit))
+			} else {
+				lines = append(lines, "No IPv6 data")
+			}
+		case "tpctl_overall":
+			lines = append(lines, fmt.Sprintf("P50: %.0f ms", bs.AvgP50TTFBMs))
+			lines = append(lines, fmt.Sprintf("P90: %.0f ms", bs.AvgP90TTFBMs))
+			lines = append(lines, fmt.Sprintf("P95: %.0f ms", bs.AvgP95TTFBMs))
+			lines = append(lines, fmt.Sprintf("P99: %.0f ms", bs.AvgP99TTFBMs))
+		case "tpctl_ipv4":
+			if bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("P50: %.0f ms", bs.IPv4.AvgP50TTFBMs))
+				lines = append(lines, fmt.Sprintf("P90: %.0f ms", bs.IPv4.AvgP90TTFBMs))
+				lines = append(lines, fmt.Sprintf("P95: %.0f ms", bs.IPv4.AvgP95TTFBMs))
+				lines = append(lines, fmt.Sprintf("P99: %.0f ms", bs.IPv4.AvgP99TTFBMs))
+			} else {
+				lines = append(lines, "No IPv4 data")
+			}
+		case "tpctl_ipv6":
+			if bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("P50: %.0f ms", bs.IPv6.AvgP50TTFBMs))
+				lines = append(lines, fmt.Sprintf("P90: %.0f ms", bs.IPv6.AvgP90TTFBMs))
+				lines = append(lines, fmt.Sprintf("P95: %.0f ms", bs.IPv6.AvgP95TTFBMs))
+				lines = append(lines, fmt.Sprintf("P99: %.0f ms", bs.IPv6.AvgP99TTFBMs))
 			} else {
 				lines = append(lines, "No IPv6 data")
 			}

@@ -47,6 +47,11 @@ type BatchSummary struct {
 	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
+	// TTFB percentiles (ms) computed per batch across lines
+	AvgP50TTFBMs              float64 `json:"avg_ttfb_p50_ms,omitempty"`
+	AvgP90TTFBMs              float64 `json:"avg_ttfb_p90_ms,omitempty"`
+	AvgP95TTFBMs              float64 `json:"avg_ttfb_p95_ms,omitempty"`
+	AvgP99TTFBMs              float64 `json:"avg_ttfb_p99_ms,omitempty"`
 	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
 	CacheHitLines           int `json:"-"`
 	ProxySuspectedLines     int `json:"-"`
@@ -95,6 +100,11 @@ type FamilySummary struct {
 	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
+	// TTFB percentiles (ms) computed per batch across lines in this family
+	AvgP50TTFBMs              float64 `json:"avg_ttfb_p50_ms,omitempty"`
+	AvgP90TTFBMs              float64 `json:"avg_ttfb_p90_ms,omitempty"`
+	AvgP95TTFBMs              float64 `json:"avg_ttfb_p95_ms,omitempty"`
+	AvgP99TTFBMs              float64 `json:"avg_ttfb_p99_ms,omitempty"`
 }
 
 // AnalyzeRecentResults parses the results file and returns the most recent up to MaxBatches batch summaries.
@@ -292,6 +302,28 @@ readLoop:
 		sort.Float64s(cp)
 		return cp[len(cp)/2]
 	}
+	percentile := func(a []float64, p float64) float64 {
+		if len(a) == 0 {
+			return 0
+		}
+		if p <= 0 {
+			return a[0]
+		}
+		if p >= 100 {
+			return a[len(a)-1]
+		}
+		cp := append([]float64(nil), a...)
+		sort.Float64s(cp)
+		// nearest-rank method
+		idx := int(math.Ceil(p/100*float64(len(cp)))) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(cp) {
+			idx = len(cp) - 1
+		}
+		return cp[idx]
+	}
 	// Phase 3: aggregate each batch.
 	var summaries []BatchSummary
 	for _, tag := range order {
@@ -405,13 +437,19 @@ readLoop:
 			if !minTS.IsZero() && !maxTS.IsZero() && maxTS.After(minTS) {
 				durationMs = maxTS.Sub(minTS).Milliseconds()
 			}
-			return &FamilySummary{
+			fs := &FamilySummary{
 				Lines: lineCount, AvgSpeed: avg(speeds), MedianSpeed: median(speeds), AvgTTFB: avg(ttfbs), AvgBytes: avg(bytesVals), ErrorLines: errorLines,
 				AvgFirstRTTGoodput: avg(firsts), AvgP50Speed: avg(p50s), AvgP99P50Ratio: avg(ratios), AvgPlateauCount: avg(plateauCounts), AvgLongestPlateau: avg(longest), AvgJitterPct: avg(jitters),
 				AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 				BatchDurationMs: durationMs,
 			}
+			// TTFB percentiles per family in ms
+			fs.AvgP50TTFBMs = percentile(ttfbs, 50)
+			fs.AvgP90TTFBMs = percentile(ttfbs, 90)
+			fs.AvgP95TTFBMs = percentile(ttfbs, 95)
+			fs.AvgP99TTFBMs = percentile(ttfbs, 99)
+			return fs
 		}
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 		var slopes, coefVars, headGetRatios []float64
@@ -528,6 +566,11 @@ readLoop:
 			BatchDurationMs: durationMs,
 			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
 		}
+		// TTFB percentiles overall in ms
+		summary.AvgP50TTFBMs = percentile(ttfbs, 50)
+		summary.AvgP90TTFBMs = percentile(ttfbs, 90)
+		summary.AvgP95TTFBMs = percentile(ttfbs, 95)
+		summary.AvgP99TTFBMs = percentile(ttfbs, 99)
 		if batchSituation != "" {
 			summary.Situation = batchSituation
 		}
