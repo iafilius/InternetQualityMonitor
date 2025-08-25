@@ -281,6 +281,31 @@ $env:ANALYSIS_BATCHES = "25"; ./monitor_atHomeCorpLaptop.ps1
 
 The monitor banner prints the selected parameters (parallel, iterations, situation, log level, sites, output path, analysis batches) so runs are self-describing in logs.
 
+## Charts overview & interpretations
+
+TTFB (Avg) and TTFB Percentiles (ms)
+- TTFB is the time to first byte for a request. Avg TTFB shows the mean per batch (Overall/IPv4/IPv6).
+- TTFB Percentiles show P50/P90/P95/P99 per batch. Expect P99 ≥ P95 ≥ P90 ≥ P50. Larger gaps mean heavier tail latency (e.g., slow DNS/TLS, cold caches, backend spikes).
+
+Speed Percentiles
+- P50/P90/P95/P99 of transfer speed. Wide gaps indicate jitter or unstable throughput.
+
+Error Rate, Jitter, CoV
+- Error Rate: percentage of requests with errors.
+- Jitter (%): mean absolute relative change between consecutive sample speeds in a transfer; higher = more erratic.
+- Coefficient of Variation (%): stddev/mean of speeds; higher = less consistent.
+
+Plateau metrics
+- Plateau Count: number of intra-transfer stable segments.
+- Longest Plateau (ms): the longest such segment; long values can indicate stalls.
+- Plateau Stable Rate (%): fraction of time spent in stable plateaus (smoother throughput).
+
+Cache/Proxy signals
+- Cache Hit Rate (%): fraction likely served from caches.
+- Proxy Suspected Rate (%): requests likely traversing proxies.
+- Warm Cache Suspected Rate (%): requests likely benefiting from warm caches.
+
+
 Analyzing only recent batches for a specific situation:
 ```bash
 go run ./src/main.go --out monitor_results.jsonl --analysis-batches 5 --situation Home_CorporateLaptop_CorpProxy_SequencedTest

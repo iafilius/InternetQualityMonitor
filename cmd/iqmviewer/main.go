@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	chart "github.com/wcharczuk/go-chart/v2"
@@ -102,23 +103,37 @@ type uiState struct {
 	pctlGrid *fyne.Container
 
 	// crosshair
-	crosshairEnabled   bool
-	speedOverlay       *crosshairOverlay
-	ttfbOverlay        *crosshairOverlay
-	pctlOverallOverlay *crosshairOverlay
-	pctlIPv4Overlay    *crosshairOverlay
-	pctlIPv6Overlay    *crosshairOverlay
+	crosshairEnabled    bool
+	speedOverlay        *crosshairOverlay
+	ttfbOverlay         *crosshairOverlay
+	pctlOverallOverlay  *crosshairOverlay
+	pctlIPv4Overlay     *crosshairOverlay
+	pctlIPv6Overlay     *crosshairOverlay
 	tpctlOverallOverlay *crosshairOverlay
 	tpctlIPv4Overlay    *crosshairOverlay
 	tpctlIPv6Overlay    *crosshairOverlay
-	lastSpeedPopup     *widget.PopUp
-	lastTTFBPopup      *widget.PopUp
+	lastSpeedPopup      *widget.PopUp
+	lastTTFBPopup       *widget.PopUp
 
 	// chart hints toggle
 	showHints bool
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
+}
+
+// makeChartSection composes a header row (title + info button) and the stacked image+overlay
+func makeChartSection(title string, help string, stack *fyne.Container) *fyne.Container {
+	titleLbl := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
+		// Show help in a dialog with wrapping
+		dlg := dialog.NewCustom(title+" – Info", "Close", container.NewVScroll(widget.NewLabel(help)), fyne.CurrentApp().Driver().AllWindows()[0])
+		dlg.Resize(fyne.NewSize(520, 380))
+		dlg.Show()
+	})
+	infoBtn.Importance = widget.LowImportance
+	header := container.New(layout.NewHBoxLayout(), titleLbl, layout.NewSpacer(), infoBtn)
+	return container.NewVBox(header, stack)
 }
 
 // speedUnitNameAndFactor converts from base kbps to the chosen unit
@@ -483,31 +498,46 @@ func main() {
 	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 
+	// Help text for charts
+	helpSpeed := "Transfer speed per batch (average/IPv4/IPv6). Use percentiles below to see distribution variability."
+	helpTTFB := "Average Time To First Byte (ms) per batch. Reflects latency before payload begins. High values indicate slow setup (DNS/TLS) or backend delay."
+	helpTTFBPct := "TTFB Percentiles (ms). P50/P90/P95/P99 summarize latency distribution. Expect P99 ≥ P50. Wide gaps reveal tail latency spikes."
+	helpErr := "Error Rate per batch (Overall/IPv4/IPv6). Percentage of requests with errors."
+	helpJitter := "Jitter (%): mean absolute relative variation between request speeds in a batch. Higher is more erratic."
+	helpCoV := "Coefficient of Variation (%): stdev/mean of speeds. Another measure of variability; higher means less consistent."
+	helpCache := "Cache Hit Rate (%): fraction of requests served from a cache (heuristics). High values can mask origin latency."
+	helpProxy := "Proxy Suspected Rate (%): fraction of requests that appear to traverse a proxy (heuristics)."
+	helpWarm := "Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches along the path."
+	helpPlCount := "Plateau Count: average number of intra-transfer speed plateaus per batch. More plateaus can indicate buffering or flow control issues."
+	helpPlLongest := "Longest Plateau (ms): length of the longest detected plateau in a transfer. Long values can indicate stalls."
+	helpPlStable := "Plateau Stable Rate (%): fraction of time in stable plateaus during transfer. Higher can mean smoother throughput."
+
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
-		container.NewStack(state.speedImgCanvas, state.speedOverlay),
+		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay),
+		makeChartSection("TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
 		widget.NewSeparator(),
-		state.pctlGrid,
+		// Percentiles stack wrapper with single title area explaining both blocks
+		makeChartSection("TTFB Percentiles", helpTTFBPct, state.pctlGrid),
 		widget.NewSeparator(),
-		container.NewStack(state.errImgCanvas, state.errOverlay),
+		makeChartSection("Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.jitterImgCanvas, state.jitterOverlay),
+		makeChartSection("Jitter", helpJitter, container.NewStack(state.jitterImgCanvas, state.jitterOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.covImgCanvas, state.covOverlay),
+		makeChartSection("Coefficient of Variation", helpCoV, container.NewStack(state.covImgCanvas, state.covOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.cacheImgCanvas, state.cacheOverlay),
+		makeChartSection("Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.proxyImgCanvas, state.proxyOverlay),
+		makeChartSection("Proxy Suspected Rate", helpProxy, container.NewStack(state.proxyImgCanvas, state.proxyOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay),
+		makeChartSection("Warm Cache Suspected Rate", helpWarm, container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.plCountImgCanvas, state.plCountOverlay),
+		makeChartSection("Plateau Count", helpPlCount, container.NewStack(state.plCountImgCanvas, state.plCountOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.plLongestImgCanvas, state.plLongestOverlay),
+		makeChartSection("Longest Plateau", helpPlLongest, container.NewStack(state.plLongestImgCanvas, state.plLongestOverlay)),
 		widget.NewSeparator(),
-		container.NewStack(state.plStableImgCanvas, state.plStableOverlay),
+		makeChartSection("Plateau Stable Rate", helpPlStable, container.NewStack(state.plStableImgCanvas, state.plStableOverlay)),
 	)
 	// Always show stacked percentiles
 	state.pctlGrid.Show()
@@ -811,9 +841,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportPctlOverall,
 		exportPctlIPv4,
 		exportPctlIPv6,
-	exportTPctlOverall,
-	exportTPctlIPv4,
-	exportTPctlIPv6,
+		exportTPctlOverall,
+		exportTPctlIPv4,
+		exportTPctlIPv6,
 		exportErrors,
 		exportJitter,
 		exportCoV,
@@ -1241,6 +1271,7 @@ func redrawCharts(state *uiState) {
 		}
 	}
 }
+
 // renderTTFBPercentilesChartWithFamily draws TTFB percentiles (ms) for the given family (overall/ipv4/ipv6).
 func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	rows := filteredSummaries(state)
@@ -1263,12 +1294,18 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 				continue
 			}
 			ys[i] = v
-			if v < minY { minY = v }
-			if v > maxY { maxY = v }
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
 			valid++
 		}
 		st := pointStyle(color)
-		if valid == 1 { st.DotWidth = 6 }
+		if valid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -1291,15 +1328,55 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	fam = strings.ToLower(strings.TrimSpace(fam))
 	switch fam {
 	case "ipv4":
-		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP50TTFBMs }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP90TTFBMs }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP95TTFBMs }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP99TTFBMs }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP50TTFBMs
+		}, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP90TTFBMs
+		}, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP95TTFBMs
+		}, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP99TTFBMs
+		}, chart.ColorRed)
 	case "ipv6":
-		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP50TTFBMs }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP90TTFBMs }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP95TTFBMs }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP99TTFBMs }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP50TTFBMs
+		}, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP90TTFBMs
+		}, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP95TTFBMs
+		}, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP99TTFBMs
+		}, chart.ColorRed)
 	default:
 		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50TTFBMs }, chart.ColorBlue)
 		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90TTFBMs }, chart.ColorGreen)
@@ -1311,24 +1388,38 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
-		if maxY <= minY { maxY = minY + 1 }
+		if maxY <= minY {
+			maxY = minY + 1
+		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 4)
 	} else if !state.useRelative && haveY {
-		if maxY <= 0 { maxY = 1 }
+		if maxY <= 0 {
+			maxY = 1
+		}
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
 	padBottom := 28
-	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
-	if state.showHints { padBottom += 18 }
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
 
 	var titlePrefix string
 	switch fam {
-	case "ipv4": titlePrefix = "IPv4 "
-	case "ipv6": titlePrefix = "IPv6 "
-	default: titlePrefix = "Overall "
+	case "ipv4":
+		titlePrefix = "IPv4 "
+	case "ipv6":
+		titlePrefix = "IPv6 "
+	default:
+		titlePrefix = "Overall "
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("%sTTFB Percentiles (ms)%s", titlePrefix, situationSuffix(state)),
@@ -1342,9 +1433,16 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	ch.Height = chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
-	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.") }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.")
+	}
 	return img
 }
 

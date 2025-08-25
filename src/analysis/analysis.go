@@ -48,10 +48,10 @@ type BatchSummary struct {
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines
-	AvgP50TTFBMs              float64 `json:"avg_ttfb_p50_ms,omitempty"`
-	AvgP90TTFBMs              float64 `json:"avg_ttfb_p90_ms,omitempty"`
-	AvgP95TTFBMs              float64 `json:"avg_ttfb_p95_ms,omitempty"`
-	AvgP99TTFBMs              float64 `json:"avg_ttfb_p99_ms,omitempty"`
+	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
+	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
+	AvgP95TTFBMs float64 `json:"avg_ttfb_p95_ms,omitempty"`
+	AvgP99TTFBMs float64 `json:"avg_ttfb_p99_ms,omitempty"`
 	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
 	CacheHitLines           int `json:"-"`
 	ProxySuspectedLines     int `json:"-"`
@@ -101,10 +101,10 @@ type FamilySummary struct {
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines in this family
-	AvgP50TTFBMs              float64 `json:"avg_ttfb_p50_ms,omitempty"`
-	AvgP90TTFBMs              float64 `json:"avg_ttfb_p90_ms,omitempty"`
-	AvgP95TTFBMs              float64 `json:"avg_ttfb_p95_ms,omitempty"`
-	AvgP99TTFBMs              float64 `json:"avg_ttfb_p99_ms,omitempty"`
+	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
+	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
+	AvgP95TTFBMs float64 `json:"avg_ttfb_p95_ms,omitempty"`
+	AvgP99TTFBMs float64 `json:"avg_ttfb_p99_ms,omitempty"`
 }
 
 // AnalyzeRecentResults parses the results file and returns the most recent up to MaxBatches batch summaries.
