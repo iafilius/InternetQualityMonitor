@@ -369,8 +369,8 @@ func main() {
 	state.speedImgCanvas.SetMinSize(fyne.NewSize(900, 320))
 	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(900, 320))
 	// overlays for crosshair
-	state.speedOverlay = newCrosshairOverlay(state, true)
-	state.ttfbOverlay = newCrosshairOverlay(state, false)
+	state.speedOverlay = newCrosshairOverlay(state, "speed")
+	state.ttfbOverlay = newCrosshairOverlay(state, "ttfb")
 	// new percentiles + error charts placeholders (stacked view only)
 	// compare view canvases (vertical stack: Overall, IPv4, IPv6)
 	state.pctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -385,9 +385,9 @@ func main() {
 	state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 	state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 	// Create overlays for percentiles charts
-	state.pctlOverallOverlay = newCrosshairOverlay(state, true)
-	state.pctlIPv4Overlay = newCrosshairOverlay(state, true)
-	state.pctlIPv6Overlay = newCrosshairOverlay(state, true)
+	state.pctlOverallOverlay = newCrosshairOverlay(state, "pctl_overall")
+	state.pctlIPv4Overlay = newCrosshairOverlay(state, "pctl_ipv4")
+	state.pctlIPv6Overlay = newCrosshairOverlay(state, "pctl_ipv6")
 	// Vertical stack with separators for clarity; stack images with overlays
 	state.pctlGrid = container.NewVBox(
 		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
@@ -2129,13 +2129,13 @@ type crosshairOverlay struct {
 	widget.BaseWidget
 	state    *uiState
 	enabled  bool
-	isSpeed  bool // true for speed chart, false for TTFB
+	mode     string // "speed", "ttfb", "pctl_overall", "pctl_ipv4", "pctl_ipv6"
 	mouse    fyne.Position
 	hovering bool
 }
 
-func newCrosshairOverlay(state *uiState, isSpeed bool) *crosshairOverlay {
-	c := &crosshairOverlay{state: state, enabled: state != nil && state.crosshairEnabled, isSpeed: isSpeed}
+func newCrosshairOverlay(state *uiState, mode string) *crosshairOverlay {
+	c := &crosshairOverlay{state: state, enabled: state != nil && state.crosshairEnabled, mode: mode}
 	c.ExtendBaseWidget(c)
 	return c
 }
@@ -2217,10 +2217,17 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 	var drawX, drawY, drawW, drawH, scale float32
 	if r.c != nil && r.c.state != nil {
 		var imgCanvas *canvas.Image
-		if r.c.isSpeed {
+		switch r.c.mode {
+		case "speed":
 			imgCanvas = r.c.state.speedImgCanvas
-		} else {
+		case "ttfb":
 			imgCanvas = r.c.state.ttfbImgCanvas
+		case "pctl_overall":
+			imgCanvas = r.c.state.pctlOverallImg
+		case "pctl_ipv4":
+			imgCanvas = r.c.state.pctlIPv4Img
+		case "pctl_ipv6":
+			imgCanvas = r.c.state.pctlIPv6Img
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -2339,34 +2346,46 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 		default:
 			xLabel = fmt.Sprintf("Batch %d", idx+1)
 		}
-		if r.c.isSpeed {
+		var lines []string
+		lines = append(lines, xLabel)
+		switch r.c.mode {
+		case "speed":
 			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
-			var lines []string
-			lines = append(lines, xLabel)
-			if r.c.state.showOverall {
-				lines = append(lines, fmt.Sprintf("Overall: %.1f %s", bs.AvgSpeed*factor, unit))
+			if r.c.state.showOverall { lines = append(lines, fmt.Sprintf("Overall: %.1f %s", bs.AvgSpeed*factor, unit)) }
+			if r.c.state.showIPv4 && bs.IPv4 != nil { lines = append(lines, fmt.Sprintf("IPv4: %.1f %s", bs.IPv4.AvgSpeed*factor, unit)) }
+			if r.c.state.showIPv6 && bs.IPv6 != nil { lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit)) }
+		case "ttfb":
+			if r.c.state.showOverall { lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTTFB)) }
+			if r.c.state.showIPv4 && bs.IPv4 != nil { lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTTFB)) }
+			if r.c.state.showIPv6 && bs.IPv6 != nil { lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB)) }
+		case "pctl_overall":
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			lines = append(lines, fmt.Sprintf("P50: %.1f %s", bs.AvgP50Speed*factor, unit))
+			lines = append(lines, fmt.Sprintf("P90: %.1f %s", bs.AvgP90Speed*factor, unit))
+			lines = append(lines, fmt.Sprintf("P95: %.1f %s", bs.AvgP95Speed*factor, unit))
+			lines = append(lines, fmt.Sprintf("P99: %.1f %s", bs.AvgP99Speed*factor, unit))
+		case "pctl_ipv4":
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			if bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("P50: %.1f %s", bs.IPv4.AvgP50Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P90: %.1f %s", bs.IPv4.AvgP90Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P95: %.1f %s", bs.IPv4.AvgP95Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P99: %.1f %s", bs.IPv4.AvgP99Speed*factor, unit))
+			} else {
+				lines = append(lines, "No IPv4 data")
 			}
-			if r.c.state.showIPv4 && bs.IPv4 != nil {
-				lines = append(lines, fmt.Sprintf("IPv4: %.1f %s", bs.IPv4.AvgSpeed*factor, unit))
+		case "pctl_ipv6":
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			if bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("P50: %.1f %s", bs.IPv6.AvgP50Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P90: %.1f %s", bs.IPv6.AvgP90Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P95: %.1f %s", bs.IPv6.AvgP95Speed*factor, unit))
+				lines = append(lines, fmt.Sprintf("P99: %.1f %s", bs.IPv6.AvgP99Speed*factor, unit))
+			} else {
+				lines = append(lines, "No IPv6 data")
 			}
-			if r.c.state.showIPv6 && bs.IPv6 != nil {
-				lines = append(lines, fmt.Sprintf("IPv6: %.1f %s", bs.IPv6.AvgSpeed*factor, unit))
-			}
-			r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
-		} else {
-			var lines []string
-			lines = append(lines, xLabel)
-			if r.c.state.showOverall {
-				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTTFB))
-			}
-			if r.c.state.showIPv4 && bs.IPv4 != nil {
-				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTTFB))
-			}
-			if r.c.state.showIPv6 && bs.IPv6 != nil {
-				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTTFB))
-			}
-			r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 		}
+		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 	} else {
 		r.label.Segments = nil
 	}
