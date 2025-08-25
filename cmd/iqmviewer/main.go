@@ -66,6 +66,7 @@ type uiState struct {
 	situationSelect *widget.Select
 	speedImgCanvas  *canvas.Image
 	ttfbImgCanvas   *canvas.Image
+	pctlImgCanvas   *canvas.Image
 
 	// crosshair
 	crosshairEnabled bool
@@ -370,10 +371,16 @@ func main() {
 	// overlays for crosshair
 	state.speedOverlay = newCrosshairOverlay(state, true)
 	state.ttfbOverlay = newCrosshairOverlay(state, false)
+	// new percentiles chart placeholder
+	state.pctlImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.pctlImgCanvas.FillMode = canvas.ImageFillContain
+	state.pctlImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	chartsColumn := container.NewVBox(
 		container.NewStack(state.speedImgCanvas, state.speedOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay),
+		widget.NewSeparator(),
+		state.pctlImgCanvas,
 	)
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
@@ -634,11 +641,11 @@ func filteredSummaries(state *uiState) []analysis.BatchSummary {
 	out := make([]analysis.BatchSummary, 0, len(state.summaries))
 	for _, s := range state.summaries {
 		// Prefer the situation embedded in the summary, fall back to the mapping if needed
-	if strings.EqualFold(s.Situation, state.situation) {
+		if strings.EqualFold(s.Situation, state.situation) {
 			out = append(out, s)
 			continue
 		}
-	if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
+		if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
 			out = append(out, s)
 		}
 	}
@@ -668,6 +675,14 @@ func redrawCharts(state *uiState) {
 		if state.ttfbOverlay != nil {
 			state.ttfbOverlay.Refresh()
 		}
+	}
+	// Percentiles chart
+	pcImg := renderPercentilesChart(state)
+	if pcImg != nil {
+		state.pctlImgCanvas.Image = pcImg
+		cw, chh := chartSize(state)
+		state.pctlImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+		state.pctlImgCanvas.Refresh()
 	}
 }
 
@@ -722,7 +737,7 @@ func renderSpeedChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorAlternateGray)
+		st := pointStyle(chart.ColorAlternateGray)
 		if countValid == 1 { // emphasize single-point sets
 			st.DotWidth = 6
 		}
@@ -766,7 +781,7 @@ func renderSpeedChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorBlue)
+		st := pointStyle(chart.ColorBlue)
 		if countValid == 1 {
 			st.DotWidth = 6
 		}
@@ -809,7 +824,7 @@ func renderSpeedChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorGreen)
+		st := pointStyle(chart.ColorGreen)
 		if countValid == 1 {
 			st.DotWidth = 6
 		}
@@ -861,9 +876,9 @@ func renderSpeedChart(state *uiState) image.Image {
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
-	Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
-	XAxis:      xAxis,
-	YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
 	if len(rows) == 1 {
@@ -927,8 +942,10 @@ func renderTTFBChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorAlternateGray)
-		if countValid == 1 { st.DotWidth = 6 }
+		st := pointStyle(chart.ColorAlternateGray)
+		if countValid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -968,8 +985,10 @@ func renderTTFBChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorBlue)
-		if countValid == 1 { st.DotWidth = 6 }
+		st := pointStyle(chart.ColorBlue)
+		if countValid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -1009,8 +1028,10 @@ func renderTTFBChart(state *uiState) image.Image {
 				countValid++
 			}
 		}
-	st := pointStyle(chart.ColorGreen)
-		if countValid == 1 { st.DotWidth = 6 }
+		st := pointStyle(chart.ColorGreen)
+		if countValid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -1299,6 +1320,114 @@ func formatTick(v float64) string {
 	default:
 		return fmt.Sprintf("%.2f", v)
 	}
+}
+
+// renderPercentilesChart draws P50/P90/P95/P99 avg speeds per batch.
+func renderPercentilesChart(state *uiState) image.Image {
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+
+	// Helper to build a series from a selector
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r) * factor
+			if v <= 0 {
+				v = math.NaN()
+			} else {
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
+				valid++
+			}
+			ys[i] = v
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
+	add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
+	add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, chart.ColorAlternateGray)
+	add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, chart.ColorRed)
+
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	ch := chart.Chart{
+		Title:      fmt.Sprintf("Speed Percentiles (%s)%s", unitName, situationSuffix(state)),
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
+		Series:     series,
+	}
+	cw, chh := chartSize(state)
+	ch.Width = cw
+	ch.Height = chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] percentiles render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] percentiles decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	return img
 }
 
 // pickTimeStep selects a readable step and label format for a given time span.
