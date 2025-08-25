@@ -305,6 +305,13 @@ Cache/Proxy signals
 - Proxy Suspected Rate (%): requests likely traversing proxies.
 - Warm Cache Suspected Rate (%): requests likely benefiting from warm caches.
 
+### Viewer controls and exports
+
+- Situation filter: Use the Situation dropdown in the toolbar to scope charts and the table to a single scenario or All.
+- Titles: Chart titles are kept clean and do not include the situation label.
+- Watermark: The active Situation is shown in a subtle bottom-right on-image watermark (e.g., "Situation: Home_WiFi"). This watermark is embedded into exported PNGs so context is preserved when sharing.
+- X-Axis modes: Batch, RunTag, or Time. Y-Scale: Absolute (zero baseline) or Relative (nice bounds).
+
 
 Analyzing only recent batches for a specific situation:
 ```bash

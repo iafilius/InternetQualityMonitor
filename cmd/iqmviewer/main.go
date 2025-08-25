@@ -29,6 +29,7 @@ import (
 	"github.com/wcharczuk/go-chart/v2/drawing"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/iafilius/InternetQualityMonitor/src/analysis"
@@ -499,7 +500,7 @@ func main() {
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
-	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in the title and watermark.\n"
+	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
 - Useful for tracking overall performance trends over time or across runs.
 - Pair with Speed Percentiles to understand variability not visible in averages.
@@ -535,8 +536,8 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 		widget.NewSeparator(),
 		makeChartSection("TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
 		widget.NewSeparator(),
-	// Percentiles stack: TTFB (3 panels) followed by Speed (3 panels)
-	makeChartSection("Percentiles (TTFB + Speed)", helpTTFBPct+"\n\nAlso see Speed Percentiles for throughput distribution.", state.pctlGrid),
+		// Percentiles stack: TTFB (3 panels) followed by Speed (3 panels)
+		makeChartSection("Percentiles (TTFB + Speed)", helpTTFBPct+"\n\nAlso see Speed Percentiles for throughput distribution.", state.pctlGrid),
 		widget.NewSeparator(),
 		makeChartSection("Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
 		widget.NewSeparator(),
@@ -1439,7 +1440,7 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		titlePrefix = "Overall "
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("%sTTFB Percentiles (ms)%s", titlePrefix, situationSuffix(state)),
+		Title:      fmt.Sprintf("%sTTFB Percentiles (ms)", titlePrefix),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
@@ -1461,7 +1462,7 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.")
 	}
 	// always watermark with active situation
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderCacheHitRateChart draws CacheHitRatePct per batch (overall/IPv4/IPv6).
@@ -1562,7 +1563,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Cache Hit Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Cache Hit Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -1581,7 +1582,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Cache hit rate. Higher can mean content already cached near you.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderProxySuspectedRateChart draws ProxySuspectedRatePct per batch (overall/IPv4/IPv6).
@@ -1682,7 +1683,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Proxy Suspected Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Proxy Suspected Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -1701,7 +1702,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: How often a proxy is suspected. Spikes can indicate transit via middleboxes.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderWarmCacheSuspectedRateChart draws WarmCacheSuspectedRatePct per batch (overall/IPv4/IPv6).
@@ -1802,7 +1803,7 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Warm Cache Suspected Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Warm Cache Suspected Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -1821,7 +1822,7 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Warm-cache suspected rate. Higher suggests repeated content or prior fetch effects.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // chartSize computes a chart size based on the current window width so charts use more X-axis space.
@@ -2017,7 +2018,7 @@ func renderSpeedChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
+		Title:      fmt.Sprintf("Avg Speed (%s)", unitName),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
@@ -2058,7 +2059,7 @@ func renderSpeedChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Speed trends. Drops may indicate congestion, Wi‑Fi issues, or ISP problems.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 func renderTTFBChart(state *uiState) image.Image {
@@ -2225,7 +2226,7 @@ func renderTTFBChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("Avg TTFB (ms)%s", situationSuffix(state)),
+		Title:      "Avg TTFB (ms)",
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
@@ -2263,7 +2264,7 @@ func renderTTFBChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderErrorRateChart draws error percentage per batch for overall, IPv4, IPv6.
@@ -2372,7 +2373,7 @@ func renderErrorRateChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("Error Rate (%%)%s", situationSuffix(state)),
+		Title:      "Error Rate (%)",
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks},
@@ -2398,7 +2399,7 @@ func renderErrorRateChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Error rate per batch (overall and per‑family). Spikes often correlate with outages or auth/firewall issues.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderJitterChart draws AvgJitterPct per batch for overall, IPv4, IPv6.
@@ -2499,7 +2500,7 @@ func renderJitterChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Jitter (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Jitter (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2518,7 +2519,7 @@ func renderJitterChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Jitter measures volatility per batch. Lower is more stable.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderCoVChart draws AvgCoefVariationPct per batch (overall/IPv4/IPv6).
@@ -2618,7 +2619,7 @@ func renderCoVChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Coefficient of Variation (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Coefficient of Variation (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2637,7 +2638,7 @@ func renderCoVChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: CoV shows relative variability (stddev/mean). Lower is steadier.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderPlateauCountChart plots AvgPlateauCount per batch.
@@ -2736,7 +2737,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Plateau Count%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Plateau Count", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2755,7 +2756,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Number of distinct speed plateaus per batch. Fewer can indicate steadier transfer.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderPlateauLongestChart plots AvgLongestPlateau (ms) per batch.
@@ -2853,7 +2854,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Longest Plateau (ms)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Longest Plateau (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2872,7 +2873,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Longest plateau duration in ms. Longer plateaus may indicate throttling or buffering.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderPlateauStableChart plots PlateauStableRatePct (percentage) per batch for overall/IPv4/IPv6.
@@ -2974,7 +2975,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Plateau Stable Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Plateau Stable Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2993,7 +2994,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Share of lines with stable speed plateau within batch. Higher is steadier.")
 	}
-	return drawWatermark(img, "(Situation: "+activeSituationLabel(state)+")")
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // buildXAxis constructs X values and axis config based on the selected mode.
@@ -3109,12 +3110,6 @@ func parseRunTagTime(runTag string) time.Time {
 	return time.Time{}
 }
 
-func situationSuffix(state *uiState) string {
-	if state.situation == "" {
-		return ""
-	}
-	return " – " + state.situation
-}
 
 // niceAxisBounds expands [min,max] by a small margin and rounds to "nice" numbers for readability.
 func niceAxisBounds(min, max float64) (float64, float64) {
@@ -3245,23 +3240,45 @@ func drawWatermark(img image.Image, text string) image.Image {
 	rgba := image.NewRGBA(b)
 	draw.Draw(rgba, b, img, b.Min, draw.Src)
 	// styling
-	pad := 4
-	face := basicfont.Face7x13
-	// Subtle light gray text, not bold
-	textCol := image.NewUniform(color.RGBA{R: 230, G: 230, B: 230, A: 220})
-	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 120})
-	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
-	tw := dr.MeasureString(text).Ceil()
+	pad := 6
+	// Try to use a TTF face for better readability; fallback to basicfont if needed
+	var face font.Face
+	if res := theme.DefaultTheme().Font(fyne.TextStyle{}); res != nil {
+		if f, err := opentype.Parse(res.Content()); err == nil {
+			if ff, err2 := opentype.NewFace(f, &opentype.FaceOptions{Size: 14, DPI: 96, Hinting: font.HintingFull}); err2 == nil {
+				face = ff
+			}
+		}
+	}
+	if face == nil {
+		face = basicfont.Face7x13
+	}
+	textCol := image.NewUniform(color.RGBA{R: 250, G: 250, B: 250, A: 250})
+	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+	drMeasure := &font.Drawer{Face: face}
+	tw := drMeasure.MeasureString(text).Ceil()
+	m := face.Metrics()
+	asc := m.Ascent.Ceil()
+	desc := m.Descent.Ceil()
+	th := asc + desc
+	if th <= 0 {
+		th = 16
+	}
+	// placement bottom-right
 	x := b.Max.X - tw - 8
-	y := b.Max.Y - 6
-	// background
-	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
-	rect := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
+	yBase := b.Max.Y - 6
+	// background box (keep dark for contrast)
+	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 192})
+	rect := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
 	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
-	// shadow and text
-	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + 1), Y: fixed.I(y + 1)}}
-	drShadow.DrawString(text)
-	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	// outline shadows
+	outline := [][2]int{{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+	for _, dxy := range outline {
+		dr := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + dxy[0]), Y: fixed.I(yBase - desc + dxy[1])}}
+		dr.DrawString(text)
+	}
+	// main text
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(yBase - desc)}}
 	dr.DrawString(text)
 	return rgba
 }
@@ -3273,6 +3290,8 @@ func activeSituationLabel(state *uiState) string {
 	}
 	return state.situation
 }
+
+// (titles intentionally do not include the situation; see watermark for context)
 
 // drawCaption draws a small caption near the top-left of the image.
 // (caption overlay removed for cleaner look)
@@ -3429,7 +3448,7 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 		titlePrefix = "Overall "
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("%sSpeed Percentiles (%s)%s", titlePrefix, unitName, situationSuffix(state)),
+		Title:      fmt.Sprintf("%sSpeed Percentiles (%s)", titlePrefix, unitName),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
