@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	png "image/png"
 	"math"
 	"os"
@@ -25,6 +26,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 	chart "github.com/wcharczuk/go-chart/v2"
 	"github.com/wcharczuk/go-chart/v2/drawing"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 
 	"github.com/iafilius/InternetQualityMonitor/src/analysis"
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
@@ -67,6 +71,7 @@ type uiState struct {
 	speedImgCanvas  *canvas.Image
 	ttfbImgCanvas   *canvas.Image
 	pctlImgCanvas   *canvas.Image
+	errImgCanvas    *canvas.Image
 
 	// crosshair
 	crosshairEnabled bool
@@ -74,6 +79,9 @@ type uiState struct {
 	ttfbOverlay      *crosshairOverlay
 	lastSpeedPopup   *widget.PopUp
 	lastTTFBPopup    *widget.PopUp
+
+	// chart hints toggle
+	showHints bool
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
@@ -136,18 +144,13 @@ func main() {
 	}
 	// Ensure crosshair preference is loaded before creating overlays/controls
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
+	// Load showHints early so the checkbox reflects it on creation
+	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
 
 	// top bar controls
 	fileLabel := widget.NewLabel(truncatePath(state.filePath, 60))
-	speedSelect := widget.NewSelect([]string{"kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"}, func(v string) {
-		state.speedUnit = v
-		savePrefs(state)
-		// refresh table headers/values and charts to reflect unit change
-		if state.table != nil {
-			state.table.Refresh()
-		}
-		redrawCharts(state)
-	})
+	// Create selects without callbacks first; we'll wire them after canvases exist
+	speedSelect := widget.NewSelect([]string{"kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"}, nil)
 	speedSelect.Selected = state.speedUnit
 
 	// series toggles (callbacks assigned later, after canvases exist)
@@ -159,18 +162,7 @@ func main() {
 	crosshairChk.SetChecked(state.crosshairEnabled)
 
 	// axis mode selectors
-	xAxisSelect := widget.NewSelect([]string{"Batch", "RunTag", "Time"}, func(v string) {
-		switch strings.ToLower(v) {
-		case "batch":
-			state.xAxisMode = "batch"
-		case "runtag", "run_tag":
-			state.xAxisMode = "run_tag"
-		case "time":
-			state.xAxisMode = "time"
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	})
+	xAxisSelect := widget.NewSelect([]string{"Batch", "RunTag", "Time"}, nil)
 	switch state.xAxisMode {
 	case "run_tag":
 		xAxisSelect.Selected = "RunTag"
@@ -179,22 +171,16 @@ func main() {
 	default:
 		xAxisSelect.Selected = "Batch"
 	}
-	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, func(v string) {
-		if strings.EqualFold(v, "Relative") {
-			state.yScaleMode = "relative"
-			state.useRelative = true
-		} else {
-			state.yScaleMode = "absolute"
-			state.useRelative = false
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	})
+	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, nil)
 	if state.useRelative {
 		yScaleSelect.Selected = "Relative"
 	} else {
 		yScaleSelect.Selected = "Absolute"
 	}
+
+	// hints toggle (callback assigned later, after canvases are created)
+	hintsChk := widget.NewCheck("Hints", nil)
+	hintsChk.SetChecked(state.showHints)
 
 	// Situation selector (options filled after first load)
 	sitSelect := widget.NewSelect([]string{}, func(v string) {
@@ -361,7 +347,7 @@ func main() {
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
-		overallChk, ipv4Chk, ipv6Chk, crosshairChk,
+		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
 		widget.NewLabel("File:"), fileLabel,
 	)
 	// charts stacked vertically with scroll for future additions
@@ -371,16 +357,23 @@ func main() {
 	// overlays for crosshair
 	state.speedOverlay = newCrosshairOverlay(state, true)
 	state.ttfbOverlay = newCrosshairOverlay(state, false)
-	// new percentiles chart placeholder
+	// new percentiles + error charts placeholders
 	state.pctlImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.pctlImgCanvas.FillMode = canvas.ImageFillContain
 	state.pctlImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.errImgCanvas.FillMode = canvas.ImageFillContain
+	state.errImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+
+	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
 		container.NewStack(state.speedImgCanvas, state.speedOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay),
 		widget.NewSeparator(),
 		state.pctlImgCanvas,
+		widget.NewSeparator(),
+		state.errImgCanvas,
 	)
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
@@ -461,6 +454,42 @@ func main() {
 				state.lastTTFBPopup = nil
 			}
 		}
+	}
+
+	// Wire select and hints callbacks after canvases exist
+	speedSelect.OnChanged = func(v string) {
+		state.speedUnit = v
+		savePrefs(state)
+		if state.table != nil { state.table.Refresh() }
+		redrawCharts(state)
+	}
+	xAxisSelect.OnChanged = func(v string) {
+		switch strings.ToLower(v) {
+		case "batch":
+			state.xAxisMode = "batch"
+		case "runtag", "run_tag":
+			state.xAxisMode = "run_tag"
+		case "time":
+			state.xAxisMode = "time"
+		}
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	yScaleSelect.OnChanged = func(v string) {
+		if strings.EqualFold(v, "Relative") {
+			state.yScaleMode = "relative"
+			state.useRelative = true
+		} else {
+			state.yScaleMode = "absolute"
+			state.useRelative = false
+		}
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	hintsChk.OnChanged = func(b bool) {
+		state.showHints = b
+		savePrefs(state)
+		redrawCharts(state)
 	}
 
 	// menus, prefs, initial load
@@ -656,11 +685,15 @@ func redrawCharts(state *uiState) {
 	// Speed chart
 	spImg := renderSpeedChart(state)
 	if spImg != nil {
-		state.speedImgCanvas.Image = spImg
+		if state.speedImgCanvas != nil {
+			state.speedImgCanvas.Image = spImg
+		}
 		// ensure the image reserves enough width/height to show the rendered chart
 		cw, chh := chartSize(state)
-		state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-		state.speedImgCanvas.Refresh()
+		if state.speedImgCanvas != nil {
+			state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.speedImgCanvas.Refresh()
+		}
 		// also refresh overlay so crosshair rebinds to new image rects
 		if state.speedOverlay != nil {
 			state.speedOverlay.Refresh()
@@ -668,10 +701,14 @@ func redrawCharts(state *uiState) {
 	}
 	ttImg := renderTTFBChart(state)
 	if ttImg != nil {
-		state.ttfbImgCanvas.Image = ttImg
+		if state.ttfbImgCanvas != nil {
+			state.ttfbImgCanvas.Image = ttImg
+		}
 		cw, chh := chartSize(state)
-		state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-		state.ttfbImgCanvas.Refresh()
+		if state.ttfbImgCanvas != nil {
+			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.ttfbImgCanvas.Refresh()
+		}
 		if state.ttfbOverlay != nil {
 			state.ttfbOverlay.Refresh()
 		}
@@ -679,10 +716,26 @@ func redrawCharts(state *uiState) {
 	// Percentiles chart
 	pcImg := renderPercentilesChart(state)
 	if pcImg != nil {
-		state.pctlImgCanvas.Image = pcImg
+		if state.pctlImgCanvas != nil {
+			state.pctlImgCanvas.Image = pcImg
+		}
 		cw, chh := chartSize(state)
-		state.pctlImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-		state.pctlImgCanvas.Refresh()
+		if state.pctlImgCanvas != nil {
+			state.pctlImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.pctlImgCanvas.Refresh()
+		}
+	}
+	// Error Rate chart
+	erImg := renderErrorRateChart(state)
+	if erImg != nil {
+		if state.errImgCanvas != nil {
+			state.errImgCanvas.Image = erImg
+		}
+		cw, chh := chartSize(state)
+		if state.errImgCanvas != nil {
+			state.errImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.errImgCanvas.Refresh()
+		}
 	}
 }
 
@@ -874,6 +927,10 @@ func renderSpeedChart(state *uiState) image.Image {
 	case "time":
 		padBottom = 48
 	}
+	// if hints are enabled, increase bottom padding for hint text
+	if state.showHints {
+		padBottom += 18
+	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg Speed (%s)%s", unitName, situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
@@ -912,6 +969,9 @@ func renderSpeedChart(state *uiState) image.Image {
 		cw, chh := chartSize(state)
 		fmt.Printf("[viewer] speed chart decode error: %v; showing blank fallback\n", err)
 		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Speed trends. Drops may indicate congestion, Wi‑Fi issues, or ISP problems.")
 	}
 	return img
 }
@@ -1076,6 +1136,9 @@ func renderTTFBChart(state *uiState) image.Image {
 	case "time":
 		padBottom = 48
 	}
+	if state.showHints {
+		padBottom += 18
+	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Avg TTFB (ms)%s", situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
@@ -1111,6 +1174,134 @@ func renderTTFBChart(state *uiState) image.Image {
 		cw, chh := chartSize(state)
 		fmt.Printf("[viewer] ttfb chart decode error: %v; showing blank fallback\n", err)
 		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
+	}
+	return img
+}
+
+// renderErrorRateChart draws error percentage per batch for overall, IPv4, IPv6.
+func renderErrorRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+
+	// helper to add a line for selector
+	add := func(name string, sel func(analysis.BatchSummary) (num, den int), color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			n, d := sel(r)
+			if d <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			v := float64(n) / float64(d) * 100.0
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) (int, int) { return b.ErrorLines, b.Lines }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) (int, int) {
+			if b.IPv4 == nil { return 0, 0 }
+			return b.IPv4.ErrorLines, b.IPv4.Lines
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) (int, int) {
+			if b.IPv6 == nil { return 0, 0 }
+			return b.IPv6.ErrorLines, b.IPv6.Lines
+		}, chart.ColorGreen)
+	}
+
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY { maxY = minY + 1 }
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		// Absolute: clamp 0..100
+		if maxY < 1 { maxY = 1 }
+		if maxY > 100 { maxY = 100 }
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value:0, Label:"0"}, {Value:25, Label:"25"}, {Value:50, Label:"50"}, {Value:75, Label:"75"}, {Value:100, Label:"100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{
+		Title:      fmt.Sprintf("Error Rate (%%)%s", situationSuffix(state)),
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks},
+		Series:     series,
+	}
+	cw, chh := chartSize(state)
+	ch.Width = cw
+	ch.Height = chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] error chart render error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] error chart decode error: %v; showing blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Error rate per batch (overall and per‑family). Spikes often correlate with outages or auth/firewall issues.")
 	}
 	return img
 }
@@ -1322,6 +1513,39 @@ func formatTick(v float64) string {
 	}
 }
 
+// drawHint draws a small hint string onto the provided image near the bottom-left.
+func drawHint(img image.Image, text string) image.Image {
+	if img == nil || strings.TrimSpace(text) == "" {
+		return img
+	}
+	b := img.Bounds()
+	rgba := image.NewRGBA(b)
+	draw.Draw(rgba, b, img, b.Min, draw.Src)
+	// Slight translucent bg for readability
+	pad := 6
+	// measure text width approximately using 7x13 font
+	face := basicfont.Face7x13
+	// main text color and shadow
+	textCol := image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
+	tw := dr.MeasureString(text).Ceil()
+	x := b.Min.X + 8
+	y := b.Max.Y - 6
+	// Draw background rectangle (semi-opaque dark)
+	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+	rect := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
+	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
+	// Draw shadow then text for better contrast on varying backgrounds
+	// Shadow
+	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x+1), Y: fixed.I(y+1)}}
+	drShadow.DrawString(text)
+	// Main text
+	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	dr.DrawString(text)
+	return rgba
+}
+
 // renderPercentilesChart draws P50/P90/P95/P99 avg speeds per batch.
 func renderPercentilesChart(state *uiState) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
@@ -1404,6 +1628,9 @@ func renderPercentilesChart(state *uiState) image.Image {
 	case "time":
 		padBottom = 48
 	}
+	if state.showHints {
+		padBottom += 18
+	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("Speed Percentiles (%s)%s", unitName, situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
@@ -1426,6 +1653,9 @@ func renderPercentilesChart(state *uiState) image.Image {
 		cw, chh := chartSize(state)
 		fmt.Printf("[viewer] percentiles decode error: %v; showing blank fallback\n", err)
 		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Speed percentiles surface variability. Wider gaps (P99>>P50) mean jittery performance.")
 	}
 	return img
 }
@@ -1564,6 +1794,7 @@ func savePrefs(state *uiState) {
 	prefs.SetString("yScaleMode", state.yScaleMode)
 	prefs.SetString("speedUnit", state.speedUnit)
 	prefs.SetBool("crosshair", state.crosshairEnabled)
+	prefs.SetBool("showHints", state.showHints)
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, xAxis *widget.Select, yScale *widget.Select, tabs *container.AppTabs, speedUnitSel *widget.Select) {
@@ -1637,6 +1868,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 			tabs.SelectIndex(idx)
 		}
 	}
+	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
 }
 
 // utils
