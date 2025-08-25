@@ -79,6 +79,7 @@ type uiState struct {
 	covImgCanvas       *canvas.Image
 	plCountImgCanvas   *canvas.Image
 	plLongestImgCanvas *canvas.Image
+	plStableImgCanvas  *canvas.Image
 
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
@@ -86,6 +87,7 @@ type uiState struct {
 	covOverlay       *crosshairOverlay
 	plCountOverlay   *crosshairOverlay
 	plLongestOverlay *crosshairOverlay
+	plStableOverlay  *crosshairOverlay
 
 	// containers
 	pctlGrid *fyne.Container
@@ -430,6 +432,11 @@ func main() {
 	state.plLongestImgCanvas.FillMode = canvas.ImageFillContain
 	state.plLongestImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.plLongestOverlay = newCrosshairOverlay(state, "plateau_longest")
+	// plateau stability rate chart
+	state.plStableImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.plStableImgCanvas.FillMode = canvas.ImageFillContain
+	state.plStableImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.plStableOverlay = newCrosshairOverlay(state, "plateau_stable")
 
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
@@ -448,6 +455,8 @@ func main() {
 		container.NewStack(state.plCountImgCanvas, state.plCountOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.plLongestImgCanvas, state.plLongestOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.plStableImgCanvas, state.plStableOverlay),
 	)
 	// Always show stacked percentiles
 	state.pctlGrid.Show()
@@ -591,6 +600,10 @@ func main() {
 			state.plLongestOverlay.enabled = b
 			state.plLongestOverlay.Refresh()
 		}
+		if state.plStableOverlay != nil {
+			state.plStableOverlay.enabled = b
+			state.plStableOverlay.Refresh()
+		}
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -642,6 +655,10 @@ func main() {
 		state.plLongestOverlay.enabled = state.crosshairEnabled
 		state.plLongestOverlay.Refresh()
 	}
+	if state.plStableOverlay != nil {
+		state.plStableOverlay.enabled = state.crosshairEnabled
+		state.plStableOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -677,6 +694,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
 	exportPlCount := fyne.NewMenuItem("Export Plateau Count Chart…", func() { exportChartPNG(state, state.plCountImgCanvas, "plateau_count_chart.png") })
 	exportPlLongest := fyne.NewMenuItem("Export Longest Plateau Chart…", func() { exportChartPNG(state, state.plLongestImgCanvas, "plateau_longest_chart.png") })
+	exportPlStable := fyne.NewMenuItem("Export Plateau Stable Rate Chart…", func() { exportChartPNG(state, state.plStableImgCanvas, "plateau_stable_rate_chart.png") })
 	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
 	fileMenu := fyne.NewMenu("File",
 		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
@@ -692,6 +710,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportCoV,
 		exportPlCount,
 		exportPlLongest,
+		exportPlStable,
 		fyne.NewMenuItemSeparator(),
 		exportAll,
 		fyne.NewMenuItemSeparator(),
@@ -994,6 +1013,21 @@ func redrawCharts(state *uiState) {
 			}
 			if state.plLongestOverlay != nil {
 				state.plLongestOverlay.Refresh()
+			}
+		}
+		// Plateau Stable Rate chart
+		plsImg := renderPlateauStableChart(state)
+		if plsImg != nil {
+			if state.plStableImgCanvas != nil {
+				state.plStableImgCanvas.Image = plsImg
+			}
+			cw, chh := chartSize(state)
+			if state.plStableImgCanvas != nil {
+				state.plStableImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.plStableImgCanvas.Refresh()
+			}
+			if state.plStableOverlay != nil {
+				state.plStableOverlay.Refresh()
 			}
 		}
 	}
@@ -2050,6 +2084,109 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 	return img
 }
 
+// renderPlateauStableChart plots PlateauStableRatePct (percentage) per batch for overall/IPv4/IPv6.
+func renderPlateauStableChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY { minY = v }
+			if v > maxY { maxY = v }
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 { st.DotWidth = 6 }
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.PlateauStableRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil { return 0 }
+			return b.IPv4.PlateauStableRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil { return 0 }
+			return b.IPv6.PlateauStableRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY { maxY = minY + 1 }
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		// clamp 0..100
+		if maxY < 1 { maxY = 1 }
+		if maxY > 100 { maxY = 100 }
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints { padBottom += 18 }
+	ch := chart.Chart{Title: fmt.Sprintf("Plateau Stable Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] plateau-stable render error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] plateau-stable decode error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Share of lines with stable speed plateau within batch. Higher is steadier.")
+	}
+	return img
+}
+
 // buildXAxis constructs X values and axis config based on the selected mode.
 // Returns whether time mode is used, the time slice (if applicable), the float Xs otherwise, and the configured XAxis.
 func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, []float64, chart.XAxis) {
@@ -2630,6 +2767,10 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.plLongestImgCanvas.Image)
 		labels = append(labels, "Longest Plateau (ms)")
 	}
+	if state.plStableImgCanvas != nil && state.plStableImgCanvas.Image != nil {
+		imgs = append(imgs, state.plStableImgCanvas.Image)
+		labels = append(labels, "Plateau Stable Rate")
+	}
 	if len(imgs) == 0 {
 		dialog.ShowInformation("Export All", "No charts to export.", state.window)
 		return
@@ -2983,6 +3124,8 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.plCountImgCanvas
 		case "plateau_longest":
 			imgCanvas = r.c.state.plLongestImgCanvas
+		case "plateau_stable":
+			imgCanvas = r.c.state.plStableImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -3201,6 +3344,16 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgLongestPlateau))
+			}
+		case "plateau_stable":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.PlateauStableRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.PlateauStableRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.PlateauStableRatePct))
 			}
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
