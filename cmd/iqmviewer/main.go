@@ -62,7 +62,7 @@ type uiState struct {
 	showOverall bool
 	showIPv4    bool
 	showIPv6    bool
-	pctlFamily  string // "overall", "ipv4", "ipv6" for percentiles chart
+	// (removed: pctlFamily, pctlCompare)
 
 	// widgets
 	table        *widget.Table
@@ -71,13 +71,21 @@ type uiState struct {
 	situationSelect *widget.Select
 	speedImgCanvas  *canvas.Image
 	ttfbImgCanvas   *canvas.Image
-	pctlImgCanvas   *canvas.Image
+	pctlOverallImg  *canvas.Image
+	pctlIPv4Img     *canvas.Image
+	pctlIPv6Img     *canvas.Image
 	errImgCanvas    *canvas.Image
+
+	// containers
+	pctlGrid *fyne.Container
 
 	// crosshair
 	crosshairEnabled bool
 	speedOverlay     *crosshairOverlay
 	ttfbOverlay      *crosshairOverlay
+	pctlOverallOverlay *crosshairOverlay
+	pctlIPv4Overlay    *crosshairOverlay
+	pctlIPv6Overlay    *crosshairOverlay
 	lastSpeedPopup   *widget.PopUp
 	lastTTFBPopup    *widget.PopUp
 
@@ -147,8 +155,7 @@ func main() {
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
-	// Load percentiles family preference early for selector
-	state.pctlFamily = strings.ToLower(a.Preferences().StringWithFallback("pctlFamily", "overall"))
+	// (removed: pctlFamily/pctlCompare preferences)
 
 	// top bar controls
 	fileLabel := widget.NewLabel(truncatePath(state.filePath, 60))
@@ -176,21 +183,14 @@ func main() {
 	}
 	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, nil)
 
-	// percentiles family selector
-	pctlFamilySel := widget.NewSelect([]string{"Overall", "IPv4", "IPv6"}, nil)
-	switch strings.ToLower(state.pctlFamily) {
-	case "ipv4":
-		pctlFamilySel.Selected = "IPv4"
-	case "ipv6":
-		pctlFamilySel.Selected = "IPv6"
-	default:
-		pctlFamilySel.Selected = "Overall"
-	}
+	// (removed: percentiles family selector)
 	if state.useRelative {
 		yScaleSelect.Selected = "Relative"
 	} else {
 		yScaleSelect.Selected = "Absolute"
 	}
+
+	// (removed: compare toggle)
 
 	// hints toggle (callback assigned later, after canvases are created)
 	hintsChk := widget.NewCheck("Hints", nil)
@@ -359,7 +359,6 @@ func main() {
 		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
-		widget.NewLabel("Percentiles:"), pctlFamilySel,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
@@ -372,10 +371,31 @@ func main() {
 	// overlays for crosshair
 	state.speedOverlay = newCrosshairOverlay(state, true)
 	state.ttfbOverlay = newCrosshairOverlay(state, false)
-	// new percentiles + error charts placeholders
-	state.pctlImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.pctlImgCanvas.FillMode = canvas.ImageFillContain
-	state.pctlImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	// new percentiles + error charts placeholders (stacked view only)
+	// compare view canvases (vertical stack: Overall, IPv4, IPv6)
+	state.pctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.pctlOverallImg.FillMode = canvas.ImageFillContain
+	state.pctlIPv4Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.pctlIPv4Img.FillMode = canvas.ImageFillContain
+	state.pctlIPv6Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.pctlIPv6Img.FillMode = canvas.ImageFillContain
+	// set initial min sizes to full chart size
+	cw, chh := chartSize(state)
+	state.pctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	// Create overlays for percentiles charts
+	state.pctlOverallOverlay = newCrosshairOverlay(state, true)
+	state.pctlIPv4Overlay = newCrosshairOverlay(state, true)
+	state.pctlIPv6Overlay = newCrosshairOverlay(state, true)
+	// Vertical stack with separators for clarity; stack images with overlays
+	state.pctlGrid = container.NewVBox(
+		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
+		widget.NewSeparator(),
+		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
+	)
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errImgCanvas.FillMode = canvas.ImageFillContain
 	state.errImgCanvas.SetMinSize(fyne.NewSize(900, 300))
@@ -386,10 +406,12 @@ func main() {
 		widget.NewSeparator(),
 		container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay),
 		widget.NewSeparator(),
-		state.pctlImgCanvas,
+		state.pctlGrid,
 		widget.NewSeparator(),
 		state.errImgCanvas,
 	)
+	// Always show stacked percentiles
+	state.pctlGrid.Show()
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
 	// tabs: Batches | Charts
@@ -477,19 +499,7 @@ func main() {
 		savePrefs(state)
 		redrawCharts(state)
 	}
-	pctlFamilySel.OnChanged = func(v string) {
-		switch strings.ToLower(v) {
-		case "ipv4":
-			state.pctlFamily = "ipv4"
-		case "ipv6":
-			state.pctlFamily = "ipv6"
-		default:
-			state.pctlFamily = "overall"
-		}
-		savePrefs(state)
-		// update only percentiles would be fine, redraw all for consistency
-		redrawCharts(state)
-	}
+	// (removed: pctlFamily/change and compare handlers)
 	hintsChk.OnChanged = func(b bool) {
 		state.showHints = b
 		savePrefs(state)
@@ -508,6 +518,9 @@ func main() {
 			state.ttfbOverlay.enabled = b
 			state.ttfbOverlay.Refresh()
 		}
+		if state.pctlOverallOverlay != nil { state.pctlOverallOverlay.enabled = b; state.pctlOverallOverlay.Refresh() }
+		if state.pctlIPv4Overlay != nil { state.pctlIPv4Overlay.enabled = b; state.pctlIPv4Overlay.Refresh() }
+		if state.pctlIPv6Overlay != nil { state.pctlIPv6Overlay.enabled = b; state.pctlIPv6Overlay.Refresh() }
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -520,41 +533,7 @@ func main() {
 		}
 	}
 
-	// Wire select and hints callbacks after canvases exist
-	speedSelect.OnChanged = func(v string) {
-		state.speedUnit = v
-		savePrefs(state)
-		if state.table != nil { state.table.Refresh() }
-		redrawCharts(state)
-	}
-	xAxisSelect.OnChanged = func(v string) {
-		switch strings.ToLower(v) {
-		case "batch":
-			state.xAxisMode = "batch"
-		case "runtag", "run_tag":
-			state.xAxisMode = "run_tag"
-		case "time":
-			state.xAxisMode = "time"
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	}
-	yScaleSelect.OnChanged = func(v string) {
-		if strings.EqualFold(v, "Relative") {
-			state.yScaleMode = "relative"
-			state.useRelative = true
-		} else {
-			state.yScaleMode = "absolute"
-			state.useRelative = false
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	}
-	hintsChk.OnChanged = func(b bool) {
-		state.showHints = b
-		savePrefs(state)
-		redrawCharts(state)
-	}
+	// (removed duplicate wiring block)
 
 	// menus, prefs, initial load
 	buildMenus(state, fileLabel)
@@ -575,6 +554,8 @@ func main() {
 	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
+
+	// (removed: compare view initial toggle; percentiles always shown in stack now)
 
 	w.ShowAndRun()
 }
@@ -598,12 +579,23 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	recentMenu := fyne.NewMenu("Open Recent", append(items, clearRecent)...)
 	exportSpeed := fyne.NewMenuItem("Export Speed Chart…", func() { exportChartPNG(state, state.speedImgCanvas, "speed_chart.png") })
 	exportTTFB := fyne.NewMenuItem("Export TTFB Chart…", func() { exportChartPNG(state, state.ttfbImgCanvas, "ttfb_chart.png") })
+	exportPctlOverall := fyne.NewMenuItem("Export Percentiles – Overall…", func() { exportChartPNG(state, state.pctlOverallImg, "percentiles_overall.png") })
+	exportPctlIPv4 := fyne.NewMenuItem("Export Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
+	exportPctlIPv6 := fyne.NewMenuItem("Export Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
+	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
+	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
 	fileMenu := fyne.NewMenu("File",
 		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
 		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
 		fyne.NewMenuItemSeparator(),
 		exportSpeed,
 		exportTTFB,
+		exportPctlOverall,
+		exportPctlIPv4,
+		exportPctlIPv6,
+		exportErrors,
+		fyne.NewMenuItemSeparator(),
+		exportAll,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
@@ -777,18 +769,47 @@ func redrawCharts(state *uiState) {
 			state.ttfbOverlay.Refresh()
 		}
 	}
-	// Percentiles chart
-	pcImg := renderPercentilesChart(state)
-	if pcImg != nil {
-		if state.pctlImgCanvas != nil {
-			state.pctlImgCanvas.Image = pcImg
-		}
-		cw, chh := chartSize(state)
-		if state.pctlImgCanvas != nil {
-			state.pctlImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-			state.pctlImgCanvas.Refresh()
-		}
+	// Percentiles chart(s) stacked: Overall, IPv4, IPv6; visibility via checkboxes
+	if state.pctlOverallImg != nil {
+		if state.showOverall {
+			img := renderPercentilesChartWithFamily(state, "overall")
+			if img != nil {
+				state.pctlOverallImg.Image = img
+				cw, chh := chartSize(state)
+				state.pctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.pctlOverallImg.Show()
+				state.pctlOverallImg.Refresh()
+				if state.pctlOverallOverlay != nil { state.pctlOverallOverlay.Refresh() }
+			}
+		} else { state.pctlOverallImg.Hide() }
 	}
+	if state.pctlIPv4Img != nil {
+		if state.showIPv4 {
+			img := renderPercentilesChartWithFamily(state, "ipv4")
+			if img != nil {
+				state.pctlIPv4Img.Image = img
+				cw, chh := chartSize(state)
+				state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.pctlIPv4Img.Show()
+				state.pctlIPv4Img.Refresh()
+				if state.pctlIPv4Overlay != nil { state.pctlIPv4Overlay.Refresh() }
+			}
+		} else { state.pctlIPv4Img.Hide() }
+	}
+	if state.pctlIPv6Img != nil {
+		if state.showIPv6 {
+			img := renderPercentilesChartWithFamily(state, "ipv6")
+			if img != nil {
+				state.pctlIPv6Img.Image = img
+				cw, chh := chartSize(state)
+				state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.pctlIPv6Img.Show()
+				state.pctlIPv6Img.Refresh()
+				if state.pctlIPv6Overlay != nil { state.pctlIPv6Overlay.Refresh() }
+			}
+		} else { state.pctlIPv6Img.Hide() }
+	}
+	if state.pctlGrid != nil { state.pctlGrid.Refresh() }
 	// Error Rate chart
 	erImg := renderErrorRateChart(state)
 	if erImg != nil {
@@ -1610,41 +1631,39 @@ func drawHint(img image.Image, text string) image.Image {
 	return rgba
 }
 
-// renderPercentilesChart draws P50/P90/P95/P99 avg speeds per batch.
-func renderPercentilesChart(state *uiState) image.Image {
+// drawCaption draws a small caption near the top-left of the image.
+// (caption overlay removed for cleaner look)
+
+
+// renderPercentilesChartWithFamily draws a compact percentiles chart for the given family (overall/ipv4/ipv6).
+func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+	w, h := compareChartSize(state)
+	return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
 	minY := math.MaxFloat64
 	maxY := -math.MaxFloat64
 
-	// Helper to build a series from a selector
 	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
 		ys := make([]float64, len(rows))
 		valid := 0
 		for i, r := range rows {
 			v := sel(r) * factor
 			if v <= 0 {
-				v = math.NaN()
-			} else {
-				if v < minY {
-					minY = v
-				}
-				if v > maxY {
-					maxY = v
-				}
-				valid++
+				ys[i] = math.NaN()
+				continue
 			}
 			ys[i] = v
+			if v < minY { minY = v }
+			if v > maxY { maxY = v }
+			valid++
 		}
 		st := pointStyle(color)
-		if valid == 1 {
-			st.DotWidth = 6
-		}
+		if valid == 1 { st.DotWidth = 6 }
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -1663,24 +1682,20 @@ func renderPercentilesChart(state *uiState) image.Image {
 			}
 		}
 	}
-	// Choose data family
-	fam := strings.ToLower(strings.TrimSpace(state.pctlFamily))
-	titlePrefix := ""
+
+	fam = strings.ToLower(strings.TrimSpace(fam))
 	switch fam {
 	case "ipv4":
-		titlePrefix = "IPv4 "
 		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP50Speed }, chart.ColorBlue)
 		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP90Speed }, chart.ColorGreen)
 		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP95Speed }, chart.ColorAlternateGray)
 		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP99Speed }, chart.ColorRed)
 	case "ipv6":
-		titlePrefix = "IPv6 "
 		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP50Speed }, chart.ColorBlue)
 		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP90Speed }, chart.ColorGreen)
 		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP95Speed }, chart.ColorAlternateGray)
 		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP99Speed }, chart.ColorRed)
 	default:
-		titlePrefix = "Overall "
 		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
 		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
 		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, chart.ColorAlternateGray)
@@ -1691,16 +1706,12 @@ func renderPercentilesChart(state *uiState) image.Image {
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
+		if maxY <= minY { maxY = minY + 1 }
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		yTicks = niceTicks(nMin, nMax, 4)
 	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
+		if maxY <= 0 { maxY = 1 }
 		_, nMax := niceAxisBounds(0, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
 	}
@@ -1711,8 +1722,14 @@ func renderPercentilesChart(state *uiState) image.Image {
 	case "time":
 		padBottom = 48
 	}
-	if state.showHints {
-		padBottom += 18
+	if state.showHints { padBottom += 18 }
+
+	// Title to match other charts
+	var titlePrefix string
+	switch strings.ToLower(strings.TrimSpace(fam)) {
+	case "ipv4": titlePrefix = "IPv4 "
+	case "ipv6": titlePrefix = "IPv6 "
+	default: titlePrefix = "Overall "
 	}
 	ch := chart.Chart{
 		Title:      fmt.Sprintf("%sSpeed Percentiles (%s)%s", titlePrefix, unitName, situationSuffix(state)),
@@ -1721,26 +1738,43 @@ func renderPercentilesChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	// Use full-width chart size like the other graphs
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
-		cw, chh := chartSize(state)
-		fmt.Printf("[viewer] percentiles render error: %v; showing blank fallback\n", err)
+		fmt.Printf("[viewer] percentiles(compare) render error: %v; blank fallback\n", err)
 		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
 	if err != nil {
-		cw, chh := chartSize(state)
-		fmt.Printf("[viewer] percentiles decode error: %v; showing blank fallback\n", err)
+		fmt.Printf("[viewer] percentiles(compare) decode error: %v; blank fallback\n", err)
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		return drawHint(img, "Hint: Speed percentiles surface variability. Wider gaps (P99>>P50) mean jittery performance.")
+		img = drawHint(img, "Hint: Speed percentiles surface variability. Wider gaps (P99>>P50) mean jittery performance.")
 	}
 	return img
+}
+
+// compareChartSize returns a compact size for side-by-side percentiles charts
+func compareChartSize(state *uiState) (int, int) {
+	if state == nil || state.window == nil || state.window.Canvas() == nil {
+		return 320, 240
+	}
+	sz := state.window.Canvas().Size()
+	totalW := int(sz.Width*0.95) - 12
+	if totalW < 600 { totalW = 600 }
+	// Three columns with minimal gutters managed by grid; we just target each panel width
+	w := totalW / 3
+	if w < 260 { w = 260 }
+	if w > 520 { w = 520 }
+	h := int(float32(w) * 0.8)
+	if h < 220 { h = 220 }
+	if h > 420 { h = 420 }
+	return w, h
 }
 
 // pickTimeStep selects a readable step and label format for a given time span.
@@ -1824,6 +1858,88 @@ func exportChartPNG(state *uiState, img *canvas.Image, defaultName string) {
 	fs.Show()
 }
 
+// exportAllChartsCombined stitches all currently visible charts into a single tall image and prompts to save.
+func exportAllChartsCombined(state *uiState) {
+	if state == nil || state.window == nil {
+		return
+	}
+	// Gather images in display order
+	imgs := []image.Image{}
+	labels := []string{}
+	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
+		imgs = append(imgs, state.speedImgCanvas.Image)
+		labels = append(labels, "Speed")
+	}
+	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil {
+		imgs = append(imgs, state.ttfbImgCanvas.Image)
+		labels = append(labels, "TTFB")
+	}
+	// Percentiles panels based on visibility
+	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil {
+		imgs = append(imgs, state.pctlOverallImg.Image)
+		labels = append(labels, "Percentiles – Overall")
+	}
+	if state.pctlIPv4Img != nil && state.pctlIPv4Img.Visible() && state.pctlIPv4Img.Image != nil {
+		imgs = append(imgs, state.pctlIPv4Img.Image)
+		labels = append(labels, "Percentiles – IPv4")
+	}
+	if state.pctlIPv6Img != nil && state.pctlIPv6Img.Visible() && state.pctlIPv6Img.Image != nil {
+		imgs = append(imgs, state.pctlIPv6Img.Image)
+		labels = append(labels, "Percentiles – IPv6")
+	}
+	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil {
+		imgs = append(imgs, state.errImgCanvas.Image)
+		labels = append(labels, "Error Rate")
+	}
+	if len(imgs) == 0 {
+		dialog.ShowInformation("Export All", "No charts to export.", state.window)
+		return
+	}
+	// Determine max width, total height
+	maxW := 0
+	totalH := 0
+	for _, im := range imgs {
+		b := im.Bounds()
+		if b.Dx() > maxW { maxW = b.Dx() }
+		totalH += b.Dy()
+		// add a separator gap between charts
+		totalH += 8
+	}
+	if totalH > 0 { totalH -= 8 }
+	if maxW <= 0 || totalH <= 0 {
+		dialog.ShowInformation("Export All", "Charts have no size to export.", state.window)
+		return
+	}
+	// Compose vertically with small gaps
+	out := image.NewRGBA(image.Rect(0, 0, maxW, totalH))
+	// Fill background dark to match app
+	for y := 0; y < totalH; y++ {
+		for x := 0; x < maxW; x++ {
+			out.SetRGBA(x, y, color.RGBA{R: 18, G: 18, B: 18, A: 255})
+		}
+	}
+	y := 0
+	for i, im := range imgs {
+		b := im.Bounds()
+		// center each chart horizontally
+		x := (maxW - b.Dx()) / 2
+		draw.Draw(out, image.Rect(x, y, x+b.Dx(), y+b.Dy()), im, b.Min, draw.Over)
+		y += b.Dy()
+		if i != len(imgs)-1 {
+			y += 8
+		}
+		_ = labels // reserved for future per-section labeling
+	}
+	// Prompt save
+	fs := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
+		if err != nil || wc == nil { return }
+		defer wc.Close()
+		_ = png.Encode(wc, out)
+	}, state.window)
+	fs.SetFileName("iqm_all_charts.png")
+	fs.Show()
+}
+
 // recent files helpers
 func recentFiles(state *uiState) []string {
 	prefs := state.app.Preferences()
@@ -1878,7 +1994,7 @@ func savePrefs(state *uiState) {
 	prefs.SetString("speedUnit", state.speedUnit)
 	prefs.SetBool("crosshair", state.crosshairEnabled)
 	prefs.SetBool("showHints", state.showHints)
-	prefs.SetString("pctlFamily", state.pctlFamily)
+	// (removed: pctl prefs)
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, xAxis *widget.Select, yScale *widget.Select, tabs *container.AppTabs, speedUnitSel *widget.Select) {
@@ -1953,7 +2069,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 		}
 	}
 	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
-	state.pctlFamily = strings.ToLower(prefs.StringWithFallback("pctlFamily", state.pctlFamily))
+	// (removed: pctl prefs)
 }
 
 // utils
