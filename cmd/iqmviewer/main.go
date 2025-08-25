@@ -427,19 +427,19 @@ func main() {
 	state.tpctlOverallOverlay = newCrosshairOverlay(state, "tpctl_overall")
 	state.tpctlIPv4Overlay = newCrosshairOverlay(state, "tpctl_ipv4")
 	state.tpctlIPv6Overlay = newCrosshairOverlay(state, "tpctl_ipv6")
-	// Vertical stack with separators for clarity; stack images with overlays
+	// Vertical stack with separators; put TTFB percentiles first so they follow Avg TTFB chart
 	state.pctlGrid = container.NewVBox(
-		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
-		widget.NewSeparator(),
-		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
-		widget.NewSeparator(),
-		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
-		widget.NewSeparator(),
 		container.NewStack(state.tpctlOverallImg, state.tpctlOverallOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.tpctlIPv4Img, state.tpctlIPv4Overlay),
 		widget.NewSeparator(),
 		container.NewStack(state.tpctlIPv6Img, state.tpctlIPv6Overlay),
+		widget.NewSeparator(),
+		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
+		widget.NewSeparator(),
+		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
 	)
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errImgCanvas.FillMode = canvas.ImageFillContain
