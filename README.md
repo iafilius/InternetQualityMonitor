@@ -305,12 +305,35 @@ Cache/Proxy signals
 - Proxy Suspected Rate (%): requests likely traversing proxies.
 - Warm Cache Suspected Rate (%): requests likely benefiting from warm caches.
 
+Diagnostics (tail, deltas, and SLA)
+- Tail Heaviness (P99/P50 Speed): Ratio of P99 to P50 throughput. Values > 2 suggest a heavy tail (more extreme slowdowns vs median). Useful to spot jittery or bursty networks.
+- TTFB Tail Heaviness (P95/P50): Ratio of tail to median latency per batch. Values close to 1.0 indicate a tight latency distribution; higher values mean heavier tail latency and more outliers/spikes.
+- Family Delta – Speed (IPv6−IPv4): Difference in average transfer speed between IPv6 and IPv4. Positive means IPv6 faster; negative means IPv4 faster.
+- Family Delta – TTFB (IPv4−IPv6): Difference in average TTFB between IPv4 and IPv6. Positive means IPv4 slower (higher latency); negative means IPv6 slower.
+- Family Delta – Speed % (IPv6 vs IPv4): Percent difference vs IPv4 baseline: (IPv6−IPv4)/IPv4 × 100%. Positive means IPv6 faster.
+- Family Delta – TTFB % (IPv6 vs IPv4): Percent difference vs IPv6 baseline: (IPv4−IPv6)/IPv6 × 100%. Positive means IPv6 lower latency.
+- SLA Compliance – Speed: Estimated percent of requests that meet or exceed the P50 speed target. Approximated from percentiles; higher is better. Threshold is user‑configurable.
+- SLA Compliance – TTFB: Estimated percent of requests that meet or beat the P95 TTFB target (i.e., P95 ≤ threshold). Approximated from percentiles; higher is better. Threshold is user‑configurable.
+- SLA Compliance Delta – Speed (pp): IPv6 compliance minus IPv4 compliance, in percentage points. Positive means IPv6 meets the speed SLA more often.
+- SLA Compliance Delta – TTFB (pp): IPv6 compliance minus IPv4 compliance, in percentage points. Positive means IPv6 meets the TTFB SLA more often.
+ - TTFB P95−P50 Gap: Difference between tail and median latency (P95 minus P50) per batch. Larger gaps indicate heavier tail latency and more outliers/spikes.
+
+TTFB Tail Heaviness (P95/P50)
+- What it shows: The ratio of P95 TTFB to P50 TTFB per batch (Overall/IPv4/IPv6).
+- How to read: ~1.0 means the tail is close to median (tight distribution). Higher ratios mean heavier tails and greater latency variability.
+- Why it matters: Complements the absolute P95−P50 Gap by giving a dimensionless view that is comparable across sites and situations.
+
 ### Viewer controls and exports
 
 - Situation filter: Use the Situation dropdown in the toolbar to scope charts and the table to a single scenario or All.
 - Titles: Chart titles are kept clean and do not include the situation label.
 - Watermark: The active Situation is shown in a subtle bottom-right on-image watermark (e.g., "Situation: Home_WiFi"). This watermark is embedded into exported PNGs so context is preserved when sharing.
 - X-Axis modes: Batch, RunTag, or Time. Y-Scale: Absolute (zero baseline) or Relative (nice bounds).
+- SLA thresholds (configurable): Two toolbar fields let you set corporate‑friendly defaults or your own targets:
+   - SLA P50 Speed (kbps): default 10,000 kbps (≈10 Mbps). Used by the SLA Compliance – Speed chart and hover labels.
+   - SLA P95 TTFB (ms): default 200 ms. Used by the SLA Compliance – TTFB chart and hover labels.
+   Values are persisted across sessions. Chart titles reflect the current thresholds and units.
+- Exports: Individual export items mirror the on‑screen order. "Export All (One Image)" stitches charts together in the same order shown in the UI, maintaining the watermark per chart.
 
 
 Analyzing only recent batches for a specific situation:

@@ -89,6 +89,23 @@ type uiState struct {
 	proxyImgCanvas     *canvas.Image
 	warmCacheImgCanvas *canvas.Image
 
+	// internal guards
+	initializing bool
+
+	// new charts
+	tailRatioImgCanvas     *canvas.Image // P99/P50 Speed ratio
+	ttfbTailRatioImgCanvas *canvas.Image // P95/P50 TTFB ratio
+	speedDeltaImgCanvas    *canvas.Image // IPv6-IPv4 speed delta
+	ttfbDeltaImgCanvas     *canvas.Image // IPv4-IPv6 ttfb delta (positive=IPv6 better)
+	speedDeltaPctImgCanvas *canvas.Image // IPv6-IPv4 speed delta (%) vs IPv4
+	ttfbDeltaPctImgCanvas  *canvas.Image // (IPv4-IPv6) ttfb delta (%) vs IPv6
+	slaSpeedImgCanvas      *canvas.Image // SLA compliance for speed
+	slaTTFBImgCanvas       *canvas.Image // SLA compliance for TTFB
+	slaSpeedDeltaImgCanvas *canvas.Image // SLA compliance delta (IPv6−IPv4) in pp
+	slaTTFBDeltaImgCanvas  *canvas.Image // SLA compliance delta (IPv6−IPv4) in pp
+	// tail/latency depth extra
+	tpctlP95GapImgCanvas *canvas.Image // TTFB P95−P50 gap (ms)
+
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
 	jitterOverlay    *crosshairOverlay
@@ -99,6 +116,23 @@ type uiState struct {
 	cacheOverlay     *crosshairOverlay
 	proxyOverlay     *crosshairOverlay
 	warmCacheOverlay *crosshairOverlay
+	// overlays for new charts
+	tailRatioOverlay     *crosshairOverlay
+	ttfbTailRatioOverlay *crosshairOverlay
+	speedDeltaOverlay    *crosshairOverlay
+	ttfbDeltaOverlay     *crosshairOverlay
+	speedDeltaPctOverlay *crosshairOverlay
+	ttfbDeltaPctOverlay  *crosshairOverlay
+	slaSpeedOverlay      *crosshairOverlay
+	slaTTFBOverlay       *crosshairOverlay
+	slaSpeedDeltaOverlay *crosshairOverlay
+	slaTTFBDeltaOverlay  *crosshairOverlay
+	// extra overlay
+	tpctlP95GapOverlay *crosshairOverlay
+
+	// SLA thresholds (configurable via UI)
+	slaSpeedThresholdKbps int // default 10000 (10 Mbps)
+	slaTTFBThresholdMs    int // default 200 ms
 
 	// containers
 	pctlGrid *fyne.Container
@@ -192,6 +226,9 @@ func main() {
 		showIPv6:    true,
 		speedUnit:   "kbps",
 	}
+	// Sensible corporate defaults for SLA thresholds
+	state.slaSpeedThresholdKbps = 10000 // 10 Mbps P50 speed target
+	state.slaTTFBThresholdMs = 200      // 200 ms P95 TTFB target
 	// Ensure crosshair preference is loaded before creating overlays/controls
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
@@ -237,10 +274,61 @@ func main() {
 	hintsChk := widget.NewCheck("Hints", nil)
 	hintsChk.SetChecked(state.showHints)
 
+	// SLA threshold inputs (configurable)
+	slaSpeedEntry := widget.NewEntry()
+	slaSpeedEntry.SetPlaceHolder("kbps")
+	slaSpeedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
+	slaSpeedEntry.OnChanged = func(v string) {
+		iv, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return
+		}
+		// clamp to reasonable range
+		if iv < 1000 {
+			iv = 1000
+		}
+		if iv > 10_000_000 {
+			iv = 10_000_000
+		}
+		if iv == state.slaSpeedThresholdKbps {
+			return
+		}
+		state.slaSpeedThresholdKbps = iv
+		savePrefs(state)
+		redrawCharts(state)
+	}
+
+	slaTTFBEntry := widget.NewEntry()
+	slaTTFBEntry.SetPlaceHolder("ms")
+	slaTTFBEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
+	slaTTFBEntry.OnChanged = func(v string) {
+		iv, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return
+		}
+		// clamp to reasonable range
+		if iv < 50 {
+			iv = 50
+		}
+		if iv > 10000 {
+			iv = 10000
+		}
+		if iv == state.slaTTFBThresholdMs {
+			return
+		}
+		state.slaTTFBThresholdMs = iv
+		savePrefs(state)
+		redrawCharts(state)
+	}
+
 	// Situation selector (options filled after first load)
 	sitSelect := widget.NewSelect([]string{}, func(v string) {
+		if state.initializing {
+			return
+		}
 		if strings.EqualFold(v, "all") {
-			state.situation = ""
+			// Persist "All" literally so it survives restarts unambiguously
+			state.situation = "All"
 		} else {
 			state.situation = v
 		}
@@ -400,6 +488,8 @@ func main() {
 		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
+		widget.NewLabel("SLA P50 Speed (kbps):"), slaSpeedEntry,
+		widget.NewLabel("SLA P95 TTFB (ms):"), slaTTFBEntry,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
@@ -443,20 +533,8 @@ func main() {
 	state.tpctlOverallOverlay = newCrosshairOverlay(state, "tpctl_overall")
 	state.tpctlIPv4Overlay = newCrosshairOverlay(state, "tpctl_ipv4")
 	state.tpctlIPv6Overlay = newCrosshairOverlay(state, "tpctl_ipv6")
-	// Vertical stack with separators; put TTFB percentiles first so they follow Avg TTFB chart
-	state.pctlGrid = container.NewVBox(
-		container.NewStack(state.tpctlOverallImg, state.tpctlOverallOverlay),
-		widget.NewSeparator(),
-		container.NewStack(state.tpctlIPv4Img, state.tpctlIPv4Overlay),
-		widget.NewSeparator(),
-		container.NewStack(state.tpctlIPv6Img, state.tpctlIPv6Overlay),
-		widget.NewSeparator(),
-		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
-		widget.NewSeparator(),
-		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
-		widget.NewSeparator(),
-		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
-	)
+	// Previously used a combined percentiles grid; now split into separate sections below.
+	state.pctlGrid = nil
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errImgCanvas.FillMode = canvas.ImageFillContain
 	state.errImgCanvas.SetMinSize(fyne.NewSize(900, 300))
@@ -499,6 +577,66 @@ func main() {
 	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 
+	// new charts: tail heaviness (P99/P50), IPv6-IPv4 deltas, SLA compliance
+	state.tailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tailRatioImgCanvas.FillMode = canvas.ImageFillContain
+	state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.tailRatioOverlay = newCrosshairOverlay(state, "tail_ratio")
+
+	// TTFB Tail Heaviness (P95/P50)
+	state.ttfbTailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.ttfbTailRatioImgCanvas.FillMode = canvas.ImageFillContain
+	state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.ttfbTailRatioOverlay = newCrosshairOverlay(state, "ttfb_tail_ratio")
+
+	state.speedDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.speedDeltaImgCanvas.FillMode = canvas.ImageFillContain
+	state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.speedDeltaOverlay = newCrosshairOverlay(state, "speed_delta")
+
+	state.ttfbDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.ttfbDeltaImgCanvas.FillMode = canvas.ImageFillContain
+	state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.ttfbDeltaOverlay = newCrosshairOverlay(state, "ttfb_delta")
+
+	// Percent-based deltas
+	state.speedDeltaPctImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.speedDeltaPctImgCanvas.FillMode = canvas.ImageFillContain
+	state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.speedDeltaPctOverlay = newCrosshairOverlay(state, "speed_delta_pct")
+
+	state.ttfbDeltaPctImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.ttfbDeltaPctImgCanvas.FillMode = canvas.ImageFillContain
+	state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.ttfbDeltaPctOverlay = newCrosshairOverlay(state, "ttfb_delta_pct")
+
+	state.slaSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.slaSpeedImgCanvas.FillMode = canvas.ImageFillContain
+	state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.slaSpeedOverlay = newCrosshairOverlay(state, "sla_speed")
+
+	state.slaTTFBImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.slaTTFBImgCanvas.FillMode = canvas.ImageFillContain
+	state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.slaTTFBOverlay = newCrosshairOverlay(state, "sla_ttfb")
+
+	// SLA delta charts (percentage points difference IPv6−IPv4)
+	state.slaSpeedDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.slaSpeedDeltaImgCanvas.FillMode = canvas.ImageFillContain
+	state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.slaSpeedDeltaOverlay = newCrosshairOverlay(state, "sla_speed_delta")
+
+	state.slaTTFBDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.slaTTFBDeltaImgCanvas.FillMode = canvas.ImageFillContain
+	state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.slaTTFBDeltaOverlay = newCrosshairOverlay(state, "sla_ttfb_delta")
+
+	// TTFB P95−P50 Gap chart
+	state.tpctlP95GapImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tpctlP95GapImgCanvas.FillMode = canvas.ImageFillContain
+	state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.tpctlP95GapOverlay = newCrosshairOverlay(state, "ttfb_p95_gap")
+
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
 	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
@@ -509,9 +647,13 @@ References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 - Captures latency before payload begins (DNS, TCP, TLS, server think time). Spikes often indicate setup or backend delays.
 - Use TTFB Percentiles to see tail latency beyond the average (rare but impactful slow requests).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte"
 	helpTTFBPct := `Percentiles of TTFB (ms): P50 (median), P90, P95, P99 per batch.
-- Expect P99 ≥ P95 ≥ P90 ≥ P50 by definition; bigger gaps mean heavier tail latency (spikes/outliers).
-- Investigate large P99 when the average looks fine; tail latency hurts user experience and systems throughput.
-References: https://en.wikipedia.org/wiki/Percentile , https://research.google/pubs/pub40801/` + axesTip
+	- Expect P99 ≥ P95 ≥ P90 ≥ P50 by definition; bigger gaps mean heavier tail latency (spikes/outliers).
+	- Investigate large P99 when the average looks fine; tail latency hurts user experience and systems throughput.
+	References: https://en.wikipedia.org/wiki/Percentile , https://research.google/pubs/pub40801/` + axesTip
+	helpSpeedPct := `Percentiles of throughput (per batch): P50 (median), P90, P95, P99 in the selected speed unit.
+	- Shows distribution and variability of achieved speed beyond the average.
+	- Use alongside Avg Speed to spot unstable networks (wide gaps between P50 and P95/P99).
+	References: https://en.wikipedia.org/wiki/Percentile` + axesTip
 	helpErr := `Error Rate per batch (Overall/IPv4/IPv6) as a percentage of lines with errors (TCP/HTTP failures).
 - Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip
 	helpJitter := `Jitter (%): mean absolute relative variation between consecutive sampled speeds within a transfer.
@@ -530,14 +672,76 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 	helpPlStable := `Plateau Stable Rate (%): fraction of time spent in stable plateaus during a transfer.
 - Higher values often mean smoother throughput (less variability).` + axesTip
 
+	// New charts help
+	helpTail := `Tail Heaviness (Speed P99/P50): ratio of 99th to 50th percentile throughput per batch.
+- Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip
+	helpTTFBTail := `TTFB Tail Heaviness (P95/P50): ratio of 95th to 50th percentile TTFB per batch.
+- Higher ratios indicate heavier tail latency; ~1.0 means tighter latency distribution.` + axesTip
+	helpDeltas := `Family Delta (IPv6−IPv4): difference between IPv6 and IPv4.
+- Speed Delta uses the chosen unit; positive means IPv6 faster.
+- TTFB Delta is (IPv4−IPv6) in ms; positive means IPv6 lower (better) latency.` + axesTip
+	helpSLA := `SLA Compliance (%): share of lines meeting thresholds.
+	- Speed SLA: median (P50) speed ≥ threshold.
+	- TTFB SLA: P95 TTFB ≤ threshold.
+Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 TTFB ≤ 200 ms).` + axesTip
+
+	// Extra comparisons
+	helpDeltaPct := `Percent-based Family Deltas:
+- Speed Δ%: (IPv6 − IPv4) / IPv4 × 100. Positive = IPv6 faster vs IPv4.
+- TTFB Δ%: (IPv4 − IPv6) / IPv6 × 100. Positive = IPv6 lower (better) latency.` + axesTip
+	helpSLADelta := `SLA Compliance Delta (pp): Difference in compliance (percentage points) between IPv6 and IPv4 using current thresholds.
+- Speed SLA Δpp = IPv6 % − IPv4 % (using P50 speed threshold)
+- TTFB SLA Δpp = IPv6 % − IPv4 % (using P95 TTFB threshold)` + axesTip
+
+	// Tail/latency depth extra
+	helpTTFBGap := `TTFB P95−P50 Gap (ms): difference between tail and median latency.
+- Larger gaps indicate heavier latency tails (outliers/spikes).
+- Use alongside Avg TTFB and TTFB Percentiles to spot tail issues hidden by averages.` + axesTip
+
+	// Build separate grids for Speed and TTFB percentiles
+	speedPctlGrid := container.NewVBox(
+		container.NewStack(state.pctlOverallImg, state.pctlOverallOverlay),
+		container.NewStack(state.pctlIPv4Img, state.pctlIPv4Overlay),
+		container.NewStack(state.pctlIPv6Img, state.pctlIPv6Overlay),
+	)
+	ttfbPctlGrid := container.NewVBox(
+		container.NewStack(state.tpctlOverallImg, state.tpctlOverallOverlay),
+		container.NewStack(state.tpctlIPv4Img, state.tpctlIPv4Overlay),
+		container.NewStack(state.tpctlIPv6Img, state.tpctlIPv6Overlay),
+	)
+
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
 		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
+		// Place Speed Percentiles directly under Avg Speed
+		makeChartSection("Speed Percentiles", helpSpeedPct, speedPctlGrid),
+		widget.NewSeparator(),
 		makeChartSection("TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
 		widget.NewSeparator(),
-		// Percentiles stack: TTFB (3 panels) followed by Speed (3 panels)
-		makeChartSection("Percentiles (TTFB + Speed)", helpTTFBPct+"\n\nAlso see Speed Percentiles for throughput distribution.", state.pctlGrid),
+		makeChartSection("TTFB Percentiles", helpTTFBPct, ttfbPctlGrid),
+		widget.NewSeparator(),
+		makeChartSection("Tail Heaviness (P99/P50 Speed)", helpTail, container.NewStack(state.tailRatioImgCanvas, state.tailRatioOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("TTFB Tail Heaviness (P95/P50)", helpTTFBTail, container.NewStack(state.ttfbTailRatioImgCanvas, state.ttfbTailRatioOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Family Delta – Speed (IPv6−IPv4)", helpDeltas, container.NewStack(state.speedDeltaImgCanvas, state.speedDeltaOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Family Delta – TTFB (IPv4−IPv6)", helpDeltas, container.NewStack(state.ttfbDeltaImgCanvas, state.ttfbDeltaOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Family Delta – Speed % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.speedDeltaPctImgCanvas, state.speedDeltaPctOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Family Delta – TTFB % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.ttfbDeltaPctImgCanvas, state.ttfbDeltaPctOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("SLA Compliance – Speed", helpSLA, container.NewStack(state.slaSpeedImgCanvas, state.slaSpeedOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("SLA Compliance – TTFB", helpSLA, container.NewStack(state.slaTTFBImgCanvas, state.slaTTFBOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("SLA Compliance Delta – Speed (pp)", helpSLADelta, container.NewStack(state.slaSpeedDeltaImgCanvas, state.slaSpeedDeltaOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("SLA Compliance Delta – TTFB (pp)", helpSLADelta, container.NewStack(state.slaTTFBDeltaImgCanvas, state.slaTTFBDeltaOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("TTFB P95−P50 Gap", helpTTFBGap, container.NewStack(state.tpctlP95GapImgCanvas, state.tpctlP95GapOverlay)),
 		widget.NewSeparator(),
 		makeChartSection("Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
 		widget.NewSeparator(),
@@ -558,7 +762,8 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 		makeChartSection("Plateau Stable Rate", helpPlStable, container.NewStack(state.plStableImgCanvas, state.plStableOverlay)),
 	)
 	// Always show stacked percentiles
-	state.pctlGrid.Show()
+	speedPctlGrid.Show()
+	ttfbPctlGrid.Show()
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
 	// tabs: Batches | Charts
@@ -727,6 +932,26 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 			state.warmCacheOverlay.enabled = b
 			state.warmCacheOverlay.Refresh()
 		}
+		if state.tailRatioOverlay != nil {
+			state.tailRatioOverlay.enabled = b
+			state.tailRatioOverlay.Refresh()
+		}
+		if state.speedDeltaOverlay != nil {
+			state.speedDeltaOverlay.enabled = b
+			state.speedDeltaOverlay.Refresh()
+		}
+		if state.ttfbDeltaOverlay != nil {
+			state.ttfbDeltaOverlay.enabled = b
+			state.ttfbDeltaOverlay.Refresh()
+		}
+		if state.slaSpeedOverlay != nil {
+			state.slaSpeedOverlay.enabled = b
+			state.slaSpeedOverlay.Refresh()
+		}
+		if state.slaTTFBOverlay != nil {
+			state.slaTTFBOverlay.enabled = b
+			state.slaTTFBOverlay.Refresh()
+		}
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -744,6 +969,27 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 	// menus, prefs, initial load
 	buildMenus(state, fileLabel)
 	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, xAxisSelect, yScaleSelect, tabs, speedSelect)
+	// Pre-populate Situation selector to reflect saved preference immediately (no save on init)
+	if state.situationSelect != nil {
+		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
+			state.situation = "All"
+			state.situationSelect.Options = []string{"All"}
+			state.initializing = true
+			state.situationSelect.SetSelected("All")
+			state.initializing = false
+			state.situationSelect.PlaceHolder = "All"
+		} else {
+			state.situationSelect.Options = []string{"All", state.situation}
+			state.initializing = true
+			state.situationSelect.SetSelected(state.situation)
+			state.initializing = false
+			state.situationSelect.PlaceHolder = state.situation
+		}
+		state.situationSelect.Refresh()
+	}
+	// Reflect loaded prefs in SLA entries
+	slaSpeedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
+	slaTTFBEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
 	// Set initial checkbox states explicitly now that callbacks exist
 	overallChk.SetChecked(state.showOverall)
 	ipv4Chk.SetChecked(state.showIPv4)
@@ -806,6 +1052,34 @@ References: https://en.wikipedia.org/wiki/Percentile , https://research.google/p
 		state.warmCacheOverlay.enabled = state.crosshairEnabled
 		state.warmCacheOverlay.Refresh()
 	}
+	if state.tailRatioOverlay != nil {
+		state.tailRatioOverlay.enabled = state.crosshairEnabled
+		state.tailRatioOverlay.Refresh()
+	}
+	if state.ttfbTailRatioOverlay != nil {
+		state.ttfbTailRatioOverlay.enabled = state.crosshairEnabled
+		state.ttfbTailRatioOverlay.Refresh()
+	}
+	if state.speedDeltaPctOverlay != nil { state.speedDeltaPctOverlay.enabled = state.crosshairEnabled; state.speedDeltaPctOverlay.Refresh() }
+	if state.ttfbDeltaPctOverlay != nil { state.ttfbDeltaPctOverlay.enabled = state.crosshairEnabled; state.ttfbDeltaPctOverlay.Refresh() }
+	if state.slaSpeedDeltaOverlay != nil { state.slaSpeedDeltaOverlay.enabled = state.crosshairEnabled; state.slaSpeedDeltaOverlay.Refresh() }
+	if state.slaTTFBDeltaOverlay != nil { state.slaTTFBDeltaOverlay.enabled = state.crosshairEnabled; state.slaTTFBDeltaOverlay.Refresh() }
+	if state.speedDeltaOverlay != nil {
+		state.speedDeltaOverlay.enabled = state.crosshairEnabled
+		state.speedDeltaOverlay.Refresh()
+	}
+	if state.ttfbDeltaOverlay != nil {
+		state.ttfbDeltaOverlay.enabled = state.crosshairEnabled
+		state.ttfbDeltaOverlay.Refresh()
+	}
+	if state.slaSpeedOverlay != nil {
+		state.slaSpeedOverlay.enabled = state.crosshairEnabled
+		state.slaSpeedOverlay.Refresh()
+	}
+	if state.slaTTFBOverlay != nil {
+		state.slaTTFBOverlay.enabled = state.crosshairEnabled
+		state.slaTTFBOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -833,13 +1107,25 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	recentMenu := fyne.NewMenu("Open Recent", append(items, clearRecent)...)
 	exportSpeed := fyne.NewMenuItem("Export Speed Chart…", func() { exportChartPNG(state, state.speedImgCanvas, "speed_chart.png") })
 	exportTTFB := fyne.NewMenuItem("Export TTFB Chart…", func() { exportChartPNG(state, state.ttfbImgCanvas, "ttfb_chart.png") })
-	exportPctlOverall := fyne.NewMenuItem("Export Percentiles – Overall…", func() { exportChartPNG(state, state.pctlOverallImg, "percentiles_overall.png") })
-	exportPctlIPv4 := fyne.NewMenuItem("Export Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
-	exportPctlIPv6 := fyne.NewMenuItem("Export Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
+	exportPctlOverall := fyne.NewMenuItem("Export Speed Percentiles – Overall…", func() { exportChartPNG(state, state.pctlOverallImg, "percentiles_overall.png") })
+	exportPctlIPv4 := fyne.NewMenuItem("Export Speed Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
+	exportPctlIPv6 := fyne.NewMenuItem("Export Speed Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
 	// TTFB percentiles exports
 	exportTPctlOverall := fyne.NewMenuItem("Export TTFB Percentiles – Overall…", func() { exportChartPNG(state, state.tpctlOverallImg, "ttfb_percentiles_overall.png") })
 	exportTPctlIPv4 := fyne.NewMenuItem("Export TTFB Percentiles – IPv4…", func() { exportChartPNG(state, state.tpctlIPv4Img, "ttfb_percentiles_ipv4.png") })
 	exportTPctlIPv6 := fyne.NewMenuItem("Export TTFB Percentiles – IPv6…", func() { exportChartPNG(state, state.tpctlIPv6Img, "ttfb_percentiles_ipv6.png") })
+	// New diagnostic charts exports
+	exportTailRatio := fyne.NewMenuItem("Export Tail Heaviness Chart…", func() { exportChartPNG(state, state.tailRatioImgCanvas, "tail_heaviness_chart.png") })
+	exportTTFBTailRatio := fyne.NewMenuItem("Export TTFB Tail Heaviness (P95/P50)…", func() { exportChartPNG(state, state.ttfbTailRatioImgCanvas, "ttfb_tail_heaviness_chart.png") })
+	exportSpeedDelta := fyne.NewMenuItem("Export Family Delta – Speed…", func() { exportChartPNG(state, state.speedDeltaImgCanvas, "family_delta_speed_chart.png") })
+	exportTTFBDelta := fyne.NewMenuItem("Export Family Delta – TTFB…", func() { exportChartPNG(state, state.ttfbDeltaImgCanvas, "family_delta_ttfb_chart.png") })
+	exportSpeedDeltaPct := fyne.NewMenuItem("Export Family Delta – Speed %…", func() { exportChartPNG(state, state.speedDeltaPctImgCanvas, "family_delta_speed_pct_chart.png") })
+	exportTTFBDeltaPct := fyne.NewMenuItem("Export Family Delta – TTFB %…", func() { exportChartPNG(state, state.ttfbDeltaPctImgCanvas, "family_delta_ttfb_pct_chart.png") })
+	exportSLASpeed := fyne.NewMenuItem("Export SLA Compliance – Speed…", func() { exportChartPNG(state, state.slaSpeedImgCanvas, "sla_compliance_speed_chart.png") })
+	exportSLATTFB := fyne.NewMenuItem("Export SLA Compliance – TTFB…", func() { exportChartPNG(state, state.slaTTFBImgCanvas, "sla_compliance_ttfb_chart.png") })
+	exportSLASpeedDelta := fyne.NewMenuItem("Export SLA Compliance Delta – Speed (pp)…", func() { exportChartPNG(state, state.slaSpeedDeltaImgCanvas, "sla_compliance_delta_speed_chart.png") })
+	exportSLATTFBDelta := fyne.NewMenuItem("Export SLA Compliance Delta – TTFB (pp)…", func() { exportChartPNG(state, state.slaTTFBDeltaImgCanvas, "sla_compliance_delta_ttfb_chart.png") })
+	exportTTFBGap := fyne.NewMenuItem("Export TTFB P95−P50 Gap…", func() { exportChartPNG(state, state.tpctlP95GapImgCanvas, "ttfb_p95_p50_gap_chart.png") })
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
@@ -855,13 +1141,25 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
 		fyne.NewMenuItemSeparator(),
 		exportSpeed,
-		exportTTFB,
 		exportPctlOverall,
 		exportPctlIPv4,
 		exportPctlIPv6,
+		exportTTFB,
 		exportTPctlOverall,
 		exportTPctlIPv4,
 		exportTPctlIPv6,
+		// New diagnostics in on-screen order
+		exportTailRatio,
+		exportTTFBTailRatio,
+		exportSpeedDelta,
+		exportTTFBDelta,
+		exportSpeedDeltaPct,
+		exportTTFBDeltaPct,
+		exportSLASpeed,
+		exportSLATTFB,
+		exportSLASpeedDelta,
+		exportSLATTFBDelta,
+		exportTTFBGap,
 		exportErrors,
 		exportJitter,
 		exportCoV,
@@ -929,7 +1227,11 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 	for _, s := range state.summaries {
 		state.runTagSituation[s.RunTag] = s.Situation
 	}
-	state.situations = uniqueSituationsFromMap(state.runTagSituation)
+	// Prefer situations taken directly from summaries; fall back to map if empty
+	state.situations = uniqueSituationsFromSummaries(state.summaries)
+	if len(state.situations) == 0 {
+		state.situations = uniqueSituationsFromMap(state.runTagSituation)
+	}
 	// Log counts by situation to help verify filtering covers all batches
 	if len(state.summaries) > 0 {
 		counts := map[string]int{}
@@ -957,13 +1259,43 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 		opts = append(opts, "All")
 		opts = append(opts, state.situations...)
 		state.situationSelect.Options = opts
-		// Default to All unless a specific situation was previously chosen
-		if state.situation == "" {
-			state.situationSelect.Selected = "All"
+		fmt.Printf("[viewer] situations available: %v\n", opts)
+	// Default to All unless a specific situation was previously chosen
+		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
+			state.situation = "All"
+			state.initializing = true
+			state.situationSelect.SetSelected("All")
+			state.initializing = false
+			fmt.Printf("[viewer] selecting situation: %q (default)\n", "All")
 		} else {
-			state.situationSelect.Selected = state.situation
+			// If saved situation is no longer present in dataset, fall back to All
+			found := false
+			for _, o := range opts {
+				if strings.EqualFold(strings.TrimSpace(o), strings.TrimSpace(state.situation)) {
+					found = true
+					// Use canonical option string in case of case differences
+					state.situation = o
+					break
+				}
+			}
+			if found {
+				state.initializing = true
+				state.situationSelect.SetSelected(state.situation)
+				state.initializing = false
+				fmt.Printf("[viewer] selecting situation: %q (restored)\n", state.situation)
+			} else {
+				state.situation = "All"
+				state.initializing = true
+				state.situationSelect.SetSelected("All")
+				state.initializing = false
+				fmt.Printf("[viewer] saved situation not found; selecting %q\n", "All")
+			}
 		}
+		// Ensure placeholder reflects actual selection
+		state.situationSelect.PlaceHolder = state.situationSelect.Selected
 		state.situationSelect.Refresh()
+		// Persist the resolved selection so it sticks next launch
+		savePrefs(state)
 	}
 	if state.table != nil {
 		state.table.Refresh()
@@ -993,11 +1325,31 @@ func uniqueSituationsFromMap(m map[string]string) []string {
 	return out
 }
 
+// uniqueSituationsFromSummaries returns sorted unique non-empty situations from batch summaries
+func uniqueSituationsFromSummaries(rows []analysis.BatchSummary) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, r := range rows {
+		s := strings.TrimSpace(r.Situation)
+		if s != "" {
+			set[s] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func filteredSummaries(state *uiState) []analysis.BatchSummary {
 	if state == nil {
 		return nil
 	}
-	if state.situation == "" {
+	if state.situation == "" || strings.EqualFold(state.situation, "All") {
 		return state.summaries
 	}
 	out := make([]analysis.BatchSummary, 0, len(state.summaries))
@@ -1151,6 +1503,141 @@ func redrawCharts(state *uiState) {
 			}
 		} else {
 			state.tpctlIPv6Img.Hide()
+		}
+	}
+	// Tail Heaviness (P99/P50 Speed)
+	trImg := renderTailHeavinessChart(state)
+	if trImg != nil {
+		if state.tailRatioImgCanvas != nil {
+			state.tailRatioImgCanvas.Image = trImg
+			cw, chh := chartSize(state)
+			state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.tailRatioImgCanvas.Refresh()
+			if state.tailRatioOverlay != nil {
+				state.tailRatioOverlay.Refresh()
+			}
+		}
+	}
+	// TTFB Tail Heaviness (P95/P50)
+	ttrImg := renderTTFBTailHeavinessChart(state)
+	if ttrImg != nil {
+		if state.ttfbTailRatioImgCanvas != nil {
+			state.ttfbTailRatioImgCanvas.Image = ttrImg
+			cw, chh := chartSize(state)
+			state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.ttfbTailRatioImgCanvas.Refresh()
+			if state.ttfbTailRatioOverlay != nil {
+				state.ttfbTailRatioOverlay.Refresh()
+			}
+		}
+	}
+	// Family Delta – Speed
+	sdImg := renderFamilyDeltaSpeedChart(state)
+	if sdImg != nil {
+		if state.speedDeltaImgCanvas != nil {
+			state.speedDeltaImgCanvas.Image = sdImg
+			cw, chh := chartSize(state)
+			state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.speedDeltaImgCanvas.Refresh()
+			if state.speedDeltaOverlay != nil {
+				state.speedDeltaOverlay.Refresh()
+			}
+		}
+	}
+	// Family Delta – TTFB
+	tdImg := renderFamilyDeltaTTFBChart(state)
+	if tdImg != nil {
+		if state.ttfbDeltaImgCanvas != nil {
+			state.ttfbDeltaImgCanvas.Image = tdImg
+			cw, chh := chartSize(state)
+			state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.ttfbDeltaImgCanvas.Refresh()
+			if state.ttfbDeltaOverlay != nil {
+				state.ttfbDeltaOverlay.Refresh()
+			}
+		}
+	}
+	// Family Delta – Speed %
+	sdpImg := renderFamilyDeltaSpeedPctChart(state)
+	if sdpImg != nil {
+		if state.speedDeltaPctImgCanvas != nil {
+			state.speedDeltaPctImgCanvas.Image = sdpImg
+			cw, chh := chartSize(state)
+			state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.speedDeltaPctImgCanvas.Refresh()
+			if state.speedDeltaPctOverlay != nil { state.speedDeltaPctOverlay.Refresh() }
+		}
+	}
+	// Family Delta – TTFB %
+	tdpImg := renderFamilyDeltaTTFBPctChart(state)
+	if tdpImg != nil {
+		if state.ttfbDeltaPctImgCanvas != nil {
+			state.ttfbDeltaPctImgCanvas.Image = tdpImg
+			cw, chh := chartSize(state)
+			state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.ttfbDeltaPctImgCanvas.Refresh()
+			if state.ttfbDeltaPctOverlay != nil { state.ttfbDeltaPctOverlay.Refresh() }
+		}
+	}
+	// SLA Compliance – Speed
+	slasImg := renderSLASpeedChart(state)
+	if slasImg != nil {
+		if state.slaSpeedImgCanvas != nil {
+			state.slaSpeedImgCanvas.Image = slasImg
+			cw, chh := chartSize(state)
+			state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.slaSpeedImgCanvas.Refresh()
+			if state.slaSpeedOverlay != nil {
+				state.slaSpeedOverlay.Refresh()
+			}
+		}
+	}
+	// SLA Compliance – TTFB
+	slatImg := renderSLATTFBChart(state)
+	if slatImg != nil {
+		if state.slaTTFBImgCanvas != nil {
+			state.slaTTFBImgCanvas.Image = slatImg
+			cw, chh := chartSize(state)
+			state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.slaTTFBImgCanvas.Refresh()
+			if state.slaTTFBOverlay != nil {
+				state.slaTTFBOverlay.Refresh()
+			}
+		}
+	}
+	// SLA Compliance Delta – Speed
+	slaSpdDelta := renderSLASpeedDeltaChart(state)
+	if slaSpdDelta != nil {
+		if state.slaSpeedDeltaImgCanvas != nil {
+			state.slaSpeedDeltaImgCanvas.Image = slaSpdDelta
+			cw, chh := chartSize(state)
+			state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.slaSpeedDeltaImgCanvas.Refresh()
+			if state.slaSpeedDeltaOverlay != nil { state.slaSpeedDeltaOverlay.Refresh() }
+		}
+	}
+	// SLA Compliance Delta – TTFB
+	slaTtfbDelta := renderSLATTFBDeltaChart(state)
+	if slaTtfbDelta != nil {
+		if state.slaTTFBDeltaImgCanvas != nil {
+			state.slaTTFBDeltaImgCanvas.Image = slaTtfbDelta
+			cw, chh := chartSize(state)
+			state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.slaTTFBDeltaImgCanvas.Refresh()
+			if state.slaTTFBDeltaOverlay != nil { state.slaTTFBDeltaOverlay.Refresh() }
+		}
+	}
+	// TTFB P95−P50 Gap (ms)
+	gapImg := renderTTFBP95GapChart(state)
+	if gapImg != nil {
+		if state.tpctlP95GapImgCanvas != nil {
+			state.tpctlP95GapImgCanvas.Image = gapImg
+			cw, chh := chartSize(state)
+			state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.tpctlP95GapImgCanvas.Refresh()
+			if state.tpctlP95GapOverlay != nil {
+				state.tpctlP95GapOverlay.Refresh()
+			}
 		}
 	}
 	// Error Rate chart
@@ -1462,6 +1949,252 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		img = drawHint(img, "Hint: TTFB percentiles capture latency distribution. Wider gaps indicate latency spikes.")
 	}
 	// always watermark with active situation
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderTTFBTailHeavinessChart plots TTFB tail heaviness as P95/P50 ratio (unitless) for Overall/IPv4/IPv6.
+func renderTTFBTailHeavinessChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 {
+			if b.AvgP50TTFBMs <= 0 {
+				return math.NaN()
+			}
+			return b.AvgP95TTFBMs / b.AvgP50TTFBMs
+		}, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil || b.IPv4.AvgP50TTFBMs <= 0 {
+				return math.NaN()
+			}
+			return b.IPv4.AvgP95TTFBMs / b.IPv4.AvgP50TTFBMs
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil || b.IPv6.AvgP50TTFBMs <= 0 {
+				return math.NaN()
+			}
+			return b.IPv6.AvgP95TTFBMs / b.IPv6.AvgP50TTFBMs
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 0.1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 1 {
+			maxY = 2
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "TTFB Tail Heaviness (P95/P50)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ratio", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Ratio of P95 to P50 TTFB. Higher means heavier latency tail.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderTTFBP95GapChart plots (P95−P50) TTFB gap in ms for Overall/IPv4/IPv6.
+func renderTTFBP95GapChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			if v < 0 {
+				v = 0
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+
+	// Overall/IPv4/IPv6 (respect visibility toggles)
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return math.Max(0, b.AvgP95TTFBMs-b.AvgP50TTFBMs) }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return math.NaN()
+			}
+			return math.Max(0, b.IPv4.AvgP95TTFBMs-b.IPv4.AvgP50TTFBMs)
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return math.NaN()
+			}
+			return math.Max(0, b.IPv6.AvgP95TTFBMs-b.IPv6.AvgP50TTFBMs)
+		}, chart.ColorGreen)
+	}
+
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 4)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{
+		Title:      "TTFB P95−P50 Gap (ms)",
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
+		Series:     series,
+	}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Gap = P95−P50. Larger gaps = heavier latency tails.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
@@ -2997,6 +3730,675 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderTailHeavinessChart plots AvgP99P50Ratio for speed (unitless ratio) per batch for overall/IPv4/IPv6.
+func renderTailHeavinessChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgP99P50Ratio }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgP99P50Ratio
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgP99P50Ratio
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 0.1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 1 {
+			maxY = 2
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Tail Heaviness (Speed P99/P50)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ratio", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Ratio of P99 to P50 speed. Higher means heavier tail/instability.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderFamilyDeltaSpeedChart plots IPv6−IPv4 AvgSpeed delta in selected unit.
+func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil {
+			ys[i] = math.NaN()
+			continue
+		}
+		v := (r.IPv6.AvgSpeed - r.IPv4.AvgSpeed) * factor
+		ys[i] = v
+		if v < minY {
+			minY = v
+		}
+		if v > maxY {
+			maxY = v
+		}
+	}
+	st := pointStyle(chart.ColorRed)
+	var series chart.Series
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv6−IPv4", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv6−IPv4", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv6−IPv4", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+	// Axis symmetric around 0 when absolute mode
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Family Delta – Speed (IPv6−IPv4) (%s)", unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive delta means IPv6 faster than IPv4.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderFamilyDeltaTTFBChart plots (IPv4−IPv6) AvgTTFB delta in ms; positive means IPv6 lower/better.
+func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil {
+			ys[i] = math.NaN()
+			continue
+		}
+		v := (r.IPv4.AvgTTFB - r.IPv6.AvgTTFB)
+		ys[i] = v
+		if v < minY {
+			minY = v
+		}
+		if v > maxY {
+			maxY = v
+		}
+	}
+	st := pointStyle(chart.ColorBlue)
+	var series chart.Series
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv4−IPv6", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv4−IPv6", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv4−IPv6", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv4−IPv6", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 {
+				nMin = 0
+			}
+			if nMax < 0 {
+				nMax = 0
+			}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Family Delta – TTFB (IPv4−IPv6) (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Positive delta means IPv6 has lower (better) TTFB.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderFamilyDeltaSpeedPctChart plots percent delta: (IPv6−IPv4)/IPv4 * 100
+func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil || r.IPv4.AvgSpeed == 0 {
+			ys[i] = math.NaN()
+			continue
+		}
+		v := (r.IPv6.AvgSpeed - r.IPv4.AvgSpeed) / r.IPv4.AvgSpeed * 100.0
+		ys[i] = v
+		if v < minY { minY = v }
+		if v > maxY { maxY = v }
+	}
+	st := pointStyle(chart.ColorRed)
+	var series chart.Series
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "IPv6 vs IPv4 %", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "IPv6 vs IPv4 %", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY {
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		if !state.useRelative {
+			if nMin > 0 { nMin = 0 }
+			if nMax < 0 { nMax = 0 }
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	}
+	padBottom := 28
+	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
+	if state.showHints { padBottom += 18 }
+	ch := chart.Chart{Title: "Family Delta – Speed % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Positive % means IPv6 is faster vs IPv4.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderFamilyDeltaTTFBPctChart plots percent delta: (IPv4−IPv6)/IPv6 * 100 (positive = IPv6 lower/better latency)
+func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 { return blank(800, 320) }
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil || r.IPv6.AvgTTFB == 0 {
+			ys[i] = math.NaN(); continue
+		}
+		v := (r.IPv4.AvgTTFB - r.IPv6.AvgTTFB) / r.IPv6.AvgTTFB * 100.0
+		ys[i] = v
+		if v < minY { minY = v }
+		if v > maxY { maxY = v }
+	}
+	st := pointStyle(chart.ColorBlue)
+	var series chart.Series
+	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6 vs IPv4 %", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6 vs IPv4 %", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6 vs IPv4 %", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6 vs IPv4 %", XValues:xs, YValues:ys, Style:st} } }
+	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
+	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
+	ch := chart.Chart{Title: "Family Delta – TTFB % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Positive % means IPv6 has lower (better) TTFB.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderSLASpeedDeltaChart computes IPv6−IPv4 delta in percentage points using configured threshold
+func renderSLASpeedDeltaChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 { return blank(800, 320) }
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil { ys[i] = math.NaN(); continue }
+		v4 := estimateCompliance(map[int]float64{50:r.IPv4.AvgP50Speed,90:r.IPv4.AvgP90Speed,95:r.IPv4.AvgP95Speed,99:r.IPv4.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
+		v6 := estimateCompliance(map[int]float64{50:r.IPv6.AvgP50Speed,90:r.IPv6.AvgP90Speed,95:r.IPv6.AvgP95Speed,99:r.IPv6.AvgP99Speed}, float64(state.slaSpeedThresholdKbps), true)
+		val := v6 - v4
+		ys[i] = val
+		if val < minY { minY = val }
+		if val > maxY { maxY = val }
+	}
+	st := pointStyle(chart.ColorRed)
+	var series chart.Series
+	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:xs, YValues:ys, Style:st} } }
+	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
+	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
+	ch := chart.Chart{Title: "SLA Compliance Delta – Speed (pp)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderSLATTFBDeltaChart computes IPv6−IPv4 delta in percentage points using configured threshold
+func renderSLATTFBDeltaChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 { return blank(800, 320) }
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	for i, r := range rows {
+		if r.IPv4 == nil || r.IPv6 == nil { ys[i] = math.NaN(); continue }
+		v4 := estimateCompliance(map[int]float64{50:r.IPv4.AvgP50TTFBMs,90:r.IPv4.AvgP90TTFBMs,95:r.IPv4.AvgP95TTFBMs,99:r.IPv4.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
+		v6 := estimateCompliance(map[int]float64{50:r.IPv6.AvgP50TTFBMs,90:r.IPv6.AvgP90TTFBMs,95:r.IPv6.AvgP95TTFBMs,99:r.IPv6.AvgP99TTFBMs}, float64(state.slaTTFBThresholdMs), false)
+		val := v6 - v4
+		ys[i] = val
+		if val < minY { minY = val }
+		if val > maxY { maxY = val }
+	}
+	st := pointStyle(chart.ColorBlue)
+	var series chart.Series
+	if timeMode { if len(times)==1 { t2:=times[0].Add(1*time.Second); ys=append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:[]time.Time{times[0], t2}, YValues:ys, Style:st} } else { series = chart.TimeSeries{Name:"IPv6−IPv4 pp", XValues:times, YValues:ys, Style:st} } } else { if len(xs)==1 { x2:=xs[0]+1; ys=append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:[]float64{xs[0], x2}, YValues:ys, Style:st} } else { series = chart.ContinuousSeries{Name:"IPv6−IPv4 pp", XValues:xs, YValues:ys, Style:st} }
+	}
+	var yAxisRange *chart.ContinuousRange; var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if haveY { nMin, nMax := niceAxisBounds(minY, maxY); if !state.useRelative { if nMin>0 { nMin=0 }; if nMax<0 { nMax=0 } }; yAxisRange=&chart.ContinuousRange{Min:nMin, Max:nMax}; yTicks = niceTicks(nMin, nMax, 6) }
+	padBottom := 28; switch state.xAxisMode { case "run_tag": padBottom=90; case "time": padBottom=48 }; if state.showHints { padBottom += 18 }
+	ch := chart.Chart{Title: "SLA Compliance Delta – TTFB (pp)", Background: chart.Style{Padding: chart.Box{Top:14, Left:16, Right:12, Bottom:padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	cw, chh := chartSize(state); ch.Width, ch.Height = cw, chh; ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer; if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf); if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Positive pp means IPv6 has higher compliance vs IPv4.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// SLA thresholds (configured via state)
+
+// estimateCompliance returns approximate % of lines meeting threshold using available percentiles.
+// For speed: threshold is minimum speed; for ttfb: maximum allowed latency.
+func estimateCompliance(percentiles map[int]float64, threshold float64, greaterBetter bool) float64 {
+	// consider 50, 90, 95, 99 percentiles if present
+	type p struct {
+		k int
+		v float64
+	}
+	var ps []p
+	for _, k := range []int{50, 90, 95, 99} {
+		if v, ok := percentiles[k]; ok && v > 0 {
+			ps = append(ps, p{k, v})
+		}
+	}
+	if len(ps) == 0 {
+		return math.NaN()
+	}
+	// choose highest percentile satisfying condition
+	best := 0
+	for _, e := range ps {
+		if greaterBetter {
+			if e.v >= threshold && e.k > best {
+				best = e.k
+			}
+		} else {
+			if e.v <= threshold && e.k > best {
+				best = e.k
+			}
+		}
+	}
+	if best == 0 {
+		// none satisfied; small value (e.g., 0 or 1)
+		return 0
+	}
+	return float64(best)
+}
+
+// renderSLASpeedChart renders estimated compliance % for speed threshold using percentiles (Overall/IPv4/IPv6).
+func renderSLASpeedChart(state *uiState) image.Image {
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := 100.0, 0.0
+	add := func(name string, get func(b analysis.BatchSummary) map[int]float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		for i, r := range rows {
+			m := get(r)
+			// computation uses kbps in summaries; threshold is stored in kbps
+			val := estimateCompliance(m, float64(state.slaSpeedThresholdKbps), true)
+			if math.IsNaN(val) {
+				ys[i] = math.NaN()
+			} else {
+				ys[i] = val
+			}
+			if ys[i] < minY {
+				minY = ys[i]
+			}
+			if ys[i] > maxY {
+				maxY = ys[i]
+			}
+		}
+		st := pointStyle(col)
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) map[int]float64 {
+			return map[int]float64{50: b.AvgP50Speed, 90: b.AvgP90Speed, 95: b.AvgP95Speed, 99: b.AvgP99Speed}
+		}, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) map[int]float64 {
+			if b.IPv4 == nil {
+				return nil
+			}
+			return map[int]float64{50: b.IPv4.AvgP50Speed, 90: b.IPv4.AvgP90Speed, 95: b.IPv4.AvgP95Speed, 99: b.IPv4.AvgP99Speed}
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) map[int]float64 {
+			if b.IPv6 == nil {
+				return nil
+			}
+			return map[int]float64{50: b.IPv6.AvgP50Speed, 90: b.IPv6.AvgP90Speed, 95: b.IPv6.AvgP95Speed, 99: b.IPv6.AvgP99Speed}
+		}, chart.ColorGreen)
+	}
+	// Axis 0..100
+	yAxisRange := &chart.ContinuousRange{Min: 0, Max: 100}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("SLA Compliance – Speed (≥ %.1f %s P50 est)", float64(state.slaSpeedThresholdKbps)*factor, unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Approximated via percentiles. Bars reflect ≥ threshold percentile.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderSLATTFBChart renders estimated compliance % for TTFB threshold using percentiles (Overall/IPv4/IPv6).
+func renderSLATTFBChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	add := func(name string, get func(b analysis.BatchSummary) map[int]float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		for i, r := range rows {
+			m := get(r)
+			val := estimateCompliance(m, float64(state.slaTTFBThresholdMs), false)
+			if math.IsNaN(val) {
+				ys[i] = math.NaN()
+			} else {
+				ys[i] = val
+			}
+		}
+		st := pointStyle(col)
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) map[int]float64 {
+			return map[int]float64{50: b.AvgP50TTFBMs, 90: b.AvgP90TTFBMs, 95: b.AvgP95TTFBMs, 99: b.AvgP99TTFBMs}
+		}, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) map[int]float64 {
+			if b.IPv4 == nil {
+				return nil
+			}
+			return map[int]float64{50: b.IPv4.AvgP50TTFBMs, 90: b.IPv4.AvgP90TTFBMs, 95: b.IPv4.AvgP95TTFBMs, 99: b.IPv4.AvgP99TTFBMs}
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) map[int]float64 {
+			if b.IPv6 == nil {
+				return nil
+			}
+			return map[int]float64{50: b.IPv6.AvgP50TTFBMs, 90: b.IPv6.AvgP90TTFBMs, 95: b.IPv6.AvgP95TTFBMs, 99: b.IPv6.AvgP99TTFBMs}
+		}, chart.ColorGreen)
+	}
+	yAxisRange := &chart.ContinuousRange{Min: 0, Max: 100}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("SLA Compliance – TTFB (≤ %d ms P95 est)", state.slaTTFBThresholdMs), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Approximated via percentiles. Higher means more requests meet TTFB target.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
 // buildXAxis constructs X values and axis config based on the selected mode.
 // Returns whether time mode is used, the time slice (if applicable), the float Xs otherwise, and the configured XAxis.
 func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, []float64, chart.XAxis) {
@@ -3109,7 +4511,6 @@ func parseRunTagTime(runTag string) time.Time {
 	}
 	return time.Time{}
 }
-
 
 // niceAxisBounds expands [min,max] by a small margin and rounds to "nice" numbers for readability.
 func niceAxisBounds(min, max float64) (float64, float64) {
@@ -3285,7 +4686,7 @@ func drawWatermark(img image.Image, text string) image.Image {
 
 // activeSituationLabel returns the visible label for the current situation (or "All").
 func activeSituationLabel(state *uiState) string {
-	if state == nil || strings.TrimSpace(state.situation) == "" {
+	if state == nil || strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
 		return "All"
 	}
 	return state.situation
@@ -3589,29 +4990,30 @@ func exportAllChartsCombined(state *uiState) {
 	if state == nil || state.window == nil {
 		return
 	}
-	// Gather images in display order
+	// Gather images in display order (match on-screen order)
 	imgs := []image.Image{}
 	labels := []string{}
 	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
 		imgs = append(imgs, state.speedImgCanvas.Image)
 		labels = append(labels, "Speed")
 	}
-	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil {
-		imgs = append(imgs, state.ttfbImgCanvas.Image)
-		labels = append(labels, "TTFB")
-	}
-	// Percentiles panels based on visibility
+	// Speed percentiles panels
 	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil {
 		imgs = append(imgs, state.pctlOverallImg.Image)
-		labels = append(labels, "Percentiles – Overall")
+		labels = append(labels, "Speed Percentiles – Overall")
 	}
 	if state.pctlIPv4Img != nil && state.pctlIPv4Img.Visible() && state.pctlIPv4Img.Image != nil {
 		imgs = append(imgs, state.pctlIPv4Img.Image)
-		labels = append(labels, "Percentiles – IPv4")
+		labels = append(labels, "Speed Percentiles – IPv4")
 	}
 	if state.pctlIPv6Img != nil && state.pctlIPv6Img.Visible() && state.pctlIPv6Img.Image != nil {
 		imgs = append(imgs, state.pctlIPv6Img.Image)
-		labels = append(labels, "Percentiles – IPv6")
+		labels = append(labels, "Speed Percentiles – IPv6")
+	}
+	// TTFB average
+	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil {
+		imgs = append(imgs, state.ttfbImgCanvas.Image)
+		labels = append(labels, "TTFB (Avg)")
 	}
 	// TTFB percentiles panels based on visibility
 	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil {
@@ -3625,6 +5027,52 @@ func exportAllChartsCombined(state *uiState) {
 	if state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Visible() && state.tpctlIPv6Img.Image != nil {
 		imgs = append(imgs, state.tpctlIPv6Img.Image)
 		labels = append(labels, "TTFB Percentiles – IPv6")
+	}
+	// New diagnostics in on-screen order
+	if state.tailRatioImgCanvas != nil && state.tailRatioImgCanvas.Image != nil {
+		imgs = append(imgs, state.tailRatioImgCanvas.Image)
+		labels = append(labels, "Tail Heaviness (P99/P50 Speed)")
+	}
+	if state.ttfbTailRatioImgCanvas != nil && state.ttfbTailRatioImgCanvas.Image != nil {
+		imgs = append(imgs, state.ttfbTailRatioImgCanvas.Image)
+		labels = append(labels, "TTFB Tail Heaviness (P95/P50)")
+	}
+	if state.speedDeltaImgCanvas != nil && state.speedDeltaImgCanvas.Image != nil {
+		imgs = append(imgs, state.speedDeltaImgCanvas.Image)
+		labels = append(labels, "Family Delta – Speed (IPv6−IPv4)")
+	}
+	if state.ttfbDeltaImgCanvas != nil && state.ttfbDeltaImgCanvas.Image != nil {
+		imgs = append(imgs, state.ttfbDeltaImgCanvas.Image)
+		labels = append(labels, "Family Delta – TTFB (IPv4−IPv6)")
+	}
+	if state.speedDeltaPctImgCanvas != nil && state.speedDeltaPctImgCanvas.Image != nil {
+		imgs = append(imgs, state.speedDeltaPctImgCanvas.Image)
+		labels = append(labels, "Family Delta – Speed % (IPv6 vs IPv4)")
+	}
+	if state.ttfbDeltaPctImgCanvas != nil && state.ttfbDeltaPctImgCanvas.Image != nil {
+		imgs = append(imgs, state.ttfbDeltaPctImgCanvas.Image)
+		labels = append(labels, "Family Delta – TTFB % (IPv6 vs IPv4)")
+	}
+	if state.slaSpeedImgCanvas != nil && state.slaSpeedImgCanvas.Image != nil {
+		imgs = append(imgs, state.slaSpeedImgCanvas.Image)
+		labels = append(labels, "SLA Compliance – Speed")
+	}
+	if state.slaTTFBImgCanvas != nil && state.slaTTFBImgCanvas.Image != nil {
+		imgs = append(imgs, state.slaTTFBImgCanvas.Image)
+		labels = append(labels, "SLA Compliance – TTFB")
+	}
+	if state.slaSpeedDeltaImgCanvas != nil && state.slaSpeedDeltaImgCanvas.Image != nil {
+		imgs = append(imgs, state.slaSpeedDeltaImgCanvas.Image)
+		labels = append(labels, "SLA Compliance Delta – Speed (pp)")
+	}
+	if state.slaTTFBDeltaImgCanvas != nil && state.slaTTFBDeltaImgCanvas.Image != nil {
+		imgs = append(imgs, state.slaTTFBDeltaImgCanvas.Image)
+		labels = append(labels, "SLA Compliance Delta – TTFB (pp)")
+	}
+	// TTFB P95−P50 Gap
+	if state.tpctlP95GapImgCanvas != nil && state.tpctlP95GapImgCanvas.Image != nil {
+		imgs = append(imgs, state.tpctlP95GapImgCanvas.Image)
+		labels = append(labels, "TTFB P95−P50 Gap")
 	}
 	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil {
 		imgs = append(imgs, state.errImgCanvas.Image)
@@ -3761,7 +5209,11 @@ func savePrefs(state *uiState) {
 	}
 	prefs := state.app.Preferences()
 	prefs.SetString("lastFile", state.filePath)
-	prefs.SetString("lastSituation", state.situation)
+	// Only persist lastSituation if we have a value; avoid wiping a previously saved value with empty during startup
+	if strings.TrimSpace(state.situation) != "" {
+		prefs.SetString("lastSituation", state.situation)
+		fmt.Printf("[viewer] prefs save: lastSituation=%q\n", state.situation)
+	}
 	prefs.SetInt("batchesN", state.batchesN)
 	prefs.SetBool("showOverall", state.showOverall)
 	prefs.SetBool("showIPv4", state.showIPv4)
@@ -3771,6 +5223,9 @@ func savePrefs(state *uiState) {
 	prefs.SetString("speedUnit", state.speedUnit)
 	prefs.SetBool("crosshair", state.crosshairEnabled)
 	prefs.SetBool("showHints", state.showHints)
+	// SLA thresholds
+	prefs.SetInt("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps)
+	prefs.SetInt("slaTTFBThresholdMs", state.slaTTFBThresholdMs)
 	// (removed: pctl prefs)
 }
 
@@ -3803,7 +5258,18 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	if v6 != nil {
 		v6.SetChecked(state.showIPv6)
 	}
-	state.situation = prefs.StringWithFallback("lastSituation", state.situation)
+	// Load saved situation and normalize whitespace
+	rawSit := strings.TrimSpace(prefs.StringWithFallback("lastSituation", state.situation))
+	if strings.EqualFold(rawSit, "all") {
+		state.situation = "All"
+	} else {
+		state.situation = rawSit
+	}
+	if state.situation == "" || strings.EqualFold(state.situation, "All") {
+		fmt.Printf("[viewer] prefs: lastSituation=<All>\n")
+	} else {
+		fmt.Printf("[viewer] prefs: lastSituation=%q\n", state.situation)
+	}
 	mode := prefs.StringWithFallback("xAxisMode", state.xAxisMode)
 	switch mode {
 	case "batch", "run_tag", "time":
@@ -3846,6 +5312,13 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 		}
 	}
 	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
+	// SLA thresholds (persisted)
+	if v := prefs.IntWithFallback("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps); v > 0 {
+		state.slaSpeedThresholdKbps = v
+	}
+	if v := prefs.IntWithFallback("slaTTFBThresholdMs", state.slaTTFBThresholdMs); v > 0 {
+		state.slaTTFBThresholdMs = v
+	}
 	// (removed: pctl prefs)
 }
 
@@ -4029,6 +5502,28 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.proxyImgCanvas
 		case "warm_cache":
 			imgCanvas = r.c.state.warmCacheImgCanvas
+		case "tail_ratio":
+			imgCanvas = r.c.state.tailRatioImgCanvas
+		case "ttfb_tail_ratio":
+			imgCanvas = r.c.state.ttfbTailRatioImgCanvas
+		case "speed_delta_pct":
+			imgCanvas = r.c.state.speedDeltaPctImgCanvas
+		case "ttfb_delta_pct":
+			imgCanvas = r.c.state.ttfbDeltaPctImgCanvas
+		case "sla_speed_delta":
+			imgCanvas = r.c.state.slaSpeedDeltaImgCanvas
+		case "sla_ttfb_delta":
+			imgCanvas = r.c.state.slaTTFBDeltaImgCanvas
+		case "speed_delta":
+			imgCanvas = r.c.state.speedDeltaImgCanvas
+		case "ttfb_delta":
+			imgCanvas = r.c.state.ttfbDeltaImgCanvas
+		case "sla_speed":
+			imgCanvas = r.c.state.slaSpeedImgCanvas
+		case "sla_ttfb":
+			imgCanvas = r.c.state.slaTTFBImgCanvas
+		case "ttfb_p95_gap":
+			imgCanvas = r.c.state.tpctlP95GapImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -4310,6 +5805,115 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.WarmCacheSuspectedRatePct))
+			}
+		case "tail_ratio":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f", bs.AvgP99P50Ratio))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f", bs.IPv4.AvgP99P50Ratio))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f", bs.IPv6.AvgP99P50Ratio))
+			}
+		case "speed_delta":
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			if bs.IPv4 != nil && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6−IPv4: %.2f %s", (bs.IPv6.AvgSpeed-bs.IPv4.AvgSpeed)*factor, unit))
+			} else {
+				lines = append(lines, "Insufficient family data")
+			}
+		case "ttfb_delta":
+			if bs.IPv4 != nil && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4−IPv6: %.0f ms", (bs.IPv4.AvgTTFB-bs.IPv6.AvgTTFB)))
+			} else {
+				lines = append(lines, "Insufficient family data")
+			}
+		case "sla_speed":
+			// Estimate via percentiles
+			get := func(b analysis.BatchSummary) map[int]float64 {
+				return map[int]float64{50: b.AvgP50Speed, 90: b.AvgP90Speed, 95: b.AvgP95Speed, 99: b.AvgP99Speed}
+			}
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f%%", estimateCompliance(get(bs), float64(r.c.state.slaSpeedThresholdKbps), true)))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f%%", estimateCompliance(map[int]float64{50: bs.IPv4.AvgP50Speed, 90: bs.IPv4.AvgP90Speed, 95: bs.IPv4.AvgP95Speed, 99: bs.IPv4.AvgP99Speed}, float64(r.c.state.slaSpeedThresholdKbps), true)))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f%%", estimateCompliance(map[int]float64{50: bs.IPv6.AvgP50Speed, 90: bs.IPv6.AvgP90Speed, 95: bs.IPv6.AvgP95Speed, 99: bs.IPv6.AvgP99Speed}, float64(r.c.state.slaSpeedThresholdKbps), true)))
+			}
+		case "sla_ttfb":
+			get := func(b analysis.BatchSummary) map[int]float64 {
+				return map[int]float64{50: b.AvgP50TTFBMs, 90: b.AvgP90TTFBMs, 95: b.AvgP95TTFBMs, 99: b.AvgP99TTFBMs}
+			}
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f%%", estimateCompliance(get(bs), float64(r.c.state.slaTTFBThresholdMs), false)))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f%%", estimateCompliance(map[int]float64{50: bs.IPv4.AvgP50TTFBMs, 90: bs.IPv4.AvgP90TTFBMs, 95: bs.IPv4.AvgP95TTFBMs, 99: bs.IPv4.AvgP99TTFBMs}, float64(r.c.state.slaTTFBThresholdMs), false)))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f%%", estimateCompliance(map[int]float64{50: bs.IPv6.AvgP50TTFBMs, 90: bs.IPv6.AvgP90TTFBMs, 95: bs.IPv6.AvgP95TTFBMs, 99: bs.IPv6.AvgP99TTFBMs}, float64(r.c.state.slaTTFBThresholdMs), false)))
+			}
+		case "ttfb_p95_gap":
+			if r.c.state.showOverall {
+				gap := math.Max(0, bs.AvgP95TTFBMs-bs.AvgP50TTFBMs)
+				if !math.IsNaN(gap) {
+					lines = append(lines, fmt.Sprintf("Overall: %.0f ms", gap))
+				}
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				gap := math.Max(0, bs.IPv4.AvgP95TTFBMs-bs.IPv4.AvgP50TTFBMs)
+				if !math.IsNaN(gap) {
+					lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", gap))
+				}
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				gap := math.Max(0, bs.IPv6.AvgP95TTFBMs-bs.IPv6.AvgP50TTFBMs)
+				if !math.IsNaN(gap) {
+					lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", gap))
+				}
+			}
+		case "ttfb_tail_ratio":
+			if r.c.state.showOverall && bs.AvgP50TTFBMs > 0 {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f", bs.AvgP95TTFBMs/bs.AvgP50TTFBMs))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil && bs.IPv4.AvgP50TTFBMs > 0 {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f", bs.IPv4.AvgP95TTFBMs/bs.IPv4.AvgP50TTFBMs))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil && bs.IPv6.AvgP50TTFBMs > 0 {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f", bs.IPv6.AvgP95TTFBMs/bs.IPv6.AvgP50TTFBMs))
+			}
+		case "speed_delta_pct":
+			if bs.IPv4 != nil && bs.IPv6 != nil && bs.IPv4.AvgSpeed > 0 {
+				pct := (bs.IPv6.AvgSpeed - bs.IPv4.AvgSpeed) / bs.IPv4.AvgSpeed * 100
+				lines = append(lines, fmt.Sprintf("IPv6 vs IPv4: %.1f%%", pct))
+			} else {
+				lines = append(lines, "Insufficient family data")
+			}
+		case "ttfb_delta_pct":
+			if bs.IPv4 != nil && bs.IPv6 != nil && bs.IPv6.AvgTTFB > 0 {
+				pct := (bs.IPv4.AvgTTFB - bs.IPv6.AvgTTFB) / bs.IPv6.AvgTTFB * 100
+				lines = append(lines, fmt.Sprintf("IPv6 vs IPv4: %.1f%%", pct))
+			} else {
+				lines = append(lines, "Insufficient family data")
+			}
+		case "sla_speed_delta":
+			if bs.IPv4 != nil && bs.IPv6 != nil {
+				v4 := estimateCompliance(map[int]float64{50: bs.IPv4.AvgP50Speed, 90: bs.IPv4.AvgP90Speed, 95: bs.IPv4.AvgP95Speed, 99: bs.IPv4.AvgP99Speed}, float64(r.c.state.slaSpeedThresholdKbps), true)
+				v6 := estimateCompliance(map[int]float64{50: bs.IPv6.AvgP50Speed, 90: bs.IPv6.AvgP90Speed, 95: bs.IPv6.AvgP95Speed, 99: bs.IPv6.AvgP99Speed}, float64(r.c.state.slaSpeedThresholdKbps), true)
+				lines = append(lines, fmt.Sprintf("IPv6−IPv4: %.0f pp", v6-v4))
+			} else {
+				lines = append(lines, "Insufficient family data")
+			}
+		case "sla_ttfb_delta":
+			if bs.IPv4 != nil && bs.IPv6 != nil {
+				v4 := estimateCompliance(map[int]float64{50: bs.IPv4.AvgP50TTFBMs, 90: bs.IPv4.AvgP90TTFBMs, 95: bs.IPv4.AvgP95TTFBMs, 99: bs.IPv4.AvgP99TTFBMs}, float64(r.c.state.slaTTFBThresholdMs), false)
+				v6 := estimateCompliance(map[int]float64{50: bs.IPv6.AvgP50TTFBMs, 90: bs.IPv6.AvgP90TTFBMs, 95: bs.IPv6.AvgP95TTFBMs, 99: bs.IPv6.AvgP99TTFBMs}, float64(r.c.state.slaTTFBThresholdMs), false)
+				lines = append(lines, fmt.Sprintf("IPv6−IPv4: %.0f pp", v6-v4))
+			} else {
+				lines = append(lines, "Insufficient family data")
 			}
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
