@@ -62,6 +62,7 @@ type uiState struct {
 	showOverall bool
 	showIPv4    bool
 	showIPv6    bool
+	pctlFamily  string // "overall", "ipv4", "ipv6" for percentiles chart
 
 	// widgets
 	table        *widget.Table
@@ -146,6 +147,8 @@ func main() {
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
+	// Load percentiles family preference early for selector
+	state.pctlFamily = strings.ToLower(a.Preferences().StringWithFallback("pctlFamily", "overall"))
 
 	// top bar controls
 	fileLabel := widget.NewLabel(truncatePath(state.filePath, 60))
@@ -172,6 +175,17 @@ func main() {
 		xAxisSelect.Selected = "Batch"
 	}
 	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, nil)
+
+	// percentiles family selector
+	pctlFamilySel := widget.NewSelect([]string{"Overall", "IPv4", "IPv6"}, nil)
+	switch strings.ToLower(state.pctlFamily) {
+	case "ipv4":
+		pctlFamilySel.Selected = "IPv4"
+	case "ipv6":
+		pctlFamilySel.Selected = "IPv6"
+	default:
+		pctlFamilySel.Selected = "Overall"
+	}
 	if state.useRelative {
 		yScaleSelect.Selected = "Relative"
 	} else {
@@ -345,6 +359,7 @@ func main() {
 		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
+		widget.NewLabel("Percentiles:"), pctlFamilySel,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
@@ -429,6 +444,55 @@ func main() {
 		state.showOverall = b
 		savePrefs(state)
 		updateColumnVisibility(state)
+		redrawCharts(state)
+	}
+
+	// Wire select and hints callbacks after canvases exist
+	speedSelect.OnChanged = func(v string) {
+		state.speedUnit = v
+		savePrefs(state)
+		if state.table != nil { state.table.Refresh() }
+		redrawCharts(state)
+	}
+	xAxisSelect.OnChanged = func(v string) {
+		switch strings.ToLower(v) {
+		case "batch":
+			state.xAxisMode = "batch"
+		case "runtag", "run_tag":
+			state.xAxisMode = "run_tag"
+		case "time":
+			state.xAxisMode = "time"
+		}
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	yScaleSelect.OnChanged = func(v string) {
+		if strings.EqualFold(v, "Relative") {
+			state.yScaleMode = "relative"
+			state.useRelative = true
+		} else {
+			state.yScaleMode = "absolute"
+			state.useRelative = false
+		}
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	pctlFamilySel.OnChanged = func(v string) {
+		switch strings.ToLower(v) {
+		case "ipv4":
+			state.pctlFamily = "ipv4"
+		case "ipv6":
+			state.pctlFamily = "ipv6"
+		default:
+			state.pctlFamily = "overall"
+		}
+		savePrefs(state)
+		// update only percentiles would be fine, redraw all for consistency
+		redrawCharts(state)
+	}
+	hintsChk.OnChanged = func(b bool) {
+		state.showHints = b
+		savePrefs(state)
 		redrawCharts(state)
 	}
 	ipv4Chk.OnChanged = func(b bool) { state.showIPv4 = b; savePrefs(state); updateColumnVisibility(state); redrawCharts(state) }
@@ -1599,10 +1663,29 @@ func renderPercentilesChart(state *uiState) image.Image {
 			}
 		}
 	}
-	add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
-	add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
-	add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, chart.ColorAlternateGray)
-	add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, chart.ColorRed)
+	// Choose data family
+	fam := strings.ToLower(strings.TrimSpace(state.pctlFamily))
+	titlePrefix := ""
+	switch fam {
+	case "ipv4":
+		titlePrefix = "IPv4 "
+		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP50Speed }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP90Speed }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP95Speed }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv4==nil {return 0}; return b.IPv4.AvgP99Speed }, chart.ColorRed)
+	case "ipv6":
+		titlePrefix = "IPv6 "
+		add("P50", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP50Speed }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP90Speed }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP95Speed }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { if b.IPv6==nil {return 0}; return b.IPv6.AvgP99Speed }, chart.ColorRed)
+	default:
+		titlePrefix = "Overall "
+		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
+		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
+		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, chart.ColorAlternateGray)
+		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, chart.ColorRed)
+	}
 
 	var yAxisRange *chart.ContinuousRange
 	var yTicks []chart.Tick
@@ -1632,7 +1715,7 @@ func renderPercentilesChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("Speed Percentiles (%s)%s", unitName, situationSuffix(state)),
+		Title:      fmt.Sprintf("%sSpeed Percentiles (%s)%s", titlePrefix, unitName, situationSuffix(state)),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
@@ -1795,6 +1878,7 @@ func savePrefs(state *uiState) {
 	prefs.SetString("speedUnit", state.speedUnit)
 	prefs.SetBool("crosshair", state.crosshairEnabled)
 	prefs.SetBool("showHints", state.showHints)
+	prefs.SetString("pctlFamily", state.pctlFamily)
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, xAxis *widget.Select, yScale *widget.Select, tabs *container.AppTabs, speedUnitSel *widget.Select) {
@@ -1869,6 +1953,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 		}
 	}
 	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
+	state.pctlFamily = strings.ToLower(prefs.StringWithFallback("pctlFamily", state.pctlFamily))
 }
 
 // utils
