@@ -80,6 +80,9 @@ type uiState struct {
 	plCountImgCanvas   *canvas.Image
 	plLongestImgCanvas *canvas.Image
 	plStableImgCanvas  *canvas.Image
+	cacheImgCanvas     *canvas.Image
+	proxyImgCanvas     *canvas.Image
+	warmCacheImgCanvas *canvas.Image
 
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
@@ -88,6 +91,9 @@ type uiState struct {
 	plCountOverlay   *crosshairOverlay
 	plLongestOverlay *crosshairOverlay
 	plStableOverlay  *crosshairOverlay
+	cacheOverlay     *crosshairOverlay
+	proxyOverlay     *crosshairOverlay
+	warmCacheOverlay *crosshairOverlay
 
 	// containers
 	pctlGrid *fyne.Container
@@ -437,6 +443,19 @@ func main() {
 	state.plStableImgCanvas.FillMode = canvas.ImageFillContain
 	state.plStableImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.plStableOverlay = newCrosshairOverlay(state, "plateau_stable")
+	// cache/proxy/warm-cache rate charts
+	state.cacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.cacheImgCanvas.FillMode = canvas.ImageFillContain
+	state.cacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.cacheOverlay = newCrosshairOverlay(state, "cache_hit")
+	state.proxyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.proxyImgCanvas.FillMode = canvas.ImageFillContain
+	state.proxyImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.proxyOverlay = newCrosshairOverlay(state, "proxy_suspected")
+	state.warmCacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.warmCacheImgCanvas.FillMode = canvas.ImageFillContain
+	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 
 	// charts column (hints are rendered inside chart images when enabled)
 	chartsColumn := container.NewVBox(
@@ -451,6 +470,12 @@ func main() {
 		container.NewStack(state.jitterImgCanvas, state.jitterOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.covImgCanvas, state.covOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.cacheImgCanvas, state.cacheOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.proxyImgCanvas, state.proxyOverlay),
+		widget.NewSeparator(),
+		container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay),
 		widget.NewSeparator(),
 		container.NewStack(state.plCountImgCanvas, state.plCountOverlay),
 		widget.NewSeparator(),
@@ -604,6 +629,18 @@ func main() {
 			state.plStableOverlay.enabled = b
 			state.plStableOverlay.Refresh()
 		}
+		if state.cacheOverlay != nil {
+			state.cacheOverlay.enabled = b
+			state.cacheOverlay.Refresh()
+		}
+		if state.proxyOverlay != nil {
+			state.proxyOverlay.enabled = b
+			state.proxyOverlay.Refresh()
+		}
+		if state.warmCacheOverlay != nil {
+			state.warmCacheOverlay.enabled = b
+			state.warmCacheOverlay.Refresh()
+		}
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -659,6 +696,18 @@ func main() {
 		state.plStableOverlay.enabled = state.crosshairEnabled
 		state.plStableOverlay.Refresh()
 	}
+	if state.cacheOverlay != nil {
+		state.cacheOverlay.enabled = state.crosshairEnabled
+		state.cacheOverlay.Refresh()
+	}
+	if state.proxyOverlay != nil {
+		state.proxyOverlay.enabled = state.crosshairEnabled
+		state.proxyOverlay.Refresh()
+	}
+	if state.warmCacheOverlay != nil {
+		state.warmCacheOverlay.enabled = state.crosshairEnabled
+		state.warmCacheOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -692,6 +741,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
+	exportCache := fyne.NewMenuItem("Export Cache Hit Rate Chart…", func() { exportChartPNG(state, state.cacheImgCanvas, "cache_hit_rate_chart.png") })
+	exportProxy := fyne.NewMenuItem("Export Proxy Suspected Rate Chart…", func() { exportChartPNG(state, state.proxyImgCanvas, "proxy_suspected_rate_chart.png") })
+	exportWarmCache := fyne.NewMenuItem("Export Warm Cache Suspected Rate Chart…", func() { exportChartPNG(state, state.warmCacheImgCanvas, "warm_cache_suspected_rate_chart.png") })
 	exportPlCount := fyne.NewMenuItem("Export Plateau Count Chart…", func() { exportChartPNG(state, state.plCountImgCanvas, "plateau_count_chart.png") })
 	exportPlLongest := fyne.NewMenuItem("Export Longest Plateau Chart…", func() { exportChartPNG(state, state.plLongestImgCanvas, "plateau_longest_chart.png") })
 	exportPlStable := fyne.NewMenuItem("Export Plateau Stable Rate Chart…", func() { exportChartPNG(state, state.plStableImgCanvas, "plateau_stable_rate_chart.png") })
@@ -708,6 +760,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportErrors,
 		exportJitter,
 		exportCoV,
+		exportCache,
+		exportProxy,
+		exportWarmCache,
 		exportPlCount,
 		exportPlLongest,
 		exportPlStable,
@@ -985,6 +1040,51 @@ func redrawCharts(state *uiState) {
 		if state.covOverlay != nil {
 			state.covOverlay.Refresh()
 		}
+		// Cache Hit Rate chart
+		cacheImg := renderCacheHitRateChart(state)
+		if cacheImg != nil {
+			if state.cacheImgCanvas != nil {
+				state.cacheImgCanvas.Image = cacheImg
+			}
+			cw, chh := chartSize(state)
+			if state.cacheImgCanvas != nil {
+				state.cacheImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.cacheImgCanvas.Refresh()
+			}
+			if state.cacheOverlay != nil {
+				state.cacheOverlay.Refresh()
+			}
+		}
+		// Proxy Suspected Rate chart
+		proxyImg := renderProxySuspectedRateChart(state)
+		if proxyImg != nil {
+			if state.proxyImgCanvas != nil {
+				state.proxyImgCanvas.Image = proxyImg
+			}
+			cw, chh := chartSize(state)
+			if state.proxyImgCanvas != nil {
+				state.proxyImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.proxyImgCanvas.Refresh()
+			}
+			if state.proxyOverlay != nil {
+				state.proxyOverlay.Refresh()
+			}
+		}
+		// Warm Cache Suspected Rate chart
+		warmImg := renderWarmCacheSuspectedRateChart(state)
+		if warmImg != nil {
+			if state.warmCacheImgCanvas != nil {
+				state.warmCacheImgCanvas.Image = warmImg
+			}
+			cw, chh := chartSize(state)
+			if state.warmCacheImgCanvas != nil {
+				state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.warmCacheImgCanvas.Refresh()
+			}
+			if state.warmCacheOverlay != nil {
+				state.warmCacheOverlay.Refresh()
+			}
+		}
 		// Plateau Count chart
 		plcImg := renderPlateauCountChart(state)
 		if plcImg != nil {
@@ -1031,6 +1131,366 @@ func redrawCharts(state *uiState) {
 			}
 		}
 	}
+}
+
+// renderCacheHitRateChart draws CacheHitRatePct per batch (overall/IPv4/IPv6).
+func renderCacheHitRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.CacheHitRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.CacheHitRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.CacheHitRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Cache Hit Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] cache-hit render error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] cache-hit decode error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Cache hit rate. Higher can mean content already cached near you.")
+	}
+	return img
+}
+
+// renderProxySuspectedRateChart draws ProxySuspectedRatePct per batch (overall/IPv4/IPv6).
+func renderProxySuspectedRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.ProxySuspectedRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.ProxySuspectedRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.ProxySuspectedRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Proxy Suspected Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] proxy-suspected render error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] proxy-suspected decode error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: How often a proxy is suspected. Spikes can indicate transit via middleboxes.")
+	}
+	return img
+}
+
+// renderWarmCacheSuspectedRateChart draws WarmCacheSuspectedRatePct per batch (overall/IPv4/IPv6).
+func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.WarmCacheSuspectedRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.WarmCacheSuspectedRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.WarmCacheSuspectedRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange *chart.ContinuousRange
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Warm Cache Suspected Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] warm-cache render error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] warm-cache decode error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		return drawHint(img, "Hint: Warm-cache suspected rate. Higher suggests repeated content or prior fetch effects.")
+	}
+	return img
 }
 
 // chartSize computes a chart size based on the current window width so charts use more X-axis space.
@@ -2103,12 +2563,18 @@ func renderPlateauStableChart(state *uiState) image.Image {
 				continue
 			}
 			ys[i] = v
-			if v < minY { minY = v }
-			if v > maxY { maxY = v }
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
 			valid++
 		}
 		st := pointStyle(col)
-		if valid == 1 { st.DotWidth = 6 }
+		if valid == 1 {
+			st.DotWidth = 6
+		}
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
@@ -2132,13 +2598,17 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	}
 	if state.showIPv4 {
 		add("IPv4", func(b analysis.BatchSummary) float64 {
-			if b.IPv4 == nil { return 0 }
+			if b.IPv4 == nil {
+				return 0
+			}
 			return b.IPv4.PlateauStableRatePct
 		}, chart.ColorBlue)
 	}
 	if state.showIPv6 {
 		add("IPv6", func(b analysis.BatchSummary) float64 {
-			if b.IPv6 == nil { return 0 }
+			if b.IPv6 == nil {
+				return 0
+			}
 			return b.IPv6.PlateauStableRatePct
 		}, chart.ColorGreen)
 	}
@@ -2146,14 +2616,20 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
-		if maxY <= minY { maxY = minY + 1 }
+		if maxY <= minY {
+			maxY = minY + 1
+		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
 		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
 		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && haveY {
 		// clamp 0..100
-		if maxY < 1 { maxY = 1 }
-		if maxY > 100 { maxY = 100 }
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
 		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
 		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	}
@@ -2164,7 +2640,9 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	case "time":
 		padBottom = 48
 	}
-	if state.showHints { padBottom += 18 }
+	if state.showHints {
+		padBottom += 18
+	}
 	ch := chart.Chart{Title: fmt.Sprintf("Plateau Stable Rate (%%)%s", situationSuffix(state)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -2759,6 +3237,18 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.covImgCanvas.Image)
 		labels = append(labels, "Coefficient of Variation")
 	}
+	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
+		imgs = append(imgs, state.cacheImgCanvas.Image)
+		labels = append(labels, "Cache Hit Rate")
+	}
+	if state.proxyImgCanvas != nil && state.proxyImgCanvas.Image != nil {
+		imgs = append(imgs, state.proxyImgCanvas.Image)
+		labels = append(labels, "Proxy Suspected Rate")
+	}
+	if state.warmCacheImgCanvas != nil && state.warmCacheImgCanvas.Image != nil {
+		imgs = append(imgs, state.warmCacheImgCanvas.Image)
+		labels = append(labels, "Warm Cache Suspected Rate")
+	}
 	if state.plCountImgCanvas != nil && state.plCountImgCanvas.Image != nil {
 		imgs = append(imgs, state.plCountImgCanvas.Image)
 		labels = append(labels, "Plateau Count")
@@ -3126,6 +3616,12 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.plLongestImgCanvas
 		case "plateau_stable":
 			imgCanvas = r.c.state.plStableImgCanvas
+		case "cache_hit":
+			imgCanvas = r.c.state.cacheImgCanvas
+		case "proxy_suspected":
+			imgCanvas = r.c.state.proxyImgCanvas
+		case "warm_cache":
+			imgCanvas = r.c.state.warmCacheImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -3354,6 +3850,36 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.PlateauStableRatePct))
+			}
+		case "cache_hit":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.CacheHitRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.CacheHitRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.CacheHitRatePct))
+			}
+		case "proxy_suspected":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.ProxySuspectedRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.ProxySuspectedRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.ProxySuspectedRatePct))
+			}
+		case "warm_cache":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.WarmCacheSuspectedRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.WarmCacheSuspectedRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.WarmCacheSuspectedRatePct))
 			}
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
