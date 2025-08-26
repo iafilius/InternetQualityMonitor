@@ -99,9 +99,9 @@ type FamilySummary struct {
 	AvgJitterPct       float64 `json:"avg_jitter_mean_abs_pct"`
 	BatchDurationMs    int64   `json:"batch_duration_ms,omitempty"`
 	// New: connection setup breakdown averages (ms)
-	AvgDNSMs                  float64 `json:"avg_dns_ms,omitempty"`
-	AvgConnectMs              float64 `json:"avg_connect_ms,omitempty"`
-	AvgTLSHandshake           float64 `json:"avg_tls_handshake_ms,omitempty"`
+	AvgDNSMs        float64 `json:"avg_dns_ms,omitempty"`
+	AvgConnectMs    float64 `json:"avg_connect_ms,omitempty"`
+	AvgTLSHandshake float64 `json:"avg_tls_handshake_ms,omitempty"`
 	// Legacy-only averages to enable comparison overlays in the UI
 	AvgDNSLegacyMs            float64 `json:"avg_dns_legacy_ms,omitempty"`
 	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
@@ -188,10 +188,10 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		sampleLowMs    int64
 		sampleTotalMs  int64
 		// connection setup timings (ms)
-		dnsMs        float64
-		dnsLegacyMs  float64 // raw legacy dns_time_ms if present
-		connMs float64
-		tlsMs  float64
+		dnsMs       float64
+		dnsLegacyMs float64 // raw legacy dns_time_ms if present
+		connMs      float64
+		tlsMs       float64
 	}
 	// Phase 1: scan the JSONL results file and extract only the typed envelope lines
 	// matching the requested schemaVersion. Each valid line becomes a lightweight
@@ -589,7 +589,7 @@ readLoop:
 		}
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 		var slopes, coefVars, headGetRatios []float64
-	var dnsTimesAll, dnsLegacyTimesAll, connTimesAll, tlsTimesAll []float64
+		var dnsTimesAll, dnsLegacyTimesAll, connTimesAll, tlsTimesAll []float64
 		var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
 		var lowMsSumAll, totalMsSumAll int64

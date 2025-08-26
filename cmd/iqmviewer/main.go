@@ -961,11 +961,11 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	// charts column (hints are rendered inside chart images when enabled)
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
 	chartsColumn := container.NewVBox(
-	makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
+		makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
 		widget.NewSeparator(),
-	makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
+		makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
 		widget.NewSeparator(),
-	makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
+		makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
 		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
@@ -1469,6 +1469,32 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportDNS := fyne.NewMenuItem("Export DNS Lookup Time Chart…", func() { exportChartPNG(state, state.setupDNSImgCanvas, "dns_lookup_time_chart.png") })
 	exportConn := fyne.NewMenuItem("Export TCP Connect Time Chart…", func() { exportChartPNG(state, state.setupConnImgCanvas, "tcp_connect_time_chart.png") })
 	exportTLS := fyne.NewMenuItem("Export TLS Handshake Time Chart…", func() { exportChartPNG(state, state.setupTLSImgCanvas, "tls_handshake_time_chart.png") })
+	// Setup Timings submenu with overlay toggle
+	setupLabel := func() string {
+		if state.showDNSLegacy {
+			return "Overlay legacy DNS (dns_time_ms) ✓"
+		}
+		return "Overlay legacy DNS (dns_time_ms)"
+	}
+	toggleDNSLegacy := fyne.NewMenuItem(setupLabel(), func() {
+		state.showDNSLegacy = !state.showDNSLegacy
+		savePrefs(state)
+		redrawCharts(state)
+		// rebuild menus to refresh the ✓ label
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	setupSub := fyne.NewMenu("Setup Timings",
+		exportDNS,
+		exportConn,
+		exportTLS,
+		fyne.NewMenuItemSeparator(),
+		toggleDNSLegacy,
+	)
+	setupSubItem := fyne.NewMenuItem("Setup Timings", nil)
+	setupSubItem.ChildMenu = setupSub
 	// Stability exports
 	exportLowSpeed := fyne.NewMenuItem("Export Low-Speed Time Share Chart…", func() { exportChartPNG(state, state.lowSpeedImgCanvas, "low_speed_time_share_chart.png") })
 	exportStallRate := fyne.NewMenuItem("Export Stall Rate Chart…", func() { exportChartPNG(state, state.stallRateImgCanvas, "stall_rate_chart.png") })
@@ -1482,46 +1508,93 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportPlLongest := fyne.NewMenuItem("Export Longest Plateau Chart…", func() { exportChartPNG(state, state.plLongestImgCanvas, "plateau_longest_chart.png") })
 	exportPlStable := fyne.NewMenuItem("Export Plateau Stable Rate Chart…", func() { exportChartPNG(state, state.plStableImgCanvas, "plateau_stable_rate_chart.png") })
 	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
-	fileMenu := fyne.NewMenu("File",
-		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
-		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
-		fyne.NewMenuItemSeparator(),
+	// Create logical submenus to reduce clutter
+	avgSub := fyne.NewMenu("Averages & Percentiles",
 		exportSpeed,
 		exportPctlOverall,
 		exportPctlIPv4,
 		exportPctlIPv6,
+		fyne.NewMenuItemSeparator(),
 		exportTTFB,
 		exportTPctlOverall,
 		exportTPctlIPv4,
 		exportTPctlIPv6,
-		// New diagnostics in on-screen order
+	)
+	avgSubItem := fyne.NewMenuItem("Averages & Percentiles", nil)
+	avgSubItem.ChildMenu = avgSub
+
+	diagSub := fyne.NewMenu("Diagnostics",
 		exportTailRatio,
 		exportTTFBTailRatio,
+		exportTTFBGap,
+	)
+	diagSubItem := fyne.NewMenuItem("Diagnostics", nil)
+	diagSubItem.ChildMenu = diagSub
+
+	deltasSub := fyne.NewMenu("Family Deltas",
 		exportSpeedDelta,
 		exportTTFBDelta,
 		exportSpeedDeltaPct,
 		exportTTFBDeltaPct,
+	)
+	deltasSubItem := fyne.NewMenuItem("Family Deltas", nil)
+	deltasSubItem.ChildMenu = deltasSub
+
+	slaSub := fyne.NewMenu("SLA",
 		exportSLASpeed,
 		exportSLATTFB,
 		exportSLASpeedDelta,
 		exportSLATTFBDelta,
-		exportTTFBGap,
+	)
+	slaSubItem := fyne.NewMenuItem("SLA", nil)
+	slaSubItem.ChildMenu = slaSub
+
+	errorsSub := fyne.NewMenu("Errors & Variability",
 		exportErrors,
 		exportJitter,
 		exportCoV,
-		exportDNS,
-		exportConn,
-		exportTLS,
+	)
+	errorsSubItem := fyne.NewMenuItem("Errors & Variability", nil)
+	errorsSubItem.ChildMenu = errorsSub
+
+	stabilitySub := fyne.NewMenu("Stability & Quality",
 		exportLowSpeed,
 		exportStallRate,
 		exportStallTime,
 		exportStallCount,
+	)
+	stabilitySubItem := fyne.NewMenuItem("Stability & Quality", nil)
+	stabilitySubItem.ChildMenu = stabilitySub
+
+	cacheSub := fyne.NewMenu("Cache & Proxy",
 		exportCache,
 		exportProxy,
 		exportWarmCache,
+	)
+	cacheSubItem := fyne.NewMenuItem("Cache & Proxy", nil)
+	cacheSubItem.ChildMenu = cacheSub
+
+	platSub := fyne.NewMenu("Plateaus",
 		exportPlCount,
 		exportPlLongest,
 		exportPlStable,
+	)
+	platSubItem := fyne.NewMenuItem("Plateaus", nil)
+	platSubItem.ChildMenu = platSub
+
+	fileMenu := fyne.NewMenu("File",
+		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
+		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
+		fyne.NewMenuItemSeparator(),
+		setupSubItem,
+		avgSubItem,
+		diagSubItem,
+		deltasSubItem,
+		slaSubItem,
+		errorsSubItem,
+		stabilitySubItem,
+		cacheSubItem,
+		platSubItem,
 		fyne.NewMenuItemSeparator(),
 		exportAll,
 		fyne.NewMenuItemSeparator(),
