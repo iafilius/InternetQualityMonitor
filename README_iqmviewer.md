@@ -19,6 +19,7 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W).
+ - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
 
 ### Theme selection
 - View → Screenshot Theme: Auto (default), Dark, Light.
@@ -45,6 +46,20 @@ Examples:
 ![Avg Stall Time](docs/images/stall_time.png)
 
 ![Stalled Requests Count](docs/images/stall_count.png)
+
+## Setup timing charts (connection setup)
+
+- DNS Lookup Time (ms): Mean DNS resolution time per batch (Overall/IPv4/IPv6). Helps spot resolver slowness or cache coldness.
+- TCP Connect Time (ms): Mean TCP handshake time per batch. Useful for path RTT shifts or congestion.
+- TLS Handshake Time (ms): Mean TLS setup time per batch. Highlights certificate/inspection overhead or handshake retries.
+
+Examples:
+
+![DNS Lookup Time](docs/images/dns_lookup_time.png)
+
+![TCP Connect Time](docs/images/tcp_connect_time.png)
+
+![TLS Handshake Time](docs/images/tls_handshake_time.png)
 
 Low‑Speed Threshold control
 
@@ -131,6 +146,7 @@ Examples:
 - Individual exports per chart and a combined export: "Export All (One Image)" stitches charts in the same order as on screen.
 - Each exported image embeds the Situation watermark for context preservation.
 - A dedicated export exists for the Stalled Requests Count chart.
+ - Setup timing charts (DNS/TCP/TLS) are included in both individual and combined exports.
 
 ### Updating the screenshots
 
@@ -159,6 +175,11 @@ go build ./cmd/iqmviewer
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.
+
+Generated filenames for setup timing charts:
+- `dns_lookup_time.png`
+- `tcp_connect_time.png`
+- `tls_handshake_time.png`
 
 SLA examples:
 

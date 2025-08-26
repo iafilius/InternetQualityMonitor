@@ -15,6 +15,7 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
  - Viewer (Theme): Safer UI updates during theme change — redraws and menu rebuilds scheduled asynchronously to avoid re‑entrancy issues.
  - Viewer (Headless): New screenshot flags — `--screenshot-theme auto|dark|light`, `--screenshot-variants averages|none`, `--screenshot-batches N`, `--screenshot-low-speed-threshold-kbps K`.
  - Viewer (Headless): Added “action” variants for averages (time‑axis and relative‑scale) gated by `--screenshot-variants`.
+ - Viewer: New setup timing charts — DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms); included in UI, individual exports, combined export, and headless screenshots (`dns_lookup_time.png`, `tcp_connect_time.png`, `tls_handshake_time.png`).
  - Scripts: `update_screenshots.sh` updated to accept THEME/VARIANTS/BATCHES/LOW_SPEED_KBPS and pass through to the viewer.
  - Docs: `README.md` and `README_iqmviewer.md` updated with theme selection, headless flags, examples, and defaults.
 

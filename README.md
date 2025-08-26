@@ -368,6 +368,9 @@ More visuals available:
 ![TTFB P95−P50 Gap](docs/images/ttfb_p95_p50_gap.png)
 ![Delta – Speed (abs)](docs/images/delta_speed_abs.png)
 ![Error Rate](docs/images/error_rate.png)
+![DNS Lookup Time](docs/images/dns_lookup_time.png)
+![TCP Connect Time](docs/images/tcp_connect_time.png)
+![TLS Handshake Time](docs/images/tls_handshake_time.png)
 
 ### Updating screenshots (docs/images)
 
@@ -400,6 +403,11 @@ go build ./cmd/iqmviewer
     --screenshot-variants averages \
     --screenshot-low-speed-threshold-kbps 1000
 ```
+
+Setup timing screenshots (written to `docs/images` when enabled):
+- `dns_lookup_time.png`
+- `tcp_connect_time.png`
+- `tls_handshake_time.png`
 
 
 Analyzing only recent batches for a specific situation:

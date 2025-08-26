@@ -91,6 +91,10 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"plateau_count.png", renderPlateauCountChart},
 		{"plateau_longest.png", renderPlateauLongestChart},
 		{"plateau_stable.png", renderPlateauStableChart},
+		// Setup breakdown (connection setup timings)
+		{"dns_lookup_time.png", renderDNSLookupChart},
+		{"tcp_connect_time.png", renderTCPConnectChart},
+		{"tls_handshake_time.png", renderTLSHandshakeChart},
 		// Percentiles (Speed)
 		{"speed_percentiles_overall.png", func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") }},
 		{"speed_percentiles_ipv4.png", func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv4") }},

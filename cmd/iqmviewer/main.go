@@ -153,6 +153,11 @@ type uiState struct {
 	stallTimeImgCanvas  *canvas.Image // Avg Stall Time (ms)
 	stallCountImgCanvas *canvas.Image // Stalled Requests Count (interim)
 
+	// connection setup breakdown charts
+	setupDNSImgCanvas  *canvas.Image // Avg DNS time (ms)
+	setupConnImgCanvas *canvas.Image // Avg TCP connect (ms)
+	setupTLSImgCanvas  *canvas.Image // Avg TLS handshake (ms)
+
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
 	jitterOverlay    *crosshairOverlay
@@ -823,6 +828,17 @@ func main() {
 	state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.stallTimeOverlay = newCrosshairOverlay(state, "stall_time")
 
+	// Setup breakdown placeholders
+	state.setupDNSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.setupDNSImgCanvas.FillMode = canvas.ImageFillContain
+	state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.setupConnImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.setupConnImgCanvas.FillMode = canvas.ImageFillContain
+	state.setupConnImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.setupTLSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.setupTLSImgCanvas.FillMode = canvas.ImageFillContain
+	state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
 	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
@@ -872,6 +888,14 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 - Interim metric derived as: round(Lines × Stall Rate / 100).
 - Use alongside Stall Rate and Avg Stall Time.` + axesTip
 
+	// Setup breakdown help
+	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
+- Measured from httptrace DNS start/Done callbacks. Elevated values can indicate resolver or network issues.` + axesTip
+	helpConn := `TCP Connect Time (ms): average time to establish the TCP connection (SYN→ACK and socket connect).
+- Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip
+	helpTLS := `TLS Handshake Time (ms): average time to complete TLS handshake.
+- Includes ClientHello→ServerHello, cert exchange/verification. Spikes can indicate TLS inspection, cert revocation checks, or server load.` + axesTip
+
 	// New charts help
 	helpTail := `Tail Heaviness (Speed P99/P50): ratio of 99th to 50th percentile throughput per batch.
 - Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip
@@ -911,7 +935,14 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	)
 
 	// charts column (hints are rendered inside chart images when enabled)
+	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
 	chartsColumn := container.NewVBox(
+		makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas)),
+		widget.NewSeparator(),
+		makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas)),
+		widget.NewSeparator(),
+		makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas)),
+		widget.NewSeparator(),
 		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
 		// Place Speed Percentiles directly under Avg Speed
@@ -1384,6 +1415,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
+	// Connection setup breakdown exports
+	exportDNS := fyne.NewMenuItem("Export DNS Lookup Time Chart…", func() { exportChartPNG(state, state.setupDNSImgCanvas, "dns_lookup_time_chart.png") })
+	exportConn := fyne.NewMenuItem("Export TCP Connect Time Chart…", func() { exportChartPNG(state, state.setupConnImgCanvas, "tcp_connect_time_chart.png") })
+	exportTLS := fyne.NewMenuItem("Export TLS Handshake Time Chart…", func() { exportChartPNG(state, state.setupTLSImgCanvas, "tls_handshake_time_chart.png") })
 	// Stability exports
 	exportLowSpeed := fyne.NewMenuItem("Export Low-Speed Time Share Chart…", func() { exportChartPNG(state, state.lowSpeedImgCanvas, "low_speed_time_share_chart.png") })
 	exportStallRate := fyne.NewMenuItem("Export Stall Rate Chart…", func() { exportChartPNG(state, state.stallRateImgCanvas, "stall_rate_chart.png") })
@@ -1424,6 +1459,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportErrors,
 		exportJitter,
 		exportCoV,
+		exportDNS,
+		exportConn,
+		exportTLS,
 		exportLowSpeed,
 		exportStallRate,
 		exportStallTime,
@@ -2031,6 +2069,34 @@ func redrawCharts(state *uiState) {
 		}
 		if state.covOverlay != nil {
 			state.covOverlay.Refresh()
+		}
+		// Connection setup breakdown charts (DNS, TCP connect, TLS handshake)
+		dnsImg := renderDNSLookupChart(state)
+		if dnsImg != nil {
+			if state.setupDNSImgCanvas != nil {
+				state.setupDNSImgCanvas.Image = dnsImg
+				cw, chh := chartSize(state)
+				state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.setupDNSImgCanvas.Refresh()
+			}
+		}
+		connImg := renderTCPConnectChart(state)
+		if connImg != nil {
+			if state.setupConnImgCanvas != nil {
+				state.setupConnImgCanvas.Image = connImg
+				cw, chh := chartSize(state)
+				state.setupConnImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.setupConnImgCanvas.Refresh()
+			}
+		}
+		tlsImg := renderTLSHandshakeChart(state)
+		if tlsImg != nil {
+			if state.setupTLSImgCanvas != nil {
+				state.setupTLSImgCanvas.Image = tlsImg
+				cw, chh := chartSize(state)
+				state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.setupTLSImgCanvas.Refresh()
+			}
 		}
 		// Cache Hit Rate chart
 		cacheImg := renderCacheHitRateChart(state)
@@ -4512,6 +4578,348 @@ func renderJitterChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderDNSLookupChart draws average DNS lookup time (ms) for overall, IPv4, IPv6.
+func renderDNSLookupChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgDNSMs }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgDNSMs
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgDNSMs
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "DNS Lookup Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average DNS resolution time per batch (overall and per-family).")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderTCPConnectChart draws average TCP connect time (ms) for overall, IPv4, IPv6.
+func renderTCPConnectChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgConnectMs }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgConnectMs
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgConnectMs
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "TCP Connect Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average TCP connect time per batch (overall and per-family).")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderTLSHandshakeChart draws average TLS handshake time (ms) for overall, IPv4, IPv6.
+func renderTLSHandshakeChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, color drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(color)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgTLSHandshake }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgTLSHandshake
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgTLSHandshake
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "TLS Handshake Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average TLS handshake time per batch (overall and per-family).")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
 // renderCoVChart draws AvgCoefVariationPct per batch (overall/IPv4/IPv6).
 func renderCoVChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -6562,6 +6970,20 @@ func exportAllChartsCombined(state *uiState) {
 	// Gather images in display order (match on-screen order)
 	imgs := []image.Image{}
 	labels := []string{}
+	// Setup timings first
+	if state.setupDNSImgCanvas != nil && state.setupDNSImgCanvas.Image != nil {
+		imgs = append(imgs, state.setupDNSImgCanvas.Image)
+		labels = append(labels, "DNS Lookup Time (ms)")
+	}
+	if state.setupConnImgCanvas != nil && state.setupConnImgCanvas.Image != nil {
+		imgs = append(imgs, state.setupConnImgCanvas.Image)
+		labels = append(labels, "TCP Connect Time (ms)")
+	}
+	if state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil {
+		imgs = append(imgs, state.setupTLSImgCanvas.Image)
+		labels = append(labels, "TLS Handshake Time (ms)")
+	}
+	// Then averages and the rest
 	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
 		imgs = append(imgs, state.speedImgCanvas.Image)
 		labels = append(labels, "Speed")

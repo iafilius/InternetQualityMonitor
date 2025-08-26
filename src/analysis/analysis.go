@@ -33,6 +33,10 @@ type BatchSummary struct {
 	AvgLongestPlateau  float64 `json:"avg_longest_plateau_ms"`
 	AvgJitterPct       float64 `json:"avg_jitter_mean_abs_pct"`
 	BatchDurationMs    int64   `json:"batch_duration_ms,omitempty"`
+	// New: connection setup breakdown averages (ms)
+	AvgDNSMs        float64 `json:"avg_dns_ms,omitempty"`
+	AvgConnectMs    float64 `json:"avg_connect_ms,omitempty"`
+	AvgTLSHandshake float64 `json:"avg_tls_handshake_ms,omitempty"`
 	// Extended aggregated metrics (averages or rates over successful lines)
 	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
 	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
@@ -78,19 +82,23 @@ type BatchSummary struct {
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
 type FamilySummary struct {
-	Lines                     int     `json:"lines"`
-	AvgSpeed                  float64 `json:"avg_speed_kbps"`
-	MedianSpeed               float64 `json:"median_speed_kbps"`
-	AvgTTFB                   float64 `json:"avg_ttfb_ms"`
-	AvgBytes                  float64 `json:"avg_bytes"`
-	ErrorLines                int     `json:"error_lines"`
-	AvgFirstRTTGoodput        float64 `json:"avg_first_rtt_goodput_kbps"`
-	AvgP50Speed               float64 `json:"avg_p50_kbps"`
-	AvgP99P50Ratio            float64 `json:"avg_p99_p50_ratio"`
-	AvgPlateauCount           float64 `json:"avg_plateau_count"`
-	AvgLongestPlateau         float64 `json:"avg_longest_plateau_ms"`
-	AvgJitterPct              float64 `json:"avg_jitter_mean_abs_pct"`
-	BatchDurationMs           int64   `json:"batch_duration_ms,omitempty"`
+	Lines              int     `json:"lines"`
+	AvgSpeed           float64 `json:"avg_speed_kbps"`
+	MedianSpeed        float64 `json:"median_speed_kbps"`
+	AvgTTFB            float64 `json:"avg_ttfb_ms"`
+	AvgBytes           float64 `json:"avg_bytes"`
+	ErrorLines         int     `json:"error_lines"`
+	AvgFirstRTTGoodput float64 `json:"avg_first_rtt_goodput_kbps"`
+	AvgP50Speed        float64 `json:"avg_p50_kbps"`
+	AvgP99P50Ratio     float64 `json:"avg_p99_p50_ratio"`
+	AvgPlateauCount    float64 `json:"avg_plateau_count"`
+	AvgLongestPlateau  float64 `json:"avg_longest_plateau_ms"`
+	AvgJitterPct       float64 `json:"avg_jitter_mean_abs_pct"`
+	BatchDurationMs    int64   `json:"batch_duration_ms,omitempty"`
+	// New: connection setup breakdown averages (ms)
+	AvgDNSMs                  float64 `json:"avg_dns_ms,omitempty"`
+	AvgConnectMs              float64 `json:"avg_connect_ms,omitempty"`
+	AvgTLSHandshake           float64 `json:"avg_tls_handshake_ms,omitempty"`
 	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
 	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
 	AvgP99Speed               float64 `json:"avg_p99_kbps,omitempty"`
@@ -174,6 +182,10 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		stallElapsedMs int64
 		sampleLowMs    int64
 		sampleTotalMs  int64
+		// connection setup timings (ms)
+		dnsMs  float64
+		connMs float64
+		tlsMs  float64
 	}
 	// Phase 1: scan the JSONL results file and extract only the typed envelope lines
 	// matching the requested schemaVersion. Each valid line becomes a lightweight
@@ -255,6 +267,25 @@ readLoop:
 				bs.coefVarPct = sa.CoefVariation * 100
 			}
 			bs.plateauStable = sa.PlateauStable
+		}
+		// trace timings
+		// Setup timings (prefer httptrace-derived fields; fallback to legacy scalars if missing)
+		if sr.TraceDNSMs > 0 {
+			bs.dnsMs = float64(sr.TraceDNSMs)
+		} else if sr.DNSTimeMs > 0 {
+			bs.dnsMs = float64(sr.DNSTimeMs)
+		}
+		if sr.TraceConnectMs > 0 {
+			bs.connMs = float64(sr.TraceConnectMs)
+		} else if sr.TCPTimeMs > 0 {
+			bs.connMs = float64(sr.TCPTimeMs)
+		} else if sr.HTTPConnectTimeMs > 0 {
+			bs.connMs = float64(sr.HTTPConnectTimeMs)
+		}
+		if sr.TraceTLSMs > 0 {
+			bs.tlsMs = float64(sr.TraceTLSMs)
+		} else if sr.SSLHandshakeTimeMs > 0 {
+			bs.tlsMs = float64(sr.SSLHandshakeTimeMs)
 		}
 		// stalls
 		if sr.TransferStalled {
@@ -377,6 +408,7 @@ readLoop:
 		buildFamily := func(filter string) *FamilySummary {
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 			var slopes, coefVars, headGetRatios []float64
+			var dnsTimes, connTimes, tlsTimes []float64
 			var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 			var errorLines int
 			var lowMsSum, totalMsSum int64
@@ -440,6 +472,16 @@ readLoop:
 				if r.headGetRatio > 0 {
 					headGetRatios = append(headGetRatios, r.headGetRatio)
 				}
+				// timings
+				if r.dnsMs > 0 {
+					dnsTimes = append(dnsTimes, r.dnsMs)
+				}
+				if r.connMs > 0 {
+					connTimes = append(connTimes, r.connMs)
+				}
+				if r.tlsMs > 0 {
+					tlsTimes = append(tlsTimes, r.tlsMs)
+				}
 				if r.cachePresent {
 					cacheCnt++
 				}
@@ -497,6 +539,9 @@ readLoop:
 				AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 				BatchDurationMs: durationMs,
+				AvgDNSMs:        avg(dnsTimes),
+				AvgConnectMs:    avg(connTimes),
+				AvgTLSHandshake: avg(tlsTimes),
 				// stability & quality
 				LowSpeedTimeSharePct: func() float64 {
 					if totalMsSum <= 0 {
@@ -530,6 +575,7 @@ readLoop:
 		}
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 		var slopes, coefVars, headGetRatios []float64
+		var dnsTimesAll, connTimesAll, tlsTimesAll []float64
 		var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
 		var lowMsSumAll, totalMsSumAll int64
@@ -600,6 +646,16 @@ readLoop:
 			if r.headGetRatio > 0 {
 				headGetRatios = append(headGetRatios, r.headGetRatio)
 			}
+			// timings overall
+			if r.dnsMs > 0 {
+				dnsTimesAll = append(dnsTimesAll, r.dnsMs)
+			}
+			if r.connMs > 0 {
+				connTimesAll = append(connTimesAll, r.connMs)
+			}
+			if r.tlsMs > 0 {
+				tlsTimesAll = append(tlsTimesAll, r.tlsMs)
+			}
 			if r.cachePresent {
 				cacheCnt++
 			}
@@ -655,6 +711,9 @@ readLoop:
 			AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 			CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 			BatchDurationMs: durationMs,
+			AvgDNSMs:        avg(dnsTimesAll),
+			AvgConnectMs:    avg(connTimesAll),
+			AvgTLSHandshake: avg(tlsTimesAll),
 			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
 			// stability & quality (overall)
 			LowSpeedTimeSharePct: func() float64 {
