@@ -6072,15 +6072,32 @@ func drawHint(img image.Image, text string) image.Image {
 	draw.Draw(rgba, b, img, b.Min, draw.Src)
 	// Slight translucent bg for readability
 	pad := 6
-	// measure text width approximately using 7x13 font
-	face := basicfont.Face7x13
+	// Use same font approach as watermark (TTF if available; fallback to basicfont)
+	var face font.Face
+	if res := theme.DefaultTheme().Font(fyne.TextStyle{}); res != nil {
+		if f, err := opentype.Parse(res.Content()); err == nil {
+			if ff, err2 := opentype.NewFace(f, &opentype.FaceOptions{Size: 14, DPI: 96, Hinting: font.HintingFull}); err2 == nil {
+				face = ff
+			}
+		}
+	}
+	if face == nil {
+		face = basicfont.Face7x13
+	}
 	// Colors will be chosen dynamically after sampling background in target region
 	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
-	// Measure width using a Drawer that has only Face set (Src not needed)
+	// Measure text width/height using metrics
 	drMeasure := &font.Drawer{Face: face}
 	tw := drMeasure.MeasureString(text).Ceil()
+	m := face.Metrics()
+	asc := m.Ascent.Ceil()
+	desc := m.Descent.Ceil()
+	th := asc + desc
+	if th <= 0 {
+		th = 16
+	}
 	x := b.Min.X + 8
-	y := b.Max.Y - 6
+	yBase := b.Max.Y - 6
 	// Choose colors. In Light mode use light text on a darker background for readability.
 	if strings.EqualFold(screenshotThemeGlobal, "light") {
 		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
@@ -6095,18 +6112,18 @@ func drawHint(img image.Image, text string) image.Image {
 		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
 	}
 	// Draw bordered background rectangle for readability
-	rectOuter := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
+	rectOuter := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
 	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
 	draw.Draw(rgba, rectOuter, boxBorder, image.Point{}, draw.Over)
 	draw.Draw(rgba, rectInner, boxBG, image.Point{}, draw.Over)
 	// Draw subtle multi-directional shadow then text for improved contrast
-	outlines := [][2]int{{1, 1}, {1, 0}, {0, 1}}
-	for _, d := range outlines {
-		drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + d[0]), Y: fixed.I(y + d[1])}}
+	outline := [][2]int{{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+	for _, d := range outline {
+		drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + d[0]), Y: fixed.I(yBase - desc + d[1])}}
 		drShadow.DrawString(text)
 	}
 	// Main text
-	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}}
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(yBase - desc)}}
 	dr.DrawString(text)
 	return rgba
 }
