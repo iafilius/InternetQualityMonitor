@@ -53,6 +53,11 @@ Examples:
 - TCP Connect Time (ms): Mean TCP handshake time per batch. Useful for path RTT shifts or congestion.
 - TLS Handshake Time (ms): Mean TLS setup time per batch. Highlights certificate/inspection overhead or handshake retries.
 
+DNS data sources and overlay
+- Preferred source is httptrace (trace_dns_ms). When unavailable, the legacy dns_time_ms is used.
+- You can also overlay the legacy pre-resolve series: toggle “Show pre-resolve DNS (dns_time_ms)” in the toolbar to add a dashed overlay for comparison (Overall/IPv4/IPv6).
+	- Headless: pass --screenshot-dns-legacy=true (or set the 7th arg to true in update_screenshots.sh) to include the dashed overlay in docs screenshots.
+
 Examples:
 
 ![DNS Lookup Time](docs/images/dns_lookup_time.png)
@@ -171,7 +176,8 @@ go build ./cmd/iqmviewer
 	--screenshot-rolling-band \
 	--screenshot-theme auto \
 	--screenshot-variants averages \
-	--screenshot-low-speed-threshold-kbps 1000
+	--screenshot-low-speed-threshold-kbps 1000 \
+	--screenshot-dns-legacy false
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.

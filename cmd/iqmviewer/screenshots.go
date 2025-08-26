@@ -19,7 +19,8 @@ import (
 // It runs headlessly without creating a UI window.
 // variants: "none" or "averages" (controls extra action variants for averages)
 // theme: "auto", "dark", or "light" (controls background and overlay styling)
-func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string) error {
+// showDNSLegacy: when true, include dashed legacy dns_time_ms overlay on the DNS chart
+func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
 	}
@@ -63,6 +64,8 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		rollingWindow:   rollingWindow,
 		showHints:       false,
 	}
+	// Enable legacy dns overlay in DNS chart if requested
+	st.showDNSLegacy = showDNSLegacy
 	st.summaries = sums
 	// Infer runTag→situation and set desired situation filter
 	st.runTagSituation = map[string]string{}

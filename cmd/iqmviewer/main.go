@@ -157,6 +157,10 @@ type uiState struct {
 	setupDNSImgCanvas  *canvas.Image // Avg DNS time (ms)
 	setupConnImgCanvas *canvas.Image // Avg TCP connect (ms)
 	setupTLSImgCanvas  *canvas.Image // Avg TLS handshake (ms)
+	// overlays for setup charts
+	setupDNSOverlay  *crosshairOverlay
+	setupConnOverlay *crosshairOverlay
+	setupTLSOverlay  *crosshairOverlay
 
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
@@ -213,6 +217,9 @@ type uiState struct {
 
 	// chart hints toggle
 	showHints bool
+
+	// option to overlay legacy pre-resolve DNS timing (dns_time_ms) on DNS chart
+	showDNSLegacy bool
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
@@ -281,6 +288,7 @@ func main() {
 	var shotsBatches int
 	var shotsTheme string
 	var shotsVariants string
+	var shotsDNSLegacy bool
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
 	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
@@ -291,11 +299,12 @@ func main() {
 	flag.IntVar(&shotsBatches, "screenshot-batches", 50, "How many recent batches to include in screenshots")
 	flag.StringVar(&shotsTheme, "screenshot-theme", "auto", "Screenshot theme: 'auto', 'dark', or 'light'")
 	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
+	flag.BoolVar(&shotsDNSLegacy, "screenshot-dns-legacy", false, "If true, overlay legacy dns_time_ms as dashed line on DNS chart in screenshots")
 	flag.Parse()
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
-		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme); err != nil {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy); err != nil {
 			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
 			os.Exit(1)
 		}
@@ -376,6 +385,15 @@ func main() {
 	// hints toggle (callback assigned later, after canvases are created)
 	hintsChk := widget.NewCheck("Hints", nil)
 	hintsChk.SetChecked(state.showHints)
+	// DNS legacy overlay toggle
+	dnsLegacyChk := widget.NewCheck("Show pre-resolve DNS (dns_time_ms)", nil)
+	dnsLegacyChk.SetChecked(state.app.Preferences().BoolWithFallback("showDNSLegacy", false))
+	state.showDNSLegacy = dnsLegacyChk.Checked
+	dnsLegacyChk.OnChanged = func(b bool) {
+		state.showDNSLegacy = b
+		savePrefs(state)
+		redrawCharts(state)
+	}
 
 	// SLA threshold inputs (configurable)
 	slaSpeedEntry := widget.NewEntry()
@@ -658,6 +676,7 @@ func main() {
 		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
+		dnsLegacyChk,
 		widget.NewLabel("SLA P50 Speed (kbps):"), slaSpeedEntry,
 		widget.NewLabel("SLA P95 TTFB (ms):"), slaTTFBEntry,
 		widget.NewLabel("Low-Speed Threshold (kbps):"), lowSpeedEntry,
@@ -832,12 +851,15 @@ func main() {
 	state.setupDNSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.setupDNSImgCanvas.FillMode = canvas.ImageFillContain
 	state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.setupDNSOverlay = newCrosshairOverlay(state, "setup_dns")
 	state.setupConnImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.setupConnImgCanvas.FillMode = canvas.ImageFillContain
 	state.setupConnImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.setupConnOverlay = newCrosshairOverlay(state, "setup_conn")
 	state.setupTLSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.setupTLSImgCanvas.FillMode = canvas.ImageFillContain
 	state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.setupTLSOverlay = newCrosshairOverlay(state, "setup_tls")
 
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
 	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
@@ -890,7 +912,9 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
-- Measured from httptrace DNS start/Done callbacks. Elevated values can indicate resolver or network issues.` + axesTip
+- Preferred source is httptrace (trace_dns_ms). When unavailable, legacy dns_time_ms is used.
+- Toggle "Show pre-resolve DNS (dns_time_ms)" in the toolbar to overlay the legacy series (dashed) for comparison.
+- Elevated values can indicate resolver or network issues.` + axesTip
 	helpConn := `TCP Connect Time (ms): average time to establish the TCP connection (SYN→ACK and socket connect).
 - Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip
 	helpTLS := `TLS Handshake Time (ms): average time to complete TLS handshake.
@@ -937,11 +961,11 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	// charts column (hints are rendered inside chart images when enabled)
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
 	chartsColumn := container.NewVBox(
-		makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas)),
+	makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas)),
+	makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas)),
+	makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
 		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
@@ -1172,6 +1196,18 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 			state.warmCacheOverlay.enabled = b
 			state.warmCacheOverlay.Refresh()
 		}
+		if state.setupDNSOverlay != nil {
+			state.setupDNSOverlay.enabled = b
+			state.setupDNSOverlay.Refresh()
+		}
+		if state.setupConnOverlay != nil {
+			state.setupConnOverlay.enabled = b
+			state.setupConnOverlay.Refresh()
+		}
+		if state.setupTLSOverlay != nil {
+			state.setupTLSOverlay.enabled = b
+			state.setupTLSOverlay.Refresh()
+		}
 		if state.tailRatioOverlay != nil {
 			state.tailRatioOverlay.enabled = b
 			state.tailRatioOverlay.Refresh()
@@ -1253,6 +1289,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	ipv4Chk.SetChecked(state.showIPv4)
 	ipv6Chk.SetChecked(state.showIPv6)
 	crosshairChk.SetChecked(state.crosshairEnabled)
+	// reflect DNS legacy overlay persisted preference
+	dnsLegacyChk.SetChecked(state.showDNSLegacy)
 	// Ensure overlays reflect current preference immediately
 	if state.speedOverlay != nil {
 		state.speedOverlay.enabled = state.crosshairEnabled
@@ -1265,6 +1303,18 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	if state.errOverlay != nil {
 		state.errOverlay.enabled = state.crosshairEnabled
 		state.errOverlay.Refresh()
+	}
+	if state.setupDNSOverlay != nil {
+		state.setupDNSOverlay.enabled = state.crosshairEnabled
+		state.setupDNSOverlay.Refresh()
+	}
+	if state.setupConnOverlay != nil {
+		state.setupConnOverlay.enabled = state.crosshairEnabled
+		state.setupConnOverlay.Refresh()
+	}
+	if state.setupTLSOverlay != nil {
+		state.setupTLSOverlay.enabled = state.crosshairEnabled
+		state.setupTLSOverlay.Refresh()
 	}
 	if state.tpctlOverallOverlay != nil {
 		state.tpctlOverallOverlay.enabled = state.crosshairEnabled
@@ -4646,6 +4696,66 @@ func renderDNSLookupChart(state *uiState) image.Image {
 			return b.IPv6.AvgDNSMs
 		}, chart.ColorGreen)
 	}
+	// Optional legacy overlay from dns_time_ms as dashed series
+	if state.showDNSLegacy {
+		addDashed := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+			// Build series similarly to add() but with dashed stroke and thinner dots
+			ys := make([]float64, len(rows))
+			valid := 0
+			for i, r := range rows {
+				v := sel(r)
+				if v <= 0 {
+					ys[i] = math.NaN()
+					continue
+				}
+				ys[i] = v
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
+				valid++
+			}
+			st := chart.Style{StrokeColor: col, StrokeWidth: 1.0, StrokeDashArray: []float64{4, 3}, DotWidth: 3, DotColor: col}
+			if timeMode {
+				if len(times) == 1 {
+					t2 := times[0].Add(1 * time.Second)
+					ys = append([]float64{ys[0]}, ys[0])
+					series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				} else {
+					series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+				}
+			} else {
+				if len(xs) == 1 {
+					x2 := xs[0] + 1
+					ys = append([]float64{ys[0]}, ys[0])
+					series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+				} else {
+					series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+				}
+			}
+		}
+		if state.showOverall {
+			addDashed("Overall (dns_time_ms)", func(b analysis.BatchSummary) float64 { return b.AvgDNSLegacyMs }, chart.ColorAlternateGray)
+		}
+		if state.showIPv4 {
+			addDashed("IPv4 (dns_time_ms)", func(b analysis.BatchSummary) float64 {
+				if b.IPv4 == nil {
+					return 0
+				}
+				return b.IPv4.AvgDNSLegacyMs
+			}, chart.ColorBlue)
+		}
+		if state.showIPv6 {
+			addDashed("IPv6 (dns_time_ms)", func(b analysis.BatchSummary) float64 {
+				if b.IPv6 == nil {
+					return 0
+				}
+				return b.IPv6.AvgDNSLegacyMs
+			}, chart.ColorGreen)
+		}
+	}
 	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
@@ -7237,6 +7347,7 @@ func savePrefs(state *uiState) {
 	prefs.SetString("speedUnit", state.speedUnit)
 	prefs.SetBool("crosshair", state.crosshairEnabled)
 	prefs.SetBool("showHints", state.showHints)
+	prefs.SetBool("showDNSLegacy", state.showDNSLegacy)
 	// SLA thresholds
 	prefs.SetInt("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps)
 	prefs.SetInt("slaTTFBThresholdMs", state.slaTTFBThresholdMs)
@@ -7332,6 +7443,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 		}
 	}
 	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
+	state.showDNSLegacy = prefs.BoolWithFallback("showDNSLegacy", state.showDNSLegacy)
 	// SLA thresholds (persisted)
 	if v := prefs.IntWithFallback("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps); v > 0 {
 		state.slaSpeedThresholdKbps = v
@@ -7562,6 +7674,12 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.slaTTFBImgCanvas
 		case "ttfb_p95_gap":
 			imgCanvas = r.c.state.tpctlP95GapImgCanvas
+		case "setup_dns":
+			imgCanvas = r.c.state.setupDNSImgCanvas
+		case "setup_conn":
+			imgCanvas = r.c.state.setupConnImgCanvas
+		case "setup_tls":
+			imgCanvas = r.c.state.setupTLSImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -7995,6 +8113,36 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				lines = append(lines, fmt.Sprintf("IPv6−IPv4: %.0f pp", v6-v4))
 			} else {
 				lines = append(lines, "Insufficient family data")
+			}
+		case "setup_dns":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgDNSMs))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgDNSMs))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgDNSMs))
+			}
+		case "setup_conn":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgConnectMs))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgConnectMs))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgConnectMs))
+			}
+		case "setup_tls":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgTLSHandshake))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgTLSHandshake))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTLSHandshake))
 			}
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}

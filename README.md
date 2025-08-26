@@ -377,16 +377,19 @@ More visuals available:
 Use the helper script to regenerate images from your latest results:
 
 ```
-./update_screenshots.sh [RESULTS_FILE] [SITUATION] [THEME] [VARIANTS] [BATCHES] [LOW_SPEED_KBPS]
+./update_screenshots.sh [RESULTS_FILE] [SITUATION] [THEME] [VARIANTS] [BATCHES] [LOW_SPEED_KBPS] [DNS_LEGACY]
 ```
 
-Defaults: `RESULTS_FILE=monitor_results.jsonl`, `SITUATION=All`, `THEME=auto`, `VARIANTS=averages`, `BATCHES=50`, `LOW_SPEED_KBPS=1000`.
+Defaults: `RESULTS_FILE=monitor_results.jsonl`, `SITUATION=All`, `THEME=auto`, `VARIANTS=averages`, `BATCHES=50`, `LOW_SPEED_KBPS=1000`, `DNS_LEGACY=false`.
 
 Examples:
 - Auto theme (system), include action variants, last 50 batches:
    `./update_screenshots.sh monitor_results.jsonl All auto averages 50 1000`
 - Force light theme, disable action variants, use 25 batches and 1500 kbps low-speed threshold:
    `./update_screenshots.sh monitor_results.jsonl Home_WiFi light none 25 1500`
+
+- Include dashed legacy DNS overlay in DNS chart screenshots (7th arg):
+   `./update_screenshots.sh monitor_results.jsonl All auto averages 50 1000 true`
 
 Or run headless directly via the viewer:
 
@@ -398,6 +401,7 @@ go build ./cmd/iqmviewer
     --screenshot-situation All \
     --screenshot-batches 50 \
     --screenshot-rolling-window 7 \
+   --screenshot-dns-legacy true
     --screenshot-rolling-band \
     --screenshot-theme auto \
     --screenshot-variants averages \

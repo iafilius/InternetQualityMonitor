@@ -37,6 +37,9 @@ type BatchSummary struct {
 	AvgDNSMs        float64 `json:"avg_dns_ms,omitempty"`
 	AvgConnectMs    float64 `json:"avg_connect_ms,omitempty"`
 	AvgTLSHandshake float64 `json:"avg_tls_handshake_ms,omitempty"`
+	// Legacy-only averages to enable comparison overlays in the UI
+	// For DNS, this captures the legacy pre-resolve field dns_time_ms when present
+	AvgDNSLegacyMs float64 `json:"avg_dns_legacy_ms,omitempty"`
 	// Extended aggregated metrics (averages or rates over successful lines)
 	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
 	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
@@ -99,6 +102,8 @@ type FamilySummary struct {
 	AvgDNSMs                  float64 `json:"avg_dns_ms,omitempty"`
 	AvgConnectMs              float64 `json:"avg_connect_ms,omitempty"`
 	AvgTLSHandshake           float64 `json:"avg_tls_handshake_ms,omitempty"`
+	// Legacy-only averages to enable comparison overlays in the UI
+	AvgDNSLegacyMs            float64 `json:"avg_dns_legacy_ms,omitempty"`
 	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
 	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
 	AvgP99Speed               float64 `json:"avg_p99_kbps,omitempty"`
@@ -183,7 +188,8 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		sampleLowMs    int64
 		sampleTotalMs  int64
 		// connection setup timings (ms)
-		dnsMs  float64
+		dnsMs        float64
+		dnsLegacyMs  float64 // raw legacy dns_time_ms if present
 		connMs float64
 		tlsMs  float64
 	}
@@ -274,6 +280,10 @@ readLoop:
 			bs.dnsMs = float64(sr.TraceDNSMs)
 		} else if sr.DNSTimeMs > 0 {
 			bs.dnsMs = float64(sr.DNSTimeMs)
+		}
+		// Always capture legacy dns_time_ms separately for overlay comparisons
+		if sr.DNSTimeMs > 0 {
+			bs.dnsLegacyMs = float64(sr.DNSTimeMs)
 		}
 		if sr.TraceConnectMs > 0 {
 			bs.connMs = float64(sr.TraceConnectMs)
@@ -408,7 +418,7 @@ readLoop:
 		buildFamily := func(filter string) *FamilySummary {
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 			var slopes, coefVars, headGetRatios []float64
-			var dnsTimes, connTimes, tlsTimes []float64
+			var dnsTimes, dnsLegacyTimes, connTimes, tlsTimes []float64
 			var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 			var errorLines int
 			var lowMsSum, totalMsSum int64
@@ -482,6 +492,9 @@ readLoop:
 				if r.tlsMs > 0 {
 					tlsTimes = append(tlsTimes, r.tlsMs)
 				}
+				if r.dnsLegacyMs > 0 {
+					dnsLegacyTimes = append(dnsLegacyTimes, r.dnsLegacyMs)
+				}
 				if r.cachePresent {
 					cacheCnt++
 				}
@@ -540,6 +553,7 @@ readLoop:
 				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 				BatchDurationMs: durationMs,
 				AvgDNSMs:        avg(dnsTimes),
+				AvgDNSLegacyMs:  avg(dnsLegacyTimes),
 				AvgConnectMs:    avg(connTimes),
 				AvgTLSHandshake: avg(tlsTimes),
 				// stability & quality
@@ -575,7 +589,7 @@ readLoop:
 		}
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 		var slopes, coefVars, headGetRatios []float64
-		var dnsTimesAll, connTimesAll, tlsTimesAll []float64
+	var dnsTimesAll, dnsLegacyTimesAll, connTimesAll, tlsTimesAll []float64
 		var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
 		var lowMsSumAll, totalMsSumAll int64
@@ -656,6 +670,9 @@ readLoop:
 			if r.tlsMs > 0 {
 				tlsTimesAll = append(tlsTimesAll, r.tlsMs)
 			}
+			if r.dnsLegacyMs > 0 {
+				dnsLegacyTimesAll = append(dnsLegacyTimesAll, r.dnsLegacyMs)
+			}
 			if r.cachePresent {
 				cacheCnt++
 			}
@@ -712,6 +729,7 @@ readLoop:
 			CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 			BatchDurationMs: durationMs,
 			AvgDNSMs:        avg(dnsTimesAll),
+			AvgDNSLegacyMs:  avg(dnsLegacyTimesAll),
 			AvgConnectMs:    avg(connTimesAll),
 			AvgTLSHandshake: avg(tlsTimesAll),
 			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
