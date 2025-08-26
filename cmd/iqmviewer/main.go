@@ -226,8 +226,28 @@ func (d *darkTheme) Size(name fyne.ThemeSizeName) float32 { return theme.Default
 func main() {
 	// CLI flags for opening a file directly
 	var fileFlag string
+	var shots bool
+	var shotsOut string
+	var shotsSituation string
+	var shotsRollingWindow int
+	var shotsBand bool
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
+	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
+	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
+	flag.StringVar(&shotsSituation, "screenshot-situation", "All", "Situation label to render (use 'All' for all situations)")
+	flag.IntVar(&shotsRollingWindow, "screenshot-rolling-window", 7, "Rolling window N for overlays")
+	flag.BoolVar(&shotsBand, "screenshot-rolling-band", true, "Whether to show the ±1σ band in screenshots")
 	flag.Parse()
+
+	// Headless screenshots mode: no UI, just render and write images.
+	if shots {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand); err != nil {
+			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("[viewer] screenshots written to:", shotsOut)
+		return
+	}
 
 	a := app.NewWithID("com.iqm.viewer")
 	a.Settings().SetTheme(&darkTheme{})

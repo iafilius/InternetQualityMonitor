@@ -27,6 +27,16 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Avg Stall Time (ms): Average total stalled time per stalled request. Higher means longer buffering events.
 - Stalled Requests Count: Derived as round(Lines × Stall Rate%). Quick absolute sense of how many requests stalled in a batch.
 
+Examples:
+
+![Low-Speed Time Share](docs/images/low_speed_share.png)
+
+![Stall Rate](docs/images/stall_rate.png)
+
+![Avg Stall Time](docs/images/stall_time.png)
+
+![Stalled Requests Count](docs/images/stall_count.png)
+
 Low‑Speed Threshold control
 
 - Toolbar field “Low‑Speed Threshold (kbps)” sets the cutoff used for Low‑Speed Time Share.
@@ -46,11 +56,45 @@ Low‑Speed Threshold control
 - Legend: a single entry “Rolling μ±1σ (N)” appears per chart when the band is enabled. The mean line label remains concise.
 - Help: Speed/TTFB help dialogs include a quick hint explaining the μ±1σ band and how the window N affects smoothing and band width.
 
+Example (Avg Speed with Rolling overlays):
+
+![Avg Speed with Rolling overlays](docs/images/speed_avg.png)
+
 ## Exports and order
 
 - Individual exports per chart and a combined export: "Export All (One Image)" stitches charts in the same order as on screen.
 - Each exported image embeds the Situation watermark for context preservation.
 - A dedicated export exists for the Stalled Requests Count chart.
+
+### Updating the screenshots
+
+You can regenerate the screenshots headlessly from your latest results:
+
+Option A (helper script):
+
+```
+./update_screenshots.sh [monitor_results.jsonl] [SituationLabel|All]
+```
+
+Option B (manual):
+
+```
+go build ./cmd/iqmviewer
+./iqmviewer -file monitor_results.jsonl \
+	--screenshot \
+	--screenshot-outdir docs/images \
+	--screenshot-situation All \
+	--screenshot-rolling-window 7 \
+	--screenshot-rolling-band
+```
+
+Screenshots will be written to `docs/images`. The Situation watermark is embedded.
+
+SLA examples:
+
+![SLA Compliance – Speed](docs/images/sla_speed.png)
+
+![SLA Compliance – TTFB](docs/images/sla_ttfb.png)
 
 ## Preferences (persisted)
 

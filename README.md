@@ -352,6 +352,36 @@ Low‑Speed Threshold control
 
 See also: the dedicated viewer docs in `README_iqmviewer.md` for a compact, feature‑focused overview and troubleshooting notes.
 
+Quick screenshots (from the viewer):
+
+![Avg Speed with overlays](docs/images/speed_avg.png)
+![Low-Speed Time Share](docs/images/low_speed_share.png)
+![Stall Rate](docs/images/stall_rate.png)
+![Avg Stall Time](docs/images/stall_time.png)
+![Stalled Requests Count](docs/images/stall_count.png)
+![SLA – Speed](docs/images/sla_speed.png)
+![SLA – TTFB](docs/images/sla_ttfb.png)
+
+### Updating screenshots (docs/images)
+
+Use the helper script to regenerate images from your latest results:
+
+```
+./update_screenshots.sh [monitor_results.jsonl] [SituationLabel|All]
+```
+
+Or run headless directly via the viewer:
+
+```
+go build ./cmd/iqmviewer
+./iqmviewer -file monitor_results.jsonl \
+   --screenshot \
+   --screenshot-outdir docs/images \
+   --screenshot-situation All \
+   --screenshot-rolling-window 7 \
+   --screenshot-rolling-band
+```
+
 
 Analyzing only recent batches for a specific situation:
 ```bash
