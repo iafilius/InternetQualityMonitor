@@ -362,6 +362,13 @@ Quick screenshots (from the viewer):
 ![SLA – Speed](docs/images/sla_speed.png)
 ![SLA – TTFB](docs/images/sla_ttfb.png)
 
+More visuals available:
+
+![Speed Percentiles – Overall](docs/images/speed_percentiles_overall.png)
+![TTFB P95−P50 Gap](docs/images/ttfb_p95_p50_gap.png)
+![Delta – Speed (abs)](docs/images/delta_speed_abs.png)
+![Error Rate](docs/images/error_rate.png)
+
 ### Updating screenshots (docs/images)
 
 Use the helper script to regenerate images from your latest results:

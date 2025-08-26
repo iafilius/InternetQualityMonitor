@@ -53,38 +53,100 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 	}
 	st.situation = strings.TrimSpace(situation)
 
-	// Render a representative set: Avg Speed, Avg TTFB, Low-Speed Share, Stall Rate, Stall Time, Stalled Count, Speed Percentiles, TTFB Percentiles, SLA charts.
-	toRender := []struct {
+	// Expanded set for richer documentation and more visual action.
+	baseSet := []struct {
 		name string
 		fn   func(*uiState) image.Image
 	}{
+		// Averages
 		{"speed_avg.png", renderSpeedChart},
 		{"ttfb_avg.png", renderTTFBChart},
+		// Stability & quality
 		{"low_speed_share.png", renderLowSpeedShareChart},
 		{"stall_rate.png", renderStallRateChart},
 		{"stall_time.png", renderStallTimeChart},
 		{"stall_count.png", renderStallCountChart},
+		{"jitter.png", renderJitterChart},
+		{"cov.png", renderCoVChart},
+		{"plateau_count.png", renderPlateauCountChart},
+		{"plateau_longest.png", renderPlateauLongestChart},
+		{"plateau_stable.png", renderPlateauStableChart},
+		// Percentiles (Speed)
+		{"speed_percentiles_overall.png", func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") }},
+		{"speed_percentiles_ipv4.png", func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv4") }},
+		{"speed_percentiles_ipv6.png", func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv6") }},
+		// Percentiles (TTFB)
+		{"ttfb_percentiles_overall.png", func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "overall") }},
+		{"ttfb_percentiles_ipv4.png", func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv4") }},
+		{"ttfb_percentiles_ipv6.png", func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv6") }},
+		// Tail & gaps
+		{"tail_heaviness_speed.png", renderTailHeavinessChart},
+		{"tail_heaviness_ttfb.png", renderTTFBTailHeavinessChart},
+		{"ttfb_p95_p50_gap.png", renderTTFBP95GapChart},
+		// Family deltas
+		{"delta_speed_abs.png", renderFamilyDeltaSpeedChart},
+		{"delta_ttfb_abs.png", renderFamilyDeltaTTFBChart},
+		{"delta_speed_pct.png", renderFamilyDeltaSpeedPctChart},
+		{"delta_ttfb_pct.png", renderFamilyDeltaTTFBPctChart},
+		// SLA & SLA deltas
 		{"sla_speed.png", renderSLASpeedChart},
 		{"sla_ttfb.png", renderSLATTFBChart},
+		{"sla_speed_delta.png", renderSLASpeedDeltaChart},
+		{"sla_ttfb_delta.png", renderSLATTFBDeltaChart},
+		// Signals
+		{"cache_hit_rate.png", renderCacheHitRateChart},
+		{"proxy_suspected_rate.png", renderProxySuspectedRateChart},
+		{"warm_cache_suspected_rate.png", renderWarmCacheSuspectedRateChart},
+		// Errors
+		{"error_rate.png", renderErrorRateChart},
 	}
 
 	// Use default chart size from chartSize when state.window is nil.
 	_ = chart.ColorBlack // silence unused import if chart not referenced elsewhere
 
-	for _, item := range toRender {
-		img := item.fn(st)
+	// Helper to write PNGs
+	encodeWrite := func(name string, img image.Image) error {
 		if img == nil {
-			continue
+			return nil
 		}
-		// Encode
 		var buf bytes.Buffer
 		if err := png.Encode(&buf, img); err != nil {
-			return fmt.Errorf("png encode %s: %w", item.name, err)
+			return fmt.Errorf("png encode %s: %w", name, err)
 		}
-		outPath := filepath.Join(outDir, item.name)
+		outPath := filepath.Join(outDir, name)
 		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", outPath, err)
 		}
+		return nil
 	}
+
+	// Render base set in current axis/scale settings
+	for _, item := range baseSet {
+		if err := encodeWrite(item.name, item.fn(st)); err != nil {
+			return err
+		}
+	}
+
+	// Action variants: time axis and relative scale for averages (more visual dynamics)
+	prevXAxis := st.xAxisMode
+	st.xAxisMode = "time"
+	if err := encodeWrite("speed_avg_time.png", renderSpeedChart(st)); err != nil {
+		return err
+	}
+	if err := encodeWrite("ttfb_avg_time.png", renderTTFBChart(st)); err != nil {
+		return err
+	}
+	st.xAxisMode = prevXAxis
+
+	prevYScale := st.yScaleMode
+	st.yScaleMode = "relative"
+	if err := encodeWrite("speed_avg_relative.png", renderSpeedChart(st)); err != nil {
+		return err
+	}
+	if err := encodeWrite("ttfb_avg_relative.png", renderTTFBChart(st)); err != nil {
+		return err
+	}
+	st.yScaleMode = prevYScale
+
 	return nil
 }

@@ -60,6 +60,63 @@ Example (Avg Speed with Rolling overlays):
 
 ![Avg Speed with Rolling overlays](docs/images/speed_avg.png)
 
+## Percentiles (variability)
+
+- Speed Percentiles: median and tails per batch (P50/P90/P95/P99). Wide gaps suggest unstable throughput.
+- TTFB Percentiles: median and tail latency (ms) per batch (P50/P90/P95/P99).
+
+Examples:
+
+![Speed Percentiles – Overall](docs/images/speed_percentiles_overall.png)
+
+![TTFB Percentiles – Overall](docs/images/ttfb_percentiles_overall.png)
+
+## Tail and gap metrics
+
+- Tail Heaviness (Speed P99/P50): dimensionless ratio capturing head vs tail spread.
+- TTFB Tail Heaviness (P95/P50): dimensionless latency tail ratio.
+- TTFB P95−P50 Gap (ms): absolute tail-minus-median latency distance.
+
+Examples:
+
+![Tail Heaviness – Speed](docs/images/tail_heaviness_speed.png)
+
+![TTFB P95−P50 Gap](docs/images/ttfb_p95_p50_gap.png)
+
+## IPv6 vs IPv4 deltas
+
+- Speed Delta (IPv6−IPv4) absolute and percent vs IPv4.
+- TTFB Delta (IPv4−IPv6) absolute and percent vs IPv6.
+
+Examples:
+
+![Delta – Speed (abs)](docs/images/delta_speed_abs.png)
+
+![Delta – TTFB (pct)](docs/images/delta_ttfb_pct.png)
+
+## Cache / proxy indicators
+
+- Cache Hit Rate, Proxy Suspected Rate, Warm Cache Suspected Rate.
+
+Examples:
+
+![Cache Hit Rate](docs/images/cache_hit_rate.png)
+
+![Proxy Suspected Rate](docs/images/proxy_suspected_rate.png)
+
+## Error, jitter, and stability extras
+
+- Error Rate, Jitter, Coefficient of Variation (CoV).
+- Plateau metrics: Count, Longest, Stable Share.
+
+Examples:
+
+![Error Rate](docs/images/error_rate.png)
+
+![Jitter](docs/images/jitter.png)
+
+![Plateau Longest](docs/images/plateau_longest.png)
+
 ## Exports and order
 
 - Individual exports per chart and a combined export: "Export All (One Image)" stitches charts in the same order as on screen.
@@ -95,6 +152,20 @@ SLA examples:
 ![SLA Compliance – Speed](docs/images/sla_speed.png)
 
 ![SLA Compliance – TTFB](docs/images/sla_ttfb.png)
+
+SLA deltas (percentage points):
+
+![SLA Compliance Delta – Speed](docs/images/sla_speed_delta.png)
+
+![SLA Compliance Delta – TTFB](docs/images/sla_ttfb_delta.png)
+
+## “Action” variants (optional)
+
+For more dynamic visuals, the generator also creates:
+- Time-axis variants of averages: `speed_avg_time.png`, `ttfb_avg_time.png`.
+- Relative-scale variants of averages: `speed_avg_relative.png`, `ttfb_avg_relative.png`.
+
+These help emphasize movement over time or relative variation when absolute baselines differ.
 
 ## Preferences (persisted)
 
