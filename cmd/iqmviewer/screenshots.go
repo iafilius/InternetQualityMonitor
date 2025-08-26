@@ -17,21 +17,41 @@ import (
 
 // RunScreenshotsMode renders a curated set of charts and writes them as PNGs under outDir.
 // It runs headlessly without creating a UI window.
-func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool) error {
+// variants: "none" or "averages" (controls extra action variants for averages)
+// theme: "dark" or "light" (controls background and overlay styling)
+func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create out dir: %w", err)
 	}
+	// Configure screenshot theme globally for helpers
+	switch strings.ToLower(strings.TrimSpace(theme)) {
+	case "light":
+		screenshotThemeGlobal = "light"
+	default:
+		screenshotThemeGlobal = "dark"
+	}
 	// Analyze data
-	sums, err := analysis.AnalyzeRecentResultsFullWithOptions(filePath, monitor.SchemaVersion, 50, analysis.AnalyzeOptions{SituationFilter: "", LowSpeedThresholdKbps: 1000})
+	if batches <= 0 {
+		batches = 50
+	}
+	// Respect situation filter unless "All"
+	sitFilter := strings.TrimSpace(situation)
+	if strings.EqualFold(sitFilter, "all") {
+		sitFilter = ""
+	}
+	if lowSpeedThresholdKbps <= 0 {
+		lowSpeedThresholdKbps = 1000
+	}
+	sums, err := analysis.AnalyzeRecentResultsFullWithOptions(filePath, monitor.SchemaVersion, batches, analysis.AnalyzeOptions{SituationFilter: sitFilter, LowSpeedThresholdKbps: float64(lowSpeedThresholdKbps)})
 	if err != nil {
 		return err
 	}
 	st := &uiState{
 		filePath:        filePath,
-		batchesN:        50,
+		batchesN:        batches,
 		xAxisMode:       "batch",
 		yScaleMode:      "absolute",
 		showOverall:     true,
@@ -128,25 +148,27 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 	}
 
 	// Action variants: time axis and relative scale for averages (more visual dynamics)
-	prevXAxis := st.xAxisMode
-	st.xAxisMode = "time"
-	if err := encodeWrite("speed_avg_time.png", renderSpeedChart(st)); err != nil {
-		return err
-	}
-	if err := encodeWrite("ttfb_avg_time.png", renderTTFBChart(st)); err != nil {
-		return err
-	}
-	st.xAxisMode = prevXAxis
+	if !strings.EqualFold(strings.TrimSpace(variants), "none") {
+		prevXAxis := st.xAxisMode
+		st.xAxisMode = "time"
+		if err := encodeWrite("speed_avg_time.png", renderSpeedChart(st)); err != nil {
+			return err
+		}
+		if err := encodeWrite("ttfb_avg_time.png", renderTTFBChart(st)); err != nil {
+			return err
+		}
+		st.xAxisMode = prevXAxis
 
-	prevYScale := st.yScaleMode
-	st.yScaleMode = "relative"
-	if err := encodeWrite("speed_avg_relative.png", renderSpeedChart(st)); err != nil {
-		return err
+		prevYScale := st.yScaleMode
+		st.yScaleMode = "relative"
+		if err := encodeWrite("speed_avg_relative.png", renderSpeedChart(st)); err != nil {
+			return err
+		}
+		if err := encodeWrite("ttfb_avg_relative.png", renderTTFBChart(st)); err != nil {
+			return err
+		}
+		st.yScaleMode = prevYScale
 	}
-	if err := encodeWrite("ttfb_avg_relative.png", renderTTFBChart(st)); err != nil {
-		return err
-	}
-	st.yScaleMode = prevYScale
 
 	return nil
 }

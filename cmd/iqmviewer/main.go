@@ -36,6 +36,10 @@ import (
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
 
+// screenshotThemeGlobal controls light/dark styling of headless screenshots.
+// Accepts "dark" (default) or "light". UI mode remains dark.
+var screenshotThemeGlobal = "dark"
+
 // pointStyle returns a style that renders points only (no connecting line)
 func pointStyle(col drawing.Color) chart.Style {
 	return chart.Style{
@@ -231,17 +235,25 @@ func main() {
 	var shotsSituation string
 	var shotsRollingWindow int
 	var shotsBand bool
+	var shotsLowSpeedThreshKbps int
+	var shotsBatches int
+	var shotsTheme string
+	var shotsVariants string
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
 	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
 	flag.StringVar(&shotsSituation, "screenshot-situation", "All", "Situation label to render (use 'All' for all situations)")
 	flag.IntVar(&shotsRollingWindow, "screenshot-rolling-window", 7, "Rolling window N for overlays")
 	flag.BoolVar(&shotsBand, "screenshot-rolling-band", true, "Whether to show the ±1σ band in screenshots")
+	flag.IntVar(&shotsLowSpeedThreshKbps, "screenshot-low-speed-threshold-kbps", 1000, "Low-Speed Threshold (kbps) used for Low-Speed Time Share in screenshots")
+	flag.IntVar(&shotsBatches, "screenshot-batches", 50, "How many recent batches to include in screenshots")
+		flag.StringVar(&shotsTheme, "screenshot-theme", "dark", "Screenshot theme: 'dark' or 'light'")
+		flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.Parse()
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
-		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand); err != nil {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme); err != nil {
 			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
 			os.Exit(1)
 		}
@@ -276,6 +288,12 @@ func main() {
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
+	// Initialize screenshot theme from preferences before building menus (used for labels)
+	screenshotThemeGlobal = strings.ToLower(strings.TrimSpace(a.Preferences().StringWithFallback("screenshotTheme", screenshotThemeGlobal)))
+	if screenshotThemeGlobal != "light" {
+		// default to dark for any invalid value
+		screenshotThemeGlobal = "dark"
+	}
 	// (removed: pctlFamily/pctlCompare preferences)
 
 	// top bar controls
@@ -1384,7 +1402,50 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
-	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu)
+	// View menu: Screenshot Theme (Dark/Light)
+	labelFor := func(name string) string {
+		if (strings.EqualFold(name, "Dark") && !strings.EqualFold(screenshotThemeGlobal, "light")) ||
+			(strings.EqualFold(name, "Light") && strings.EqualFold(screenshotThemeGlobal, "light")) {
+			return name + " ✓"
+		}
+		return name
+	}
+	darkItem := fyne.NewMenuItem(labelFor("Dark"), func() {
+		if strings.EqualFold(screenshotThemeGlobal, "dark") {
+			return
+		}
+		screenshotThemeGlobal = "dark"
+		state.app.Preferences().SetString("screenshotTheme", screenshotThemeGlobal)
+		// Redraw charts to reflect watermark/hint/background contrast if applicable
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { redrawCharts(state) })
+		}()
+		// Rebuild menus asynchronously to avoid changing menus while handling them
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	lightItem := fyne.NewMenuItem(labelFor("Light"), func() {
+		if strings.EqualFold(screenshotThemeGlobal, "light") {
+			return
+		}
+		screenshotThemeGlobal = "light"
+		state.app.Preferences().SetString("screenshotTheme", screenshotThemeGlobal)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { redrawCharts(state) })
+		}()
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	// Add the two options under View (simple and clear)
+	viewMenu := fyne.NewMenu("View", darkItem, lightItem)
+
+	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, viewMenu)
 	state.window.SetMainMenu(mainMenu)
 
 	canv := state.window.Canvas()
@@ -5916,16 +5977,27 @@ func drawHint(img image.Image, text string) image.Image {
 	// measure text width approximately using 7x13 font
 	face := basicfont.Face7x13
 	// main text color and shadow
-	textCol := image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
-	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+	var textCol *image.Uniform
+	var shadowCol *image.Uniform
+	var boxBG *image.Uniform
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		// Dark text on light box, subtle shadow
+		textCol = image.NewUniform(color.RGBA{R: 20, G: 20, B: 20, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
+		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 210})
+	} else {
+		// Light text on dark box
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+	}
 	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
 	tw := dr.MeasureString(text).Ceil()
 	x := b.Min.X + 8
 	y := b.Max.Y - 6
 	// Draw background rectangle (semi-opaque dark)
-	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
 	rect := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
-	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
+	draw.Draw(rgba, rect, boxBG, image.Point{}, draw.Over)
 	// Draw shadow then text for better contrast on varying backgrounds
 	// Shadow
 	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + 1), Y: fixed.I(y + 1)}}
@@ -5958,8 +6030,18 @@ func drawWatermark(img image.Image, text string) image.Image {
 	if face == nil {
 		face = basicfont.Face7x13
 	}
-	textCol := image.NewUniform(color.RGBA{R: 250, G: 250, B: 250, A: 250})
-	shadowCol := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+	var textCol *image.Uniform
+	var shadowCol *image.Uniform
+	var boxBG *image.Uniform
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		textCol = image.NewUniform(color.RGBA{R: 20, G: 20, B: 20, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
+		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 200})
+	} else {
+		textCol = image.NewUniform(color.RGBA{R: 250, G: 250, B: 250, A: 250})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 192})
+	}
 	drMeasure := &font.Drawer{Face: face}
 	tw := drMeasure.MeasureString(text).Ceil()
 	m := face.Metrics()
@@ -5972,10 +6054,9 @@ func drawWatermark(img image.Image, text string) image.Image {
 	// placement bottom-right
 	x := b.Max.X - tw - 8
 	yBase := b.Max.Y - 6
-	// background box (keep dark for contrast)
-	bg := image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 192})
+	// background box (theme aware)
 	rect := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
-	draw.Draw(rgba, rect, bg, image.Point{}, draw.Over)
+	draw.Draw(rgba, rect, boxBG, image.Point{}, draw.Over)
 	// outline shadows
 	outline := [][2]int{{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 	for _, dxy := range outline {
@@ -6263,10 +6344,16 @@ func makeNiceTimeTicks(minT, maxT time.Time, step time.Duration, labelFmt string
 
 func blank(w, h int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	// subtle background
+	// subtle background, theme aware
+	var bg color.RGBA
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		bg = color.RGBA{R: 250, G: 250, B: 250, A: 255}
+	} else {
+		bg = color.RGBA{R: 18, G: 18, B: 18, A: 255}
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			img.SetRGBA(x, y, color.RGBA{R: 18, G: 18, B: 18, A: 255})
+			img.SetRGBA(x, y, bg)
 		}
 	}
 	return img
@@ -6456,10 +6543,16 @@ func exportAllChartsCombined(state *uiState) {
 	}
 	// Compose vertically with small gaps
 	out := image.NewRGBA(image.Rect(0, 0, maxW, totalH))
-	// Fill background dark to match app
+	// Fill background to match theme
+	var bg color.RGBA
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		bg = color.RGBA{R: 250, G: 250, B: 250, A: 255}
+	} else {
+		bg = color.RGBA{R: 18, G: 18, B: 18, A: 255}
+	}
 	for y := 0; y < totalH; y++ {
 		for x := 0; x < maxW; x++ {
-			out.SetRGBA(x, y, color.RGBA{R: 18, G: 18, B: 18, A: 255})
+			out.SetRGBA(x, y, bg)
 		}
 	}
 	y := 0
