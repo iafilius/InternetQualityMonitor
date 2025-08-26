@@ -10,6 +10,13 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
 - Viewer: Preferences persist Situation, axis modes, speed unit, crosshair, SLA thresholds, Low‑Speed Threshold, Rolling Window, overlays toggles.
 - Analysis: Added jitter, coefficient of variation, plateau metrics (count/longest/stability), tail heaviness, TTFB P95−P50 gap, IPv6↔IPv4 deltas (abs/%), SLA compliance and deltas, proxy/cache/warm‑cache indicators.
 - Analysis: Safer rendering ranges and single‑point padding to avoid panics/blank charts.
+ - Viewer (Theme): Centralized chart theming and full theme support — View → Screenshot Theme now offers Auto (default), Dark, Light; selection is persisted. Auto follows system theme on macOS.
+ - Viewer (Theme): Fixed charts that didn’t switch fully; rolling μ±1σ band cut‑outs and stitched exports are now theme‑aware; hints and watermark contrast improved for both themes.
+ - Viewer (Theme): Safer UI updates during theme change — redraws and menu rebuilds scheduled asynchronously to avoid re‑entrancy issues.
+ - Viewer (Headless): New screenshot flags — `--screenshot-theme auto|dark|light`, `--screenshot-variants averages|none`, `--screenshot-batches N`, `--screenshot-low-speed-threshold-kbps K`.
+ - Viewer (Headless): Added “action” variants for averages (time‑axis and relative‑scale) gated by `--screenshot-variants`.
+ - Scripts: `update_screenshots.sh` updated to accept THEME/VARIANTS/BATCHES/LOW_SPEED_KBPS and pass through to the viewer.
+ - Docs: `README.md` and `README_iqmviewer.md` updated with theme selection, headless flags, examples, and defaults.
 
 ## [3.0.0] – 2025‑08‑18
 - Major analysis pipeline refactor into `analysis.AnalyzeRecentResultsFull*`.
