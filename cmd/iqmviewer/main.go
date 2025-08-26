@@ -247,8 +247,8 @@ func main() {
 	flag.BoolVar(&shotsBand, "screenshot-rolling-band", true, "Whether to show the ±1σ band in screenshots")
 	flag.IntVar(&shotsLowSpeedThreshKbps, "screenshot-low-speed-threshold-kbps", 1000, "Low-Speed Threshold (kbps) used for Low-Speed Time Share in screenshots")
 	flag.IntVar(&shotsBatches, "screenshot-batches", 50, "How many recent batches to include in screenshots")
-		flag.StringVar(&shotsTheme, "screenshot-theme", "dark", "Screenshot theme: 'dark' or 'light'")
-		flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
+	flag.StringVar(&shotsTheme, "screenshot-theme", "dark", "Screenshot theme: 'dark' or 'light'")
+	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.Parse()
 
 	// Headless screenshots mode: no UI, just render and write images.
@@ -2275,6 +2275,7 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
@@ -2397,6 +2398,7 @@ func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "TTFB Tail Heaviness (P95/P50)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ratio", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2527,6 +2529,7 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2644,6 +2647,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Cache Hit Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2764,6 +2768,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Proxy Suspected Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -2884,6 +2889,7 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Warm Cache Suspected Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -3004,6 +3010,7 @@ func renderLowSpeedShareChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Low-Speed Time Share (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -3121,6 +3128,7 @@ func renderStallRateChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Stall Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -3235,6 +3243,7 @@ func renderStallTimeChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Avg Stall Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -3451,6 +3460,7 @@ func renderSpeedChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	// Add rolling overlays (mean line and ±1 std band) if enabled and have enough points
 	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
 		bandLabel := ""
@@ -3767,6 +3777,7 @@ func renderTTFBChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	// Rolling overlays for TTFB (mean line and ±1 std band)
 	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
 		bandLabel := ""
@@ -3912,6 +3923,8 @@ func addRollingSeriesSpeed(ch *chart.Chart, timeMode bool, times []time.Time, xs
 	}
 	lineColor := col.WithAlpha(220)
 	bandColor := col.WithAlpha(60)
+	// Use the chart's canvas/background color for band cutouts so it matches the active theme
+	bgCol := ch.Canvas.FillColor
 	// Build upper/lower arrays where both mean and std are valid
 	upper := make([]float64, len(mean))
 	lower := make([]float64, len(mean))
@@ -3941,7 +3954,7 @@ func addRollingSeriesSpeed(ch *chart.Chart, timeMode bool, times []time.Time, xs
 			// Draw upper translucent fill
 			ch.Series = append(ch.Series, chart.TimeSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
 			// Cut out the area below lower using white fill (plot background)
-			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}})
 		}
 		// Mean line on top
 		mx := times
@@ -3966,7 +3979,7 @@ func addRollingSeriesSpeed(ch *chart.Chart, timeMode bool, times []time.Time, xs
 		}
 		if showBand {
 			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
-			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}})
 		}
 		mx := xs
 		mvals := mean
@@ -3986,6 +3999,8 @@ func addRollingSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs 
 	}
 	lineColor := col.WithAlpha(220)
 	bandColor := col.WithAlpha(60)
+	// Theme-aware background for band cutout
+	bgCol := ch.Canvas.FillColor
 	upper := make([]float64, len(mean))
 	lower := make([]float64, len(mean))
 	for i := range mean {
@@ -4011,7 +4026,7 @@ func addRollingSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs 
 		}
 		if showBand {
 			ch.Series = append(ch.Series, chart.TimeSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
-			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}})
 		}
 		mx := times
 		mvals := mean
@@ -4035,7 +4050,7 @@ func addRollingSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs 
 		}
 		if showBand {
 			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
-			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}})
 		}
 		mx := xs
 		mvals := mean
@@ -4155,6 +4170,7 @@ func renderStallCountChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Stalled Requests Count", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4284,6 +4300,7 @@ func renderErrorRateChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
@@ -4406,6 +4423,7 @@ func renderJitterChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Jitter (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4525,6 +4543,7 @@ func renderCoVChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Coefficient of Variation (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4643,6 +4662,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Plateau Count", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4760,6 +4780,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Longest Plateau (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4881,6 +4902,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Plateau Stable Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -4998,6 +5020,7 @@ func renderTailHeavinessChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Tail Heaviness (Speed P99/P50)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ratio", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5086,6 +5109,7 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: fmt.Sprintf("Family Delta – Speed (IPv6−IPv4) (%s)", unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5172,6 +5196,7 @@ func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Family Delta – TTFB (IPv4−IPv6) (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5258,6 +5283,7 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Family Delta – Speed % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5344,6 +5370,7 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "Family Delta – TTFB % (IPv6 vs IPv4)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5432,6 +5459,7 @@ func renderSLASpeedDeltaChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "SLA Compliance Delta – Speed (pp)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5520,6 +5548,7 @@ func renderSLATTFBDeltaChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: "SLA Compliance Delta – TTFB (pp)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "pp", Range: yAxisRange, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5658,6 +5687,7 @@ func renderSLASpeedChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: fmt.Sprintf("SLA Compliance – Speed (≥ %.1f %s P50 est)", float64(state.slaSpeedThresholdKbps)*factor, unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5747,6 +5777,7 @@ func renderSLATTFBChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{Title: fmt.Sprintf("SLA Compliance – TTFB (≤ %d ms P95 est)", state.slaTTFBThresholdMs), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
@@ -5976,32 +6007,36 @@ func drawHint(img image.Image, text string) image.Image {
 	pad := 6
 	// measure text width approximately using 7x13 font
 	face := basicfont.Face7x13
-	// main text color and shadow
-	var textCol *image.Uniform
-	var shadowCol *image.Uniform
-	var boxBG *image.Uniform
+	// main text color, shadow and box colors (high-contrast)
+	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
 	if strings.EqualFold(screenshotThemeGlobal, "light") {
-		// Dark text on light box, subtle shadow
-		textCol = image.NewUniform(color.RGBA{R: 20, G: 20, B: 20, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
-		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 210})
+		// High-contrast: black text on near-opaque white box, soft dark border
+		textCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 90})
+		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 245})
+		boxBorder = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 40})
 	} else {
-		// Light text on dark box
+		// High-contrast: white text on near-opaque black box, soft light border
 		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
-		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 230})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 40})
 	}
 	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
 	tw := dr.MeasureString(text).Ceil()
 	x := b.Min.X + 8
 	y := b.Max.Y - 6
-	// Draw background rectangle (semi-opaque dark)
-	rect := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
-	draw.Draw(rgba, rect, boxBG, image.Point{}, draw.Over)
-	// Draw shadow then text for better contrast on varying backgrounds
-	// Shadow
-	drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + 1), Y: fixed.I(y + 1)}}
-	drShadow.DrawString(text)
+	// Draw bordered background rectangle for readability
+	rectOuter := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
+	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
+	draw.Draw(rgba, rectOuter, boxBorder, image.Point{}, draw.Over)
+	draw.Draw(rgba, rectInner, boxBG, image.Point{}, draw.Over)
+	// Draw subtle multi-directional shadow then text for improved contrast
+	outlines := [][2]int{{1, 1}, {1, 0}, {0, 1}}
+	for _, d := range outlines {
+		drShadow := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + d[0]), Y: fixed.I(y + d[1])}}
+		drShadow.DrawString(text)
+	}
 	// Main text
 	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
 	dr.DrawString(text)
@@ -6030,17 +6065,19 @@ func drawWatermark(img image.Image, text string) image.Image {
 	if face == nil {
 		face = basicfont.Face7x13
 	}
-	var textCol *image.Uniform
-	var shadowCol *image.Uniform
-	var boxBG *image.Uniform
+	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
 	if strings.EqualFold(screenshotThemeGlobal, "light") {
-		textCol = image.NewUniform(color.RGBA{R: 20, G: 20, B: 20, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 100})
-		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 200})
+		// Strong contrast: black on near-opaque white, subtle dark border
+		textCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 90})
+		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 245})
+		boxBorder = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 40})
 	} else {
-		textCol = image.NewUniform(color.RGBA{R: 250, G: 250, B: 250, A: 250})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 180})
-		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 192})
+		// Strong contrast: white on near-opaque black, subtle light border
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 230})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 40})
 	}
 	drMeasure := &font.Drawer{Face: face}
 	tw := drMeasure.MeasureString(text).Ceil()
@@ -6054,9 +6091,11 @@ func drawWatermark(img image.Image, text string) image.Image {
 	// placement bottom-right
 	x := b.Max.X - tw - 8
 	yBase := b.Max.Y - 6
-	// background box (theme aware)
-	rect := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
-	draw.Draw(rgba, rect, boxBG, image.Point{}, draw.Over)
+	// background box with subtle border (theme aware)
+	rectOuter := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
+	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
+	draw.Draw(rgba, rectOuter, boxBorder, image.Point{}, draw.Over)
+	draw.Draw(rgba, rectInner, boxBG, image.Point{}, draw.Over)
 	// outline shadows
 	outline := [][2]int{{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 	for _, dxy := range outline {
@@ -6240,6 +6279,7 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	themeChart(&ch)
 	// Use full-width chart size like the other graphs
 	cw, chh := chartSize(state)
 	ch.Width = cw
@@ -6357,6 +6397,42 @@ func blank(w, h int) image.Image {
 		}
 	}
 	return img
+}
+
+// themeChart applies light/dark styling to chart backgrounds, axes, ticks, grids, and titles
+// according to screenshotThemeGlobal. It does not change paddings or series colors.
+func themeChart(ch *chart.Chart) {
+	if ch == nil {
+		return
+	}
+	var (
+		bg, text, grid, axis drawing.Color
+	)
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		bg = drawing.ColorFromHex("FAFAFA")
+		text = drawing.ColorFromHex("141414")
+		grid = drawing.ColorFromHex("DDDDDD")
+		axis = drawing.ColorFromHex("BBBBBB")
+	} else {
+		// dark
+		bg = drawing.ColorFromHex("121212")
+		text = drawing.ColorFromHex("F0F0F0")
+		grid = drawing.ColorFromHex("333333")
+		axis = drawing.ColorFromHex("666666")
+	}
+	// Backgrounds
+	ch.Background.FillColor = bg
+	ch.Canvas.FillColor = bg
+	// Axes & ticks
+	ch.XAxis.Style.FontColor = text
+	ch.XAxis.Style.StrokeColor = axis
+	ch.XAxis.TickStyle.FontColor = text
+	ch.YAxis.Style.FontColor = text
+	ch.YAxis.Style.StrokeColor = axis
+	ch.YAxis.TickStyle.FontColor = text
+	ch.YAxis.GridMajorStyle.StrokeColor = grid
+	// Title color
+	ch.TitleStyle.FontColor = text
 }
 
 // export PNG
