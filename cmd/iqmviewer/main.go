@@ -106,6 +106,12 @@ type uiState struct {
 	// tail/latency depth extra
 	tpctlP95GapImgCanvas *canvas.Image // TTFB P95−P50 gap (ms)
 
+	// stability & quality charts
+	lowSpeedImgCanvas   *canvas.Image // Low-Speed Time Share (%)
+	stallRateImgCanvas  *canvas.Image // Stall Rate (%)
+	stallTimeImgCanvas  *canvas.Image // Avg Stall Time (ms)
+	stallCountImgCanvas *canvas.Image // Stalled Requests Count (interim)
+
 	// overlays for additional charts
 	errOverlay       *crosshairOverlay
 	jitterOverlay    *crosshairOverlay
@@ -130,9 +136,18 @@ type uiState struct {
 	// extra overlay
 	tpctlP95GapOverlay *crosshairOverlay
 
+	// stability overlays
+	lowSpeedOverlay   *crosshairOverlay
+	stallRateOverlay  *crosshairOverlay
+	stallTimeOverlay  *crosshairOverlay
+	stallCountOverlay *crosshairOverlay
+
 	// SLA thresholds (configurable via UI)
 	slaSpeedThresholdKbps int // default 10000 (10 Mbps)
 	slaTTFBThresholdMs    int // default 200 ms
+
+	// Low-speed threshold for Low-Speed Time Share metric (kbps)
+	lowSpeedThresholdKbps int // default 1000
 
 	// containers
 	pctlGrid *fyne.Container
@@ -155,6 +170,11 @@ type uiState struct {
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
+
+	// rolling overlays
+	showRolling     bool // show rolling mean line on Speed/TTFB
+	showRollingBand bool // show translucent ±1σ band around rolling mean
+	rollingWindow   int  // default 7
 }
 
 // makeChartSection composes a header row (title + info button) and the stacked image+overlay
@@ -215,16 +235,19 @@ func main() {
 	w.Resize(fyne.NewSize(1100, 800))
 
 	state := &uiState{
-		app:         a,
-		window:      w,
-		filePath:    fileFlag,
-		batchesN:    50,
-		xAxisMode:   "batch",
-		yScaleMode:  "absolute",
-		showOverall: true,
-		showIPv4:    true,
-		showIPv6:    true,
-		speedUnit:   "kbps",
+		app:             a,
+		window:          w,
+		filePath:        fileFlag,
+		batchesN:        50,
+		xAxisMode:       "batch",
+		yScaleMode:      "absolute",
+		showOverall:     true,
+		showIPv4:        true,
+		showIPv6:        true,
+		speedUnit:       "kbps",
+		showRolling:     true,
+		showRollingBand: true,
+		rollingWindow:   7,
 	}
 	// Sensible corporate defaults for SLA thresholds
 	state.slaSpeedThresholdKbps = 10000 // 10 Mbps P50 speed target
@@ -482,6 +505,73 @@ func main() {
 
 	// layout
 	// top bar
+	// Low-speed threshold input (configurable)
+	lowSpeedEntry := widget.NewEntry()
+	lowSpeedEntry.SetPlaceHolder("kbps")
+	if state.lowSpeedThresholdKbps <= 0 {
+		state.lowSpeedThresholdKbps = 1000
+	}
+	lowSpeedEntry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
+	lowSpeedEntry.OnChanged = func(v string) {
+		iv, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return
+		}
+		if iv < 100 {
+			iv = 100
+		}
+		if iv > 100_000_000 {
+			iv = 100_000_000
+		}
+		if iv == state.lowSpeedThresholdKbps {
+			return
+		}
+		state.lowSpeedThresholdKbps = iv
+		savePrefs(state)
+		// threshold affects computed summaries; re-analyze
+		loadAll(state, fileLabel)
+	}
+
+	// Rolling overlays controls
+	if state.rollingWindow <= 0 {
+		state.rollingWindow = 7
+	}
+	rollingEntry := widget.NewEntry()
+	rollingEntry.SetPlaceHolder("N")
+	rollingEntry.SetText(strconv.Itoa(state.rollingWindow))
+	rollingEntry.OnChanged = func(v string) {
+		iv, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return
+		}
+		if iv < 2 {
+			iv = 2
+		}
+		if iv > 500 {
+			iv = 500
+		}
+		if iv == state.rollingWindow {
+			return
+		}
+		state.rollingWindow = iv
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	rollingChk := widget.NewCheck("Rolling Overlays", nil)
+	rollingChk.SetChecked(state.showRolling)
+	rollingChk.OnChanged = func(b bool) {
+		state.showRolling = b
+		savePrefs(state)
+		redrawCharts(state)
+	}
+	rollingBandChk := widget.NewCheck("±1σ Band", nil)
+	rollingBandChk.SetChecked(state.showRollingBand)
+	rollingBandChk.OnChanged = func(b bool) {
+		state.showRollingBand = b
+		savePrefs(state)
+		redrawCharts(state)
+	}
+
 	top := container.NewHBox(
 		widget.NewButton("Open…", func() { openFileDialog(state, fileLabel) }),
 		widget.NewButton("Reload", func() { loadAll(state, fileLabel) }),
@@ -490,6 +580,8 @@ func main() {
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
 		widget.NewLabel("SLA P50 Speed (kbps):"), slaSpeedEntry,
 		widget.NewLabel("SLA P95 TTFB (ms):"), slaTTFBEntry,
+		widget.NewLabel("Low-Speed Threshold (kbps):"), lowSpeedEntry,
+		widget.NewLabel("Rolling Window:"), rollingEntry, rollingChk, rollingBandChk,
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
@@ -637,15 +729,36 @@ func main() {
 	state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.tpctlP95GapOverlay = newCrosshairOverlay(state, "ttfb_p95_gap")
 
+	// Stability & quality placeholders
+	state.lowSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.lowSpeedImgCanvas.FillMode = canvas.ImageFillContain
+	state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.lowSpeedOverlay = newCrosshairOverlay(state, "low_speed_share")
+	state.stallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.stallRateImgCanvas.FillMode = canvas.ImageFillContain
+	state.stallRateImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.stallRateOverlay = newCrosshairOverlay(state, "stall_rate")
+	// Stalled Requests Count (interim)
+	state.stallCountImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.stallCountImgCanvas.FillMode = canvas.ImageFillContain
+	state.stallCountImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.stallCountOverlay = newCrosshairOverlay(state, "stall_count")
+	state.stallTimeImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.stallTimeImgCanvas.FillMode = canvas.ImageFillContain
+	state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(900, 300))
+	state.stallTimeOverlay = newCrosshairOverlay(state, "stall_time")
+
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
 	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
 - Useful for tracking overall performance trends over time or across runs.
 - Pair with Speed Percentiles to understand variability not visible in averages.
+- Rolling overlays: optional Rolling Mean and a translucent μ±1σ band computed over a sliding window of N batches (N = Rolling Window control). Larger N smooths more; the band visualizes variability (wider = more volatile). You can toggle the band independently with “±1σ Band”.
 References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 	helpTTFB := `Average Time To First Byte (TTFB, in ms) for all requests in each batch (Overall/IPv4/IPv6).
 - Captures latency before payload begins (DNS, TCP, TLS, server think time). Spikes often indicate setup or backend delays.
-- Use TTFB Percentiles to see tail latency beyond the average (rare but impactful slow requests).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte"
+- Use TTFB Percentiles to see tail latency beyond the average (rare but impactful slow requests).
+- Rolling overlays: optional Rolling Mean and a translucent μ±1σ band over a sliding window of N batches (N = Rolling Window control). Larger N = smoother mean; band width reflects variability. Toggle the band via “±1σ Band”.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte"
 	helpTTFBPct := `Percentiles of TTFB (ms): P50 (median), P90, P95, P99 per batch.
 	- Expect P99 ≥ P95 ≥ P90 ≥ P50 by definition; bigger gaps mean heavier tail latency (spikes/outliers).
 	- Investigate large P99 when the average looks fine; tail latency hurts user experience and systems throughput.
@@ -671,6 +784,18 @@ References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 - Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip
 	helpPlStable := `Plateau Stable Rate (%): fraction of time spent in stable plateaus during a transfer.
 - Higher values often mean smoother throughput (less variability).` + axesTip
+
+	// Stability & quality help
+	helpLowSpeed := `Low-Speed Time Share (%): share of transfer time spent below the Low-Speed Threshold.
+- Indicates how often the link is underperforming. Threshold is configurable in the toolbar.
+Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip
+	helpStallRate := `Stall Rate (%): fraction of requests that experienced any stall during transfer.
+- Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip
+	helpStallTime := `Avg Stall Time (ms): average total time spent stalled per request (across stalled requests).
+- Correlate with Jitter/CoV to understand severity and duration of stalls.` + axesTip
+	helpStallCount := `Stalled Requests Count: estimated number of stalled requests per batch.
+- Interim metric derived as: round(Lines × Stall Rate / 100).
+- Use alongside Stall Rate and Avg Stall Time.` + axesTip
 
 	// New charts help
 	helpTail := `Tail Heaviness (Speed P99/P50): ratio of 99th to 50th percentile throughput per batch.
@@ -748,6 +873,15 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		makeChartSection("Jitter", helpJitter, container.NewStack(state.jitterImgCanvas, state.jitterOverlay)),
 		widget.NewSeparator(),
 		makeChartSection("Coefficient of Variation", helpCoV, container.NewStack(state.covImgCanvas, state.covOverlay)),
+		widget.NewSeparator(),
+		// Stability & quality section
+		makeChartSection("Low-Speed Time Share", helpLowSpeed, container.NewStack(state.lowSpeedImgCanvas, state.lowSpeedOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Stall Rate", helpStallRate, container.NewStack(state.stallRateImgCanvas, state.stallRateOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Stalled Requests Count", helpStallCount, container.NewStack(state.stallCountImgCanvas, state.stallCountOverlay)),
+		widget.NewSeparator(),
+		makeChartSection("Avg Stall Time", helpStallTime, container.NewStack(state.stallTimeImgCanvas, state.stallTimeOverlay)),
 		widget.NewSeparator(),
 		makeChartSection("Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
 		widget.NewSeparator(),
@@ -952,6 +1086,22 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 			state.slaTTFBOverlay.enabled = b
 			state.slaTTFBOverlay.Refresh()
 		}
+		if state.lowSpeedOverlay != nil {
+			state.lowSpeedOverlay.enabled = b
+			state.lowSpeedOverlay.Refresh()
+		}
+		if state.stallRateOverlay != nil {
+			state.stallRateOverlay.enabled = b
+			state.stallRateOverlay.Refresh()
+		}
+		if state.stallTimeOverlay != nil {
+			state.stallTimeOverlay.enabled = b
+			state.stallTimeOverlay.Refresh()
+		}
+		if state.stallCountOverlay != nil {
+			state.stallCountOverlay.enabled = b
+			state.stallCountOverlay.Refresh()
+		}
 		if !b { // close popups
 			if state.lastSpeedPopup != nil {
 				state.lastSpeedPopup.Hide()
@@ -990,6 +1140,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	// Reflect loaded prefs in SLA entries
 	slaSpeedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
 	slaTTFBEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
+	// Reflect loaded low-speed threshold
+	lowSpeedEntry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
 	// Set initial checkbox states explicitly now that callbacks exist
 	overallChk.SetChecked(state.showOverall)
 	ipv4Chk.SetChecked(state.showIPv4)
@@ -1092,6 +1244,22 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		state.slaTTFBOverlay.enabled = state.crosshairEnabled
 		state.slaTTFBOverlay.Refresh()
 	}
+	if state.lowSpeedOverlay != nil {
+		state.lowSpeedOverlay.enabled = state.crosshairEnabled
+		state.lowSpeedOverlay.Refresh()
+	}
+	if state.stallRateOverlay != nil {
+		state.stallRateOverlay.enabled = state.crosshairEnabled
+		state.stallRateOverlay.Refresh()
+	}
+	if state.stallTimeOverlay != nil {
+		state.stallTimeOverlay.enabled = state.crosshairEnabled
+		state.stallTimeOverlay.Refresh()
+	}
+	if state.stallCountOverlay != nil {
+		state.stallCountOverlay.enabled = state.crosshairEnabled
+		state.stallCountOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -1141,6 +1309,12 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
+	// Stability exports
+	exportLowSpeed := fyne.NewMenuItem("Export Low-Speed Time Share Chart…", func() { exportChartPNG(state, state.lowSpeedImgCanvas, "low_speed_time_share_chart.png") })
+	exportStallRate := fyne.NewMenuItem("Export Stall Rate Chart…", func() { exportChartPNG(state, state.stallRateImgCanvas, "stall_rate_chart.png") })
+	exportStallTime := fyne.NewMenuItem("Export Avg Stall Time Chart…", func() { exportChartPNG(state, state.stallTimeImgCanvas, "avg_stall_time_chart.png") })
+	// Interim stability export
+	exportStallCount := fyne.NewMenuItem("Export Stalled Requests Count…", func() { exportChartPNG(state, state.stallCountImgCanvas, "stall_count_chart.png") })
 	exportCache := fyne.NewMenuItem("Export Cache Hit Rate Chart…", func() { exportChartPNG(state, state.cacheImgCanvas, "cache_hit_rate_chart.png") })
 	exportProxy := fyne.NewMenuItem("Export Proxy Suspected Rate Chart…", func() { exportChartPNG(state, state.proxyImgCanvas, "proxy_suspected_rate_chart.png") })
 	exportWarmCache := fyne.NewMenuItem("Export Warm Cache Suspected Rate Chart…", func() { exportChartPNG(state, state.warmCacheImgCanvas, "warm_cache_suspected_rate_chart.png") })
@@ -1175,6 +1349,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportErrors,
 		exportJitter,
 		exportCoV,
+		exportLowSpeed,
+		exportStallRate,
+		exportStallTime,
+		exportStallCount,
 		exportCache,
 		exportProxy,
 		exportWarmCache,
@@ -1228,7 +1406,9 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 			return
 		}
 	}
-	summaries, err := analysis.AnalyzeRecentResultsFull(state.filePath, monitor.SchemaVersion, state.batchesN, "")
+	// Use options so low-speed threshold is applied
+	ops := analysis.AnalyzeOptions{SituationFilter: "", LowSpeedThresholdKbps: float64(state.lowSpeedThresholdKbps)}
+	summaries, err := analysis.AnalyzeRecentResultsFullWithOptions(state.filePath, monitor.SchemaVersion, state.batchesN, ops)
 	if err != nil {
 		dialog.ShowError(err, state.window)
 		return
@@ -1749,6 +1929,66 @@ func redrawCharts(state *uiState) {
 				state.warmCacheOverlay.Refresh()
 			}
 		}
+		// Low-Speed Time Share chart
+		lssImg := renderLowSpeedShareChart(state)
+		if lssImg != nil {
+			if state.lowSpeedImgCanvas != nil {
+				state.lowSpeedImgCanvas.Image = lssImg
+			}
+			cw, chh := chartSize(state)
+			if state.lowSpeedImgCanvas != nil {
+				state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.lowSpeedImgCanvas.Refresh()
+			}
+			if state.lowSpeedOverlay != nil {
+				state.lowSpeedOverlay.Refresh()
+			}
+		}
+		// Stall Rate chart
+		srImg := renderStallRateChart(state)
+		if srImg != nil {
+			if state.stallRateImgCanvas != nil {
+				state.stallRateImgCanvas.Image = srImg
+			}
+			cw, chh := chartSize(state)
+			if state.stallRateImgCanvas != nil {
+				state.stallRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallRateImgCanvas.Refresh()
+			}
+			if state.stallRateOverlay != nil {
+				state.stallRateOverlay.Refresh()
+			}
+		}
+		// Avg Stall Time chart
+		stImg := renderStallTimeChart(state)
+		if stImg != nil {
+			if state.stallTimeImgCanvas != nil {
+				state.stallTimeImgCanvas.Image = stImg
+			}
+			cw, chh := chartSize(state)
+			if state.stallTimeImgCanvas != nil {
+				state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallTimeImgCanvas.Refresh()
+			}
+			if state.stallTimeOverlay != nil {
+				state.stallTimeOverlay.Refresh()
+			}
+		}
+		// Stalled Requests Count (interim) chart
+		scImg := renderStallCountChart(state)
+		if scImg != nil {
+			if state.stallCountImgCanvas != nil {
+				state.stallCountImgCanvas.Image = scImg
+			}
+			cw, chh := chartSize(state)
+			if state.stallCountImgCanvas != nil {
+				state.stallCountImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallCountImgCanvas.Refresh()
+			}
+			if state.stallCountOverlay != nil {
+				state.stallCountOverlay.Refresh()
+			}
+		}
 		// Plateau Count chart
 		plcImg := renderPlateauCountChart(state)
 		if plcImg != nil {
@@ -1909,7 +2149,8 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99TTFBMs }, chart.ColorRed)
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
+	yAxisRange := &chart.ContinuousRange{}
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -1959,6 +2200,7 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
+		fmt.Printf("[viewer] renderStallRateChart: render error: %v\n", err)
 		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
@@ -2045,7 +2287,8 @@ func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 			return b.IPv6.AvgP95TTFBMs / b.IPv6.AvgP50TTFBMs
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
+	yAxisRange := &chart.ContinuousRange{}
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2078,6 +2321,7 @@ func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
+		fmt.Printf("[viewer] renderStallTimeChart: render error: %v\n", err)
 		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
@@ -2167,7 +2411,8 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 		}, chart.ColorGreen)
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
+	yAxisRange := &chart.ContinuousRange{}
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2206,6 +2451,7 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
+		fmt.Printf("[viewer] renderStallCountChart: render error: %v\n", err)
 		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
@@ -2286,7 +2532,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 			return b.IPv6.CacheHitRatePct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2406,7 +2652,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 			return b.IPv6.ProxySuspectedRatePct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2526,7 +2772,7 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 			return b.IPv6.WarmCacheSuspectedRatePct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2574,6 +2820,353 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: Warm-cache suspected rate. Higher suggests repeated content or prior fetch effects.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderLowSpeedShareChart draws Low-Speed Time Share (%) per batch (overall/IPv4/IPv6).
+func renderLowSpeedShareChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.LowSpeedTimeSharePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.LowSpeedTimeSharePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.LowSpeedTimeSharePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Low-Speed Time Share (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: % of time below the configured Low-Speed Threshold.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderStallRateChart draws Stall Rate (%) per batch (overall/IPv4/IPv6).
+func renderStallRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			// Keep zeros as real data points; only drop negatives or missing.
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.StallRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.StallRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.StallRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Stall Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: % of requests that experienced any stall.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderStallTimeChart draws Avg Stall Time (ms) per batch (overall/IPv4/IPv6).
+func renderStallTimeChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			// Keep zeros; only skip negatives or NaN
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgStallElapsedMs }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgStallElapsedMs
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgStallElapsedMs
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Avg Stall Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average stalled time per request. High values indicate severe buffering or outages.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -2739,7 +3332,7 @@ func renderSpeedChart(state *uiState) image.Image {
 		}
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2776,6 +3369,114 @@ func renderSpeedChart(state *uiState) image.Image {
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
+	}
+	// Add rolling overlays (mean line and ±1 std band) if enabled and have enough points
+	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
+		bandLabel := ""
+		if state.showRollingBand {
+			bandLabel = fmt.Sprintf("Rolling μ±1σ (%d)", state.rollingWindow)
+		}
+		labelUsed := false
+		// Build arrays for overall/IPv4/IPv6 in base unit (already factored)
+		build := func(sel func(analysis.BatchSummary) (float64, bool)) ([]float64, []bool) {
+			ys := make([]float64, len(rows))
+			ok := make([]bool, len(rows))
+			for i, r := range rows {
+				v, valid := sel(r)
+				if valid && !math.IsNaN(v) && v > 0 {
+					ys[i] = v
+					ok[i] = true
+				}
+			}
+			return ys, ok
+		}
+		rolling := func(vals []float64, oks []bool, win int) ([]float64, []float64) {
+			n := len(vals)
+			if win > n {
+				win = n
+			}
+			m := make([]float64, n)
+			s := make([]float64, n)
+			var sum, sumsq float64
+			count := 0
+			// initialize first window
+			for i := 0; i < n; i++ {
+				// slide window to include i and keep at most win
+				if oks[i] {
+					sum += vals[i]
+					sumsq += vals[i] * vals[i]
+					count++
+				}
+				if i >= win {
+					// remove i-win
+					j := i - win
+					if oks[j] {
+						sum -= vals[j]
+						sumsq -= vals[j] * vals[j]
+						count--
+					}
+				}
+				if count >= 2 {
+					mu := sum / float64(count)
+					varVar := sumsq/float64(count) - mu*mu
+					if varVar < 0 {
+						varVar = 0
+					}
+					m[i] = mu
+					s[i] = math.Sqrt(varVar)
+				} else {
+					m[i] = math.NaN()
+					s[i] = math.NaN()
+				}
+			}
+			return m, s
+		}
+		// Overall
+		if state.showOverall {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) { return b.AvgSpeed * factor, b.AvgSpeed > 0 })
+			m, s := rolling(ys, ok, state.rollingWindow)
+			addRollingSeriesSpeed(&ch, timeMode, times, xs, m, s, chart.ColorAlternateGray, state.showRollingBand, bandLabel)
+			if bandLabel != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
+		if state.showIPv4 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv4 == nil {
+					return 0, false
+				}
+				return b.IPv4.AvgSpeed * factor, b.IPv4.AvgSpeed > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			lab := ""
+			if !labelUsed {
+				lab = bandLabel
+			}
+			addRollingSeriesSpeed(&ch, timeMode, times, xs, m, s, chart.ColorBlue, state.showRollingBand, lab)
+			if lab != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
+		if state.showIPv6 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv6 == nil {
+					return 0, false
+				}
+				return b.IPv6.AvgSpeed * factor, b.IPv6.AvgSpeed > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			lab := ""
+			if !labelUsed {
+				lab = bandLabel
+			}
+			addRollingSeriesSpeed(&ch, timeMode, times, xs, m, s, chart.ColorGreen, state.showRollingBand, lab)
+			if lab != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
 	}
 	if len(rows) == 1 {
 		// Debug series lengths to understand x-range errors
@@ -2950,7 +3651,7 @@ func renderTTFBChart(state *uiState) image.Image {
 		}
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -2985,6 +3686,109 @@ func renderTTFBChart(state *uiState) image.Image {
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
 		Series:     series,
 	}
+	// Rolling overlays for TTFB (mean line and ±1 std band)
+	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
+		bandLabel := ""
+		if state.showRollingBand {
+			bandLabel = fmt.Sprintf("Rolling μ±1σ (%d)", state.rollingWindow)
+		}
+		labelUsed := false
+		build := func(sel func(analysis.BatchSummary) (float64, bool)) ([]float64, []bool) {
+			ys := make([]float64, len(rows))
+			ok := make([]bool, len(rows))
+			for i, r := range rows {
+				v, valid := sel(r)
+				if valid && !math.IsNaN(v) && v > 0 {
+					ys[i] = v
+					ok[i] = true
+				}
+			}
+			return ys, ok
+		}
+		rolling := func(vals []float64, oks []bool, win int) ([]float64, []float64) {
+			n := len(vals)
+			if win > n {
+				win = n
+			}
+			m := make([]float64, n)
+			s := make([]float64, n)
+			var sum, sumsq float64
+			count := 0
+			for i := 0; i < n; i++ {
+				if oks[i] {
+					sum += vals[i]
+					sumsq += vals[i] * vals[i]
+					count++
+				}
+				if i >= win {
+					j := i - win
+					if oks[j] {
+						sum -= vals[j]
+						sumsq -= vals[j] * vals[j]
+						count--
+					}
+				}
+				if count >= 2 {
+					mu := sum / float64(count)
+					v := sumsq/float64(count) - mu*mu
+					if v < 0 {
+						v = 0
+					}
+					m[i] = mu
+					s[i] = math.Sqrt(v)
+				} else {
+					m[i] = math.NaN()
+					s[i] = math.NaN()
+				}
+			}
+			return m, s
+		}
+		if state.showOverall {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) { return b.AvgTTFB, b.AvgTTFB > 0 })
+			m, s := rolling(ys, ok, state.rollingWindow)
+			addRollingSeriesTTFB(&ch, timeMode, times, xs, m, s, chart.ColorAlternateGray, state.showRollingBand, bandLabel)
+			if bandLabel != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
+		if state.showIPv4 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv4 == nil {
+					return 0, false
+				}
+				return b.IPv4.AvgTTFB, b.IPv4.AvgTTFB > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			lab := ""
+			if !labelUsed {
+				lab = bandLabel
+			}
+			addRollingSeriesTTFB(&ch, timeMode, times, xs, m, s, chart.ColorBlue, state.showRollingBand, lab)
+			if lab != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
+		if state.showIPv6 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv6 == nil {
+					return 0, false
+				}
+				return b.IPv6.AvgTTFB, b.IPv6.AvgTTFB > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			lab := ""
+			if !labelUsed {
+				lab = bandLabel
+			}
+			addRollingSeriesTTFB(&ch, timeMode, times, xs, m, s, chart.ColorGreen, state.showRollingBand, lab)
+			if lab != "" {
+				labelUsed = true
+				bandLabel = ""
+			}
+		}
+	}
 	if len(rows) == 1 {
 		for i, s := range series {
 			switch ss := s.(type) {
@@ -3016,6 +3820,273 @@ func renderTTFBChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// addRollingSeriesSpeed adds mean line and ±1 std fill band for Speed chart.
+func addRollingSeriesSpeed(ch *chart.Chart, timeMode bool, times []time.Time, xs []float64, mean, std []float64, col drawing.Color, showBand bool, bandLabel string) {
+	if ch == nil || len(mean) == 0 {
+		return
+	}
+	lineColor := col.WithAlpha(220)
+	bandColor := col.WithAlpha(60)
+	// Build upper/lower arrays where both mean and std are valid
+	upper := make([]float64, len(mean))
+	lower := make([]float64, len(mean))
+	for i := range mean {
+		if math.IsNaN(mean[i]) || math.IsNaN(std[i]) {
+			upper[i] = math.NaN()
+			lower[i] = math.NaN()
+		} else {
+			upper[i] = mean[i] + std[i]
+			lower[i] = mean[i] - std[i]
+		}
+	}
+	if timeMode {
+		// Pad single-point case
+		ux, lx := times, times
+		uvals, lvals := upper, lower
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ux = []time.Time{times[0], t2}
+			lx = ux
+			u0 := upper[0]
+			l0 := lower[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		if showBand {
+			// Draw upper translucent fill
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
+			// Cut out the area below lower using white fill (plot background)
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+		}
+		// Mean line on top
+		mx := times
+		mvals := mean
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			mx = []time.Time{times[0], t2}
+			mvals = []float64{mean[0], mean[0]}
+		}
+		ch.Series = append(ch.Series, chart.TimeSeries{Name: "Rolling Mean", XValues: mx, YValues: mvals, Style: chart.Style{StrokeWidth: 1.5, StrokeColor: lineColor, DotWidth: 0}})
+	} else {
+		ux, lx := xs, xs
+		uvals, lvals := upper, lower
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ux = []float64{xs[0], x2}
+			lx = ux
+			u0 := upper[0]
+			l0 := lower[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		if showBand {
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+		}
+		mx := xs
+		mvals := mean
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			mx = []float64{xs[0], x2}
+			mvals = []float64{mean[0], mean[0]}
+		}
+		ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "Rolling Mean", XValues: mx, YValues: mvals, Style: chart.Style{StrokeWidth: 1.5, StrokeColor: lineColor, DotWidth: 0}})
+	}
+}
+
+// addRollingSeriesTTFB adds mean line and ±1 std fill band for TTFB chart.
+func addRollingSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs []float64, mean, std []float64, col drawing.Color, showBand bool, bandLabel string) {
+	if ch == nil || len(mean) == 0 {
+		return
+	}
+	lineColor := col.WithAlpha(220)
+	bandColor := col.WithAlpha(60)
+	upper := make([]float64, len(mean))
+	lower := make([]float64, len(mean))
+	for i := range mean {
+		if math.IsNaN(mean[i]) || math.IsNaN(std[i]) {
+			upper[i] = math.NaN()
+			lower[i] = math.NaN()
+		} else {
+			upper[i] = mean[i] + std[i]
+			lower[i] = mean[i] - std[i]
+		}
+	}
+	if timeMode {
+		ux, lx := times, times
+		uvals, lvals := upper, lower
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ux = []time.Time{times[0], t2}
+			lx = ux
+			u0 := upper[0]
+			l0 := lower[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		if showBand {
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
+			ch.Series = append(ch.Series, chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+		}
+		mx := times
+		mvals := mean
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			mx = []time.Time{times[0], t2}
+			mvals = []float64{mean[0], mean[0]}
+		}
+		ch.Series = append(ch.Series, chart.TimeSeries{Name: "Rolling Mean", XValues: mx, YValues: mvals, Style: chart.Style{StrokeWidth: 1.5, StrokeColor: lineColor, DotWidth: 0}})
+	} else {
+		ux, lx := xs, xs
+		uvals, lvals := upper, lower
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ux = []float64{xs[0], x2}
+			lx = ux
+			u0 := upper[0]
+			l0 := lower[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		if showBand {
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: bandLabel, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}})
+			ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: drawing.ColorWhite}})
+		}
+		mx := xs
+		mvals := mean
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			mx = []float64{xs[0], x2}
+			mvals = []float64{mean[0], mean[0]}
+		}
+		ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "Rolling Mean", XValues: mx, YValues: mvals, Style: chart.Style{StrokeWidth: 1.5, StrokeColor: lineColor, DotWidth: 0}})
+	}
+}
+
+// renderStallCountChart plots the interim stalled requests count per batch = round(Lines * StallRatePct / 100).
+func renderStallCountChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	// Three series overall/ipv4/ipv6
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, get func(analysis.BatchSummary) (num int, ok bool), col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			n, ok := get(r)
+			if !ok {
+				ys[i] = math.NaN()
+				continue
+			}
+			v := float64(n)
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) (int, bool) {
+			if b.Lines <= 0 {
+				return 0, false
+			}
+			// zero is valid when StallRatePct == 0
+			val := int(math.Round(float64(b.Lines) * math.Max(b.StallRatePct, 0) / 100.0))
+			return val, true
+		}, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) (int, bool) {
+			if b.IPv4 == nil || b.IPv4.Lines <= 0 {
+				return 0, false
+			}
+			val := int(math.Round(float64(b.IPv4.Lines) * math.Max(b.IPv4.StallRatePct, 0) / 100.0))
+			return val, true
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) (int, bool) {
+			if b.IPv6 == nil || b.IPv6.Lines <= 0 {
+				return 0, false
+			}
+			val := int(math.Round(float64(b.IPv6.Lines) * math.Max(b.IPv6.StallRatePct, 0) / 100.0))
+			return val, true
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Stalled Requests Count", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Estimated stalled requests per batch. Derived from Lines × Stall Rate%.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -3094,7 +4165,7 @@ func renderErrorRateChart(state *uiState) image.Image {
 		}, chart.ColorGreen)
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3223,7 +4294,7 @@ func renderJitterChart(state *uiState) image.Image {
 			return b.IPv6.AvgJitterPct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3343,7 +4414,7 @@ func renderCoVChart(state *uiState) image.Image {
 			return b.IPv6.AvgCoefVariationPct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3462,7 +4533,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 			return b.IPv6.AvgPlateauCount
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3580,7 +4651,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 			return b.IPv6.AvgLongestPlateau
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3697,7 +4768,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 			return b.IPv6.PlateauStableRatePct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3818,7 +4889,7 @@ func renderTailHeavinessChart(state *uiState) image.Image {
 			return b.IPv6.AvgP99P50Ratio
 		}, chart.ColorGreen)
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -3907,7 +4978,7 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 		}
 	}
 	// Axis symmetric around 0 when absolute mode
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -3993,7 +5064,7 @@ func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv4−IPv6", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -4079,7 +5150,7 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -4165,7 +5236,7 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -4253,7 +5324,7 @@ func renderSLASpeedDeltaChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -4341,7 +5412,7 @@ func renderSLATTFBDeltaChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if haveY {
@@ -5023,7 +6094,7 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, chart.ColorRed)
 	}
 
-	var yAxisRange *chart.ContinuousRange
+	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if state.useRelative && haveY {
@@ -5299,6 +6370,23 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.covImgCanvas.Image)
 		labels = append(labels, "Coefficient of Variation")
 	}
+	// Stability & quality
+	if state.lowSpeedImgCanvas != nil && state.lowSpeedImgCanvas.Image != nil {
+		imgs = append(imgs, state.lowSpeedImgCanvas.Image)
+		labels = append(labels, "Low-Speed Time Share")
+	}
+	if state.stallRateImgCanvas != nil && state.stallRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.stallRateImgCanvas.Image)
+		labels = append(labels, "Stall Rate")
+	}
+	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
+		imgs = append(imgs, state.stallTimeImgCanvas.Image)
+		labels = append(labels, "Avg Stall Time")
+	}
+	if state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil {
+		imgs = append(imgs, state.stallCountImgCanvas.Image)
+		labels = append(labels, "Stalled Requests Count")
+	}
 	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
 		imgs = append(imgs, state.cacheImgCanvas.Image)
 		labels = append(labels, "Cache Hit Rate")
@@ -5439,6 +6527,12 @@ func savePrefs(state *uiState) {
 	// SLA thresholds
 	prefs.SetInt("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps)
 	prefs.SetInt("slaTTFBThresholdMs", state.slaTTFBThresholdMs)
+	// Low-speed threshold
+	prefs.SetInt("lowSpeedThresholdKbps", state.lowSpeedThresholdKbps)
+	// Rolling overlays
+	prefs.SetBool("showRolling", state.showRolling)
+	prefs.SetBool("showRollingBand", state.showRollingBand)
+	prefs.SetInt("rollingWindow", state.rollingWindow)
 	// (removed: pctl prefs)
 }
 
@@ -5532,6 +6626,16 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	if v := prefs.IntWithFallback("slaTTFBThresholdMs", state.slaTTFBThresholdMs); v > 0 {
 		state.slaTTFBThresholdMs = v
 	}
+	// Low-speed threshold
+	if v := prefs.IntWithFallback("lowSpeedThresholdKbps", state.lowSpeedThresholdKbps); v > 0 {
+		state.lowSpeedThresholdKbps = v
+	}
+	// Rolling overlays
+	state.showRolling = prefs.BoolWithFallback("showRolling", state.showRolling)
+	state.showRollingBand = prefs.BoolWithFallback("showRollingBand", state.showRollingBand)
+	if v := prefs.IntWithFallback("rollingWindow", state.rollingWindow); v > 0 {
+		state.rollingWindow = v
+	}
 	// (removed: pctl prefs)
 }
 
@@ -5592,7 +6696,7 @@ type crosshairOverlay struct {
 	widget.BaseWidget
 	state    *uiState
 	enabled  bool
-	mode     string // "speed", "ttfb", "error", "jitter", "cov", "pctl_overall", "pctl_ipv4", "pctl_ipv6"
+	mode     string // "speed", "ttfb", "error", "jitter", "cov", "pctl_overall", "pctl_ipv4", "pctl_ipv6", ...
 	mouse    fyne.Position
 	hovering bool
 }
@@ -5715,6 +6819,14 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.proxyImgCanvas
 		case "warm_cache":
 			imgCanvas = r.c.state.warmCacheImgCanvas
+		case "low_speed_share":
+			imgCanvas = r.c.state.lowSpeedImgCanvas
+		case "stall_rate":
+			imgCanvas = r.c.state.stallRateImgCanvas
+		case "stall_time":
+			imgCanvas = r.c.state.stallTimeImgCanvas
+		case "stall_count":
+			imgCanvas = r.c.state.stallCountImgCanvas
 		case "tail_ratio":
 			imgCanvas = r.c.state.tailRatioImgCanvas
 		case "ttfb_tail_ratio":
@@ -6018,6 +7130,49 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.WarmCacheSuspectedRatePct))
+			}
+		case "low_speed_share":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.LowSpeedTimeSharePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.LowSpeedTimeSharePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.LowSpeedTimeSharePct))
+			}
+		case "stall_rate":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.StallRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.StallRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.StallRatePct))
+			}
+		case "stall_time":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.0f ms", bs.AvgStallElapsedMs))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.0f ms", bs.IPv4.AvgStallElapsedMs))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgStallElapsedMs))
+			}
+		case "stall_count":
+			if r.c.state.showOverall && bs.Lines > 0 && bs.StallRatePct > 0 {
+				val := int(math.Round(float64(bs.Lines) * bs.StallRatePct / 100.0))
+				lines = append(lines, fmt.Sprintf("Overall: %d", val))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil && bs.IPv4.Lines > 0 && bs.IPv4.StallRatePct > 0 {
+				val := int(math.Round(float64(bs.IPv4.Lines) * bs.IPv4.StallRatePct / 100.0))
+				lines = append(lines, fmt.Sprintf("IPv4: %d", val))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil && bs.IPv6.Lines > 0 && bs.IPv6.StallRatePct > 0 {
+				val := int(math.Round(float64(bs.IPv6.Lines) * bs.IPv6.StallRatePct / 100.0))
+				lines = append(lines, fmt.Sprintf("IPv6: %d", val))
 			}
 		case "tail_ratio":
 			if r.c.state.showOverall {

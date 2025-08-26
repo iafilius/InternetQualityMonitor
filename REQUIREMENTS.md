@@ -23,7 +23,7 @@ This document captures the current requirements and behaviors for the IQM Reader
 - Non-goals: charting, UI.
 
 ## Viewer (iqmviewer)
-- Persistent prefs: last file, situation selection (defaults to All), batchesN, series toggles (overall/IPv4/IPv6), x-axis mode (Batch|RunTag|Time), y-scale (Absolute|Relative), speed units, tab, crosshair enabled.
+- Persistent prefs: last file, situation selection (defaults to All), batchesN, series toggles (overall/IPv4/IPv6), x-axis mode (Batch|RunTag|Time), y-scale (Absolute|Relative), speed units, tab, crosshair enabled, SLA thresholds, Low‑Speed Threshold (kbps), Rolling Window (N, default 7), Rolling Mean toggle, and ±1σ Band toggle.
 - Data load:
   - Calls AnalyzeRecentResultsFull(file, schema, N, "").
   - Builds run_tag→situation from returned summaries (no rescan).
@@ -32,17 +32,25 @@ This document captures the current requirements and behaviors for the IQM Reader
   - When a situation is selected, filteredSummaries returns only summaries whose run_tag maps to that situation.
 - Charts:
   - go-chart rendered offscreen to PNG, shown via ImageFillContain; responsive width.
-  - Series: points-only; stacked charts: Speed and TTFB.
+  - Series: points-only; stacked charts: Avg Speed and Avg TTFB with percentiles placed immediately under their respective averages.
+  - Rolling overlays on Avg Speed and Avg TTFB: Rolling Mean (μ) and optional translucent ±1σ band; band has a single legend entry “Rolling μ±1σ (N)” per chart.
   - X-axis modes: Batch (1..N), RunTag (trimmed), Time (uses parseRunTagTime; timestamps honored for data, ticks are rounded "nice" via pickTimeStep/makeNiceTimeTicks).
   - Y-scale: Absolute or Relative (derived flag useRelative).
   - Units: kbps/kBps/Mbps/MBps/Gbps/GBps conversion.
+- Stability & quality suite:
+  - Low‑Speed Time Share (%): time below the configurable Low‑Speed Threshold.
+  - Stall Rate (%): share of requests that stalled.
+  - Avg Stall Time (ms): average stalled time for stalled requests.
+  - Stalled Requests Count: round(Lines × Stall Rate%).
 - Crosshair overlay:
   - Theme-aware colors; vertical/horizontal lines follow the mouse; dot at intersection.
   - Label with semi-transparent background; shows values for Overall/IPv4/IPv6 depending on toggles.
   - No X-axis highlight band (removed to avoid misalignment).
   - Hidden when cursor is outside actual drawn image rect (contain-fit aware).
   - Crosshair enabled state persists across restarts.
-- Export: PNG export for each chart.
+- Help: Per-chart info dialogs include concise hints for interpretation; Speed/TTFB help explain the μ±1σ band and effect of window N.
+- Export: PNG export for each chart and a combined “Export All (One Image)” that preserves on-screen order. Each export embeds a bottom-right watermark displaying the active Situation.
+- Dedicated export for Stalled Requests Count exists in addition to its inclusion in the combined export.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W).
 
 ## Reliability and Limits

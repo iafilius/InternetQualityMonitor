@@ -47,6 +47,10 @@ type BatchSummary struct {
 	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
+	// Stability & quality
+	LowSpeedTimeSharePct float64 `json:"low_speed_time_share_pct,omitempty"` // weighted by transfer time; threshold-controlled
+	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
+	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines
 	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
@@ -100,6 +104,10 @@ type FamilySummary struct {
 	ConnReuseRatePct          float64 `json:"conn_reuse_rate_pct,omitempty"`
 	PlateauStableRatePct      float64 `json:"plateau_stable_rate_pct,omitempty"`
 	AvgHeadGetTimeRatio       float64 `json:"avg_head_get_time_ratio,omitempty"`
+	// Stability & quality
+	LowSpeedTimeSharePct float64 `json:"low_speed_time_share_pct,omitempty"`
+	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
+	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines in this family
 	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
@@ -115,14 +123,21 @@ func AnalyzeRecentResults(path string, schemaVersion, MaxBatches int) ([]BatchSu
 
 // AnalyzeRecentResultsFull parses the results file and computes extended batch metrics.
 // MaxBatches limits how many recent batches are returned (0 or negative -> default 10).
-func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situationFilter string) ([]BatchSummary, error) {
+// AnalyzeOptions controls extended calculations.
+type AnalyzeOptions struct {
+	SituationFilter       string
+	LowSpeedThresholdKbps float64 // if >0, compute LowSpeedTimeSharePct using this threshold
+}
+
+// AnalyzeRecentResultsFullWithOptions parses results and computes extended batch metrics with options.
+func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches int, opts AnalyzeOptions) ([]BatchSummary, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if situationFilter != "" {
-		fmt.Printf("[analysis] reading results from %s (schema_version=%d, max_batches=%d, situation=\"%s\")\n", path, schemaVersion, MaxBatches, situationFilter)
+	if opts.SituationFilter != "" {
+		fmt.Printf("[analysis] reading results from %s (schema_version=%d, max_batches=%d, situation=\"%s\")\n", path, schemaVersion, MaxBatches, opts.SituationFilter)
 	} else {
 		fmt.Printf("[analysis] reading results from %s (schema_version=%d, max_batches=%d, situation=ALL)\n", path, schemaVersion, MaxBatches)
 	}
@@ -154,6 +169,11 @@ func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situat
 		connReused         bool
 		plateauStable      bool
 		hasError           bool
+		// stability
+		stalled        bool
+		stallElapsedMs int64
+		sampleLowMs    int64
+		sampleTotalMs  int64
 	}
 	// Phase 1: scan the JSONL results file and extract only the typed envelope lines
 	// matching the requested schemaVersion. Each valid line becomes a lightweight
@@ -203,7 +223,7 @@ readLoop:
 		if env.Meta.RunTag == "" { // require explicit run_tag; skip otherwise
 			continue
 		}
-		if situationFilter != "" && !strings.EqualFold(env.Meta.Situation, situationFilter) {
+		if opts.SituationFilter != "" && !strings.EqualFold(env.Meta.Situation, opts.SituationFilter) {
 			continue
 		}
 		sr := env.SiteResult
@@ -235,6 +255,26 @@ readLoop:
 				bs.coefVarPct = sa.CoefVariation * 100
 			}
 			bs.plateauStable = sa.PlateauStable
+		}
+		// stalls
+		if sr.TransferStalled {
+			bs.stalled = true
+		}
+		if sr.StallElapsedMs > 0 {
+			bs.stallElapsedMs = sr.StallElapsedMs
+		}
+		// low-speed time share based on samples and configured threshold
+		if opts.LowSpeedThresholdKbps > 0 && len(sr.TransferSpeedSamples) > 0 {
+			// Each sample approximates one interval; use monitor.SpeedSampleInterval
+			intervalMs := int64(monitor.SpeedSampleInterval / time.Millisecond)
+			var lowCount int64
+			for _, s := range sr.TransferSpeedSamples {
+				if s.Speed > 0 && s.Speed < opts.LowSpeedThresholdKbps {
+					lowCount++
+				}
+			}
+			bs.sampleTotalMs = int64(len(sr.TransferSpeedSamples)) * intervalMs
+			bs.sampleLowMs = lowCount * intervalMs
 		}
 		// boolean / ratio fields from SiteResult
 		bs.cachePresent = sr.CachePresent
@@ -339,6 +379,9 @@ readLoop:
 			var slopes, coefVars, headGetRatios []float64
 			var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 			var errorLines int
+			var lowMsSum, totalMsSum int64
+			var stallCnt int
+			var stallTimeMsSum int64
 			var minTS, maxTS time.Time
 			for _, r := range recs {
 				if filter != "" && r.ipFamily != filter { // skip if filtering by family
@@ -421,6 +464,17 @@ readLoop:
 				if r.hasError {
 					errorLines++
 				}
+				// stability accumulators
+				if r.sampleTotalMs > 0 {
+					totalMsSum += r.sampleTotalMs
+					lowMsSum += r.sampleLowMs
+				}
+				if r.stalled {
+					stallCnt++
+					if r.stallElapsedMs > 0 {
+						stallTimeMsSum += r.stallElapsedMs
+					}
+				}
 			}
 			// Count lines that passed filter
 			lineCount := 0
@@ -443,6 +497,29 @@ readLoop:
 				AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 				BatchDurationMs: durationMs,
+				// stability & quality
+				LowSpeedTimeSharePct: func() float64 {
+					if totalMsSum <= 0 {
+						return 0
+					}
+					v := float64(lowMsSum) / float64(totalMsSum) * 100
+					if math.IsNaN(v) || math.IsInf(v, 0) {
+						return 0
+					}
+					return v
+				}(),
+				StallRatePct: func() float64 {
+					if lineCount == 0 {
+						return 0
+					}
+					return float64(stallCnt) / float64(lineCount) * 100
+				}(),
+				AvgStallElapsedMs: func() float64 {
+					if stallCnt == 0 {
+						return 0
+					}
+					return float64(stallTimeMsSum) / float64(stallCnt)
+				}(),
 			}
 			// TTFB percentiles per family in ms
 			fs.AvgP50TTFBMs = percentile(ttfbs, 50)
@@ -455,6 +532,9 @@ readLoop:
 		var slopes, coefVars, headGetRatios []float64
 		var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
+		var lowMsSumAll, totalMsSumAll int64
+		var stallCntAll int
+		var stallTimeMsSumAll int64
 		var minTS, maxTS time.Time
 		for _, r := range recs {
 			if batchSituation == "" && r.situation != "" {
@@ -544,6 +624,17 @@ readLoop:
 			if r.hasError {
 				errorLines++
 			}
+			// stability accumulators (overall)
+			if r.sampleTotalMs > 0 {
+				totalMsSumAll += r.sampleTotalMs
+				lowMsSumAll += r.sampleLowMs
+			}
+			if r.stalled {
+				stallCntAll++
+				if r.stallElapsedMs > 0 {
+					stallTimeMsSumAll += r.stallElapsedMs
+				}
+			}
 		}
 		recCount := len(recs)
 		den := float64(recCount)
@@ -565,6 +656,29 @@ readLoop:
 			CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 			BatchDurationMs: durationMs,
 			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
+			// stability & quality (overall)
+			LowSpeedTimeSharePct: func() float64 {
+				if totalMsSumAll <= 0 {
+					return 0
+				}
+				v := float64(lowMsSumAll) / float64(totalMsSumAll) * 100
+				if math.IsNaN(v) || math.IsInf(v, 0) {
+					return 0
+				}
+				return v
+			}(),
+			StallRatePct: func() float64 {
+				if recCount == 0 {
+					return 0
+				}
+				return float64(stallCntAll) / float64(recCount) * 100
+			}(),
+			AvgStallElapsedMs: func() float64 {
+				if stallCntAll == 0 {
+					return 0
+				}
+				return float64(stallTimeMsSumAll) / float64(stallCntAll)
+			}(),
 		}
 		// TTFB percentiles overall in ms
 		summary.AvgP50TTFBMs = percentile(ttfbs, 50)
@@ -605,6 +719,12 @@ readLoop:
 		}
 	}
 	return summaries, nil
+}
+
+// Backwards-compatible wrapper for callers without options
+func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situationFilter string) ([]BatchSummary, error) {
+	// Choose a sensible default threshold for low-speed share (1,000 kbps) without breaking callers.
+	return AnalyzeRecentResultsFullWithOptions(path, schemaVersion, MaxBatches, AnalyzeOptions{SituationFilter: situationFilter, LowSpeedThresholdKbps: 1000})
 }
 
 // CompareLastVsPrevious returns delta percentages for speed and TTFB of last batch vs previous average.

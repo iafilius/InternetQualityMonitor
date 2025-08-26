@@ -335,6 +335,23 @@ TTFB Tail Heaviness (P95/P50)
    Values are persisted across sessions. Chart titles reflect the current thresholds and units.
 - Exports: Individual export items mirror the on‑screen order. "Export All (One Image)" stitches charts together in the same order shown in the UI, maintaining the watermark per chart.
 
+Rolling overlays (Avg Speed & Avg TTFB)
+- Rolling window N: default 7 (persisted). Smooths out short-term noise.
+- Rolling Mean (μ): toggle to show a smoothed trend line across the last N batches.
+- ±1σ Band: independent toggle to show a translucent band between μ−σ and μ+σ. Legend shows a single entry “Rolling μ±1σ (N)” per chart when enabled.
+- Help dialogs on the Speed/TTFB charts include a short hint on what the band means and how changing N affects smoothing and band width.
+
+Stability & quality (viewer)
+- Low‑Speed Time Share (%): time spent below the Low‑Speed Threshold; highlights choppiness even when averages look fine.
+- Stall Rate (%): share of requests that stalled; good as a reliability/quality symptom.
+- Avg Stall Time (ms): average stalled time for stalled requests; higher means longer buffering events.
+- Stalled Requests Count: quick absolute count derived as round(Lines × Stall Rate%). Has a dedicated export option.
+
+Low‑Speed Threshold control
+- Toolbar control “Low‑Speed Threshold (kbps)” sets the cutoff for Low‑Speed Time Share. Default 1000 kbps; persisted. Changing it re‑analyzes data on the fly. Stall metrics are independent of this threshold.
+
+See also: the dedicated viewer docs in `README_iqmviewer.md` for a compact, feature‑focused overview and troubleshooting notes.
+
 
 Analyzing only recent batches for a specific situation:
 ```bash
@@ -874,3 +891,7 @@ go test ./src/analysis -run TestExtendedRateAndSlopeMetrics -count=1
 ```
 
 </details>
+
+### Changelog
+
+See `CHANGELOG.md` for a summary of recent changes across the analyzer and viewer.
