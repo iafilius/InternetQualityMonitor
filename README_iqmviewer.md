@@ -20,6 +20,15 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W).
 
+### Theme selection
+- View → Screenshot Theme: Auto (default), Dark, Light.
+- Auto follows the system appearance on macOS; other OSes default to Light unless you pick Dark.
+- All charts and overlays are theme-aware (no stray white fills). Hints and watermarks use high-contrast colors per theme.
+
+Headless equivalents:
+- `--screenshot-theme` accepts `auto`, `dark`, or `light`.
+- Extra average “action” variants (time-axis and relative-scale) are gated by `--screenshot-variants` (`averages` or `none`).
+
 ## Stability & quality charts
 
 - Low‑Speed Time Share (%): Share of total transfer time spent below the Low‑Speed Threshold. Highlights choppiness even when averages look OK. Plotted for Overall, IPv4, and IPv6.
@@ -130,7 +139,7 @@ You can regenerate the screenshots headlessly from your latest results:
 Option A (helper script):
 
 ```
-./update_screenshots.sh [monitor_results.jsonl] [SituationLabel|All]
+./update_screenshots.sh [RESULTS_FILE] [SITUATION] [THEME] [VARIANTS] [BATCHES] [LOW_SPEED_KBPS]
 ```
 
 Option B (manual):
@@ -141,8 +150,12 @@ go build ./cmd/iqmviewer
 	--screenshot \
 	--screenshot-outdir docs/images \
 	--screenshot-situation All \
+	--screenshot-batches 50 \
 	--screenshot-rolling-window 7 \
-	--screenshot-rolling-band
+	--screenshot-rolling-band \
+	--screenshot-theme auto \
+	--screenshot-variants averages \
+	--screenshot-low-speed-threshold-kbps 1000
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.
@@ -169,7 +182,7 @@ These help emphasize movement over time or relative variation when absolute base
 
 ## Preferences (persisted)
 
-- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, and ±1σ Band toggle.
+- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, and Screenshot Theme mode (Auto/Dark/Light).
 
 ## Design
 - Offscreen rendering via go-chart, displayed as PNG with ImageFillContain.

@@ -18,7 +18,7 @@ import (
 // RunScreenshotsMode renders a curated set of charts and writes them as PNGs under outDir.
 // It runs headlessly without creating a UI window.
 // variants: "none" or "averages" (controls extra action variants for averages)
-// theme: "dark" or "light" (controls background and overlay styling)
+// theme: "auto", "dark", or "light" (controls background and overlay styling)
 func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
@@ -27,12 +27,12 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		return fmt.Errorf("create out dir: %w", err)
 	}
 	// Configure screenshot theme globally for helpers
-	switch strings.ToLower(strings.TrimSpace(theme)) {
-	case "light":
-		screenshotThemeGlobal = "light"
-	default:
-		screenshotThemeGlobal = "dark"
+	t := strings.ToLower(strings.TrimSpace(theme))
+	screenshotThemeMode = t
+	if screenshotThemeMode == "" {
+		screenshotThemeMode = "auto"
 	}
+	screenshotThemeGlobal = resolveTheme(screenshotThemeMode, nil)
 	// Analyze data
 	if batches <= 0 {
 		batches = 50

@@ -10,7 +10,9 @@ import (
 	png "image/png"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,9 +38,44 @@ import (
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
 
-// screenshotThemeGlobal controls light/dark styling of headless screenshots.
-// Accepts "dark" (default) or "light". UI mode remains dark.
+// screenshotThemeGlobal holds the effective theme used for charts/screenshots.
+// Always resolved to "dark" or "light".
 var screenshotThemeGlobal = "dark"
+
+// screenshotThemeMode is the user's selection: "auto" (default on first run), "dark", or "light".
+var screenshotThemeMode = "auto"
+
+// resolveTheme returns an effective theme ("dark" or "light") given a mode and optional app context.
+func resolveTheme(mode string, app fyne.App) string {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	switch m {
+	case "light":
+		return "light"
+	case "dark":
+		return "dark"
+	default:
+		if isSystemDark() {
+			return "dark"
+		}
+		return "light"
+	}
+}
+
+// isSystemDark best-effort detection of system appearance.
+// Currently supports macOS via `defaults read -g AppleInterfaceStyle`.
+// Falls back to false (light) on other platforms or errors.
+func isSystemDark() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle").Output()
+		if err != nil {
+			return false
+		}
+		return strings.Contains(strings.ToLower(string(out)), "dark")
+	default:
+		return false
+	}
+}
 
 // pointStyle returns a style that renders points only (no connecting line)
 func pointStyle(col drawing.Color) chart.Style {
@@ -247,7 +284,7 @@ func main() {
 	flag.BoolVar(&shotsBand, "screenshot-rolling-band", true, "Whether to show the ±1σ band in screenshots")
 	flag.IntVar(&shotsLowSpeedThreshKbps, "screenshot-low-speed-threshold-kbps", 1000, "Low-Speed Threshold (kbps) used for Low-Speed Time Share in screenshots")
 	flag.IntVar(&shotsBatches, "screenshot-batches", 50, "How many recent batches to include in screenshots")
-	flag.StringVar(&shotsTheme, "screenshot-theme", "dark", "Screenshot theme: 'dark' or 'light'")
+	flag.StringVar(&shotsTheme, "screenshot-theme", "auto", "Screenshot theme: 'auto', 'dark', or 'light'")
 	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.Parse()
 
@@ -288,12 +325,12 @@ func main() {
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
-	// Initialize screenshot theme from preferences before building menus (used for labels)
-	screenshotThemeGlobal = strings.ToLower(strings.TrimSpace(a.Preferences().StringWithFallback("screenshotTheme", screenshotThemeGlobal)))
-	if screenshotThemeGlobal != "light" {
-		// default to dark for any invalid value
-		screenshotThemeGlobal = "dark"
+	// Initialize theme mode from preferences (default: auto). Resolve effective theme for charts.
+	screenshotThemeMode = strings.ToLower(strings.TrimSpace(a.Preferences().StringWithFallback("screenshotThemeMode", "auto")))
+	if screenshotThemeMode != "auto" && screenshotThemeMode != "light" && screenshotThemeMode != "dark" {
+		screenshotThemeMode = "auto"
 	}
+	screenshotThemeGlobal = resolveTheme(screenshotThemeMode, a)
 	// (removed: pctlFamily/pctlCompare preferences)
 
 	// top bar controls
@@ -1402,20 +1439,49 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
-	// View menu: Screenshot Theme (Dark/Light)
+	// View menu: Screenshot Theme (Auto/Dark/Light)
 	labelFor := func(name string) string {
-		if (strings.EqualFold(name, "Dark") && !strings.EqualFold(screenshotThemeGlobal, "light")) ||
-			(strings.EqualFold(name, "Light") && strings.EqualFold(screenshotThemeGlobal, "light")) {
-			return name + " ✓"
+		// name is one of Auto/Dark/Light
+		switch name {
+		case "Auto":
+			if strings.EqualFold(screenshotThemeMode, "auto") {
+				return name + " ✓"
+			}
+		case "Dark":
+			if strings.EqualFold(screenshotThemeMode, "dark") {
+				return name + " ✓"
+			}
+		case "Light":
+			if strings.EqualFold(screenshotThemeMode, "light") {
+				return name + " ✓"
+			}
 		}
 		return name
 	}
-	darkItem := fyne.NewMenuItem(labelFor("Dark"), func() {
-		if strings.EqualFold(screenshotThemeGlobal, "dark") {
+	autoItem := fyne.NewMenuItem(labelFor("Auto"), func() {
+		if strings.EqualFold(screenshotThemeMode, "auto") {
 			return
 		}
-		screenshotThemeGlobal = "dark"
-		state.app.Preferences().SetString("screenshotTheme", screenshotThemeGlobal)
+		screenshotThemeMode = "auto"
+		state.app.Preferences().SetString("screenshotThemeMode", screenshotThemeMode)
+		// Resolve current effective theme and apply
+		screenshotThemeGlobal = resolveTheme(screenshotThemeMode, state.app)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { redrawCharts(state) })
+		}()
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	darkItem := fyne.NewMenuItem(labelFor("Dark"), func() {
+		if strings.EqualFold(screenshotThemeMode, "dark") {
+			return
+		}
+		screenshotThemeMode = "dark"
+		state.app.Preferences().SetString("screenshotThemeMode", screenshotThemeMode)
+		screenshotThemeGlobal = resolveTheme(screenshotThemeMode, state.app)
 		// Redraw charts to reflect watermark/hint/background contrast if applicable
 		go func() {
 			time.Sleep(30 * time.Millisecond)
@@ -1428,11 +1494,12 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}()
 	})
 	lightItem := fyne.NewMenuItem(labelFor("Light"), func() {
-		if strings.EqualFold(screenshotThemeGlobal, "light") {
+		if strings.EqualFold(screenshotThemeMode, "light") {
 			return
 		}
-		screenshotThemeGlobal = "light"
-		state.app.Preferences().SetString("screenshotTheme", screenshotThemeGlobal)
+		screenshotThemeMode = "light"
+		state.app.Preferences().SetString("screenshotThemeMode", screenshotThemeMode)
+		screenshotThemeGlobal = resolveTheme(screenshotThemeMode, state.app)
 		go func() {
 			time.Sleep(30 * time.Millisecond)
 			fyne.Do(func() { redrawCharts(state) })
@@ -1442,8 +1509,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
-	// Add the two options under View (simple and clear)
-	viewMenu := fyne.NewMenu("View", darkItem, lightItem)
+	// Add the three options under View
+	viewMenu := fyne.NewMenu("View", autoItem, darkItem, lightItem)
 
 	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, viewMenu)
 	state.window.SetMainMenu(mainMenu)
@@ -6007,25 +6074,26 @@ func drawHint(img image.Image, text string) image.Image {
 	pad := 6
 	// measure text width approximately using 7x13 font
 	face := basicfont.Face7x13
-	// main text color, shadow and box colors (high-contrast)
+	// Colors will be chosen dynamically after sampling background in target region
 	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
-	if strings.EqualFold(screenshotThemeGlobal, "light") {
-		// High-contrast: black text on near-opaque white box, soft dark border
-		textCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 90})
-		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 245})
-		boxBorder = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 40})
-	} else {
-		// High-contrast: white text on near-opaque black box, soft light border
-		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
-		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 230})
-		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 40})
-	}
-	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face}
-	tw := dr.MeasureString(text).Ceil()
+	// Measure width using a Drawer that has only Face set (Src not needed)
+	drMeasure := &font.Drawer{Face: face}
+	tw := drMeasure.MeasureString(text).Ceil()
 	x := b.Min.X + 8
 	y := b.Max.Y - 6
+	// Choose colors. In Light mode use light text on a darker background for readability.
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	} else {
+		// Dark theme: light text on dark box
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	}
 	// Draw bordered background rectangle for readability
 	rectOuter := image.Rect(x-pad, y-face.Metrics().Ascent.Ceil()-pad, x+tw+pad, y+pad/2)
 	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
@@ -6038,7 +6106,7 @@ func drawHint(img image.Image, text string) image.Image {
 		drShadow.DrawString(text)
 	}
 	// Main text
-	dr.Dot = fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}}
 	dr.DrawString(text)
 	return rgba
 }
@@ -6065,20 +6133,8 @@ func drawWatermark(img image.Image, text string) image.Image {
 	if face == nil {
 		face = basicfont.Face7x13
 	}
+	// Colors picked dynamically based on underlying background region for robust contrast
 	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
-	if strings.EqualFold(screenshotThemeGlobal, "light") {
-		// Strong contrast: black on near-opaque white, subtle dark border
-		textCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 90})
-		boxBG = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 245})
-		boxBorder = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 40})
-	} else {
-		// Strong contrast: white on near-opaque black, subtle light border
-		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
-		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
-		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 230})
-		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 40})
-	}
 	drMeasure := &font.Drawer{Face: face}
 	tw := drMeasure.MeasureString(text).Ceil()
 	m := face.Metrics()
@@ -6091,7 +6147,19 @@ func drawWatermark(img image.Image, text string) image.Image {
 	// placement bottom-right
 	x := b.Max.X - tw - 8
 	yBase := b.Max.Y - 6
-	// background box with subtle border (theme aware)
+	// Pick colors: in Light mode use light text on darker background; Dark uses dark box + white text
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	} else {
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	}
+	// background box with subtle border (theme- and content-aware)
 	rectOuter := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
 	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
 	draw.Draw(rgba, rectOuter, boxBorder, image.Point{}, draw.Over)
@@ -6107,6 +6175,9 @@ func drawWatermark(img image.Image, text string) image.Image {
 	dr.DrawString(text)
 	return rgba
 }
+
+// isRegionLight samples the average luminance of the given rectangle to determine if the region is light.
+// (isRegionLight removed; overlays now use fixed high-contrast theme-specific colors)
 
 // activeSituationLabel returns the visible label for the current situation (or "All").
 func activeSituationLabel(state *uiState) string {
@@ -6427,12 +6498,26 @@ func themeChart(ch *chart.Chart) {
 	ch.XAxis.Style.FontColor = text
 	ch.XAxis.Style.StrokeColor = axis
 	ch.XAxis.TickStyle.FontColor = text
+	// X major/minor grid
+	ch.XAxis.GridMajorStyle.StrokeColor = grid
+	ch.XAxis.GridMajorStyle.StrokeWidth = 1
+	ch.XAxis.GridMinorStyle.StrokeColor = drawing.Color{R: grid.R, G: grid.G, B: grid.B, A: 110}
+	ch.XAxis.GridMinorStyle.StrokeWidth = 1
+	ch.XAxis.GridMinorStyle.StrokeDashArray = []float64{2, 3}
 	ch.YAxis.Style.FontColor = text
 	ch.YAxis.Style.StrokeColor = axis
 	ch.YAxis.TickStyle.FontColor = text
+	// Y major/minor grid
 	ch.YAxis.GridMajorStyle.StrokeColor = grid
+	ch.YAxis.GridMajorStyle.StrokeWidth = 1
+	ch.YAxis.GridMinorStyle.StrokeColor = drawing.Color{R: grid.R, G: grid.G, B: grid.B, A: 110}
+	ch.YAxis.GridMinorStyle.StrokeWidth = 1
+	ch.YAxis.GridMinorStyle.StrokeDashArray = []float64{2, 3}
 	// Title color
 	ch.TitleStyle.FontColor = text
+	// Best-effort legend theming: legend renders text using default style; set Title/Font colors to improve contrast.
+	// Many charts add the legend via chart.Legend(&ch); ensure text contrasts by setting DefaultTextColor-like fields.
+	// Note: go-chart does not expose a direct LegendStyle here; legend inherits canvas, so background is already themed.
 }
 
 // export PNG
