@@ -135,6 +135,15 @@ type uiState struct {
 	proxyImgCanvas     *canvas.Image
 	warmCacheImgCanvas *canvas.Image
 
+	// transport/protocol charts
+	protocolMixImgCanvas        *canvas.Image // HTTP protocol mix (%)
+	protocolAvgSpeedImgCanvas   *canvas.Image // Avg speed by HTTP protocol
+	protocolStallRateImgCanvas  *canvas.Image // Stall rate by HTTP protocol (%)
+	protocolErrorRateImgCanvas  *canvas.Image // Error rate by HTTP protocol (%)
+	tlsVersionMixImgCanvas      *canvas.Image // TLS version mix (%)
+	alpnMixImgCanvas            *canvas.Image // ALPN mix (%)
+	chunkedRateImgCanvas        *canvas.Image // Chunked transfer rate (%)
+
 	// internal guards
 	initializing bool
 
@@ -177,6 +186,14 @@ type uiState struct {
 	cacheOverlay     *crosshairOverlay
 	proxyOverlay     *crosshairOverlay
 	warmCacheOverlay *crosshairOverlay
+	// overlays for transport/protocol charts
+	protocolMixOverlay       *crosshairOverlay
+	protocolAvgSpeedOverlay  *crosshairOverlay
+	protocolStallRateOverlay *crosshairOverlay
+	protocolErrorRateOverlay *crosshairOverlay
+	tlsVersionMixOverlay     *crosshairOverlay
+	alpnMixOverlay           *crosshairOverlay
+	chunkedRateOverlay       *crosshairOverlay
 	// overlays for new charts
 	tailRatioOverlay     *crosshairOverlay
 	ttfbTailRatioOverlay *crosshairOverlay
@@ -897,9 +914,25 @@ func main() {
 	state.proxyImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.proxyOverlay = newCrosshairOverlay(state, "proxy_suspected")
 	state.warmCacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	// transport/protocol canvases
+	state.protocolMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.protocolAvgSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.protocolStallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.protocolErrorRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.tlsVersionMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.alpnMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.chunkedRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.warmCacheImgCanvas.FillMode = canvas.ImageFillContain
 	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(900, 300))
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
+	// transport/protocol overlays
+	state.protocolMixOverlay = newCrosshairOverlay(state, "protocol_mix")
+	state.protocolAvgSpeedOverlay = newCrosshairOverlay(state, "protocol_avg_speed")
+	state.protocolStallRateOverlay = newCrosshairOverlay(state, "protocol_stall_rate")
+	state.protocolErrorRateOverlay = newCrosshairOverlay(state, "protocol_error_rate")
+	state.tlsVersionMixOverlay = newCrosshairOverlay(state, "tls_version_mix")
+	state.alpnMixOverlay = newCrosshairOverlay(state, "alpn_mix")
+	state.chunkedRateOverlay = newCrosshairOverlay(state, "chunked_rate")
 
 	// new charts: tail heaviness (P99/P50), IPv6-IPv4 deltas, SLA compliance
 	state.tailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -1099,6 +1132,20 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		makeChartSection(state, "TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1)."+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance."+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Stall rate per protocol. Higher means more stalls."+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Error rate per protocol."+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version."+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "ALPN Mix (%)", "Share of requests by negotiated ALPN (e.g., h2, http/1.1)."+axesTip, container.NewStack(state.alpnMixImgCanvas, state.alpnMixOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding."+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
@@ -1332,6 +1379,34 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 			state.warmCacheOverlay.enabled = b
 			state.warmCacheOverlay.Refresh()
 		}
+		if state.protocolMixOverlay != nil {
+			state.protocolMixOverlay.enabled = b
+			state.protocolMixOverlay.Refresh()
+		}
+		if state.protocolAvgSpeedOverlay != nil {
+			state.protocolAvgSpeedOverlay.enabled = b
+			state.protocolAvgSpeedOverlay.Refresh()
+		}
+		if state.protocolStallRateOverlay != nil {
+			state.protocolStallRateOverlay.enabled = b
+			state.protocolStallRateOverlay.Refresh()
+		}
+		if state.protocolErrorRateOverlay != nil {
+			state.protocolErrorRateOverlay.enabled = b
+			state.protocolErrorRateOverlay.Refresh()
+		}
+		if state.tlsVersionMixOverlay != nil {
+			state.tlsVersionMixOverlay.enabled = b
+			state.tlsVersionMixOverlay.Refresh()
+		}
+		if state.alpnMixOverlay != nil {
+			state.alpnMixOverlay.enabled = b
+			state.alpnMixOverlay.Refresh()
+		}
+		if state.chunkedRateOverlay != nil {
+			state.chunkedRateOverlay.enabled = b
+			state.chunkedRateOverlay.Refresh()
+		}
 		if state.setupDNSOverlay != nil {
 			state.setupDNSOverlay.enabled = b
 			state.setupDNSOverlay.Refresh()
@@ -1496,6 +1571,34 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		state.warmCacheOverlay.enabled = state.crosshairEnabled
 		state.warmCacheOverlay.Refresh()
 	}
+	if state.protocolMixOverlay != nil {
+		state.protocolMixOverlay.enabled = state.crosshairEnabled
+		state.protocolMixOverlay.Refresh()
+	}
+	if state.protocolAvgSpeedOverlay != nil {
+		state.protocolAvgSpeedOverlay.enabled = state.crosshairEnabled
+		state.protocolAvgSpeedOverlay.Refresh()
+	}
+	if state.protocolStallRateOverlay != nil {
+		state.protocolStallRateOverlay.enabled = state.crosshairEnabled
+		state.protocolStallRateOverlay.Refresh()
+	}
+	if state.protocolErrorRateOverlay != nil {
+		state.protocolErrorRateOverlay.enabled = state.crosshairEnabled
+		state.protocolErrorRateOverlay.Refresh()
+	}
+	if state.tlsVersionMixOverlay != nil {
+		state.tlsVersionMixOverlay.enabled = state.crosshairEnabled
+		state.tlsVersionMixOverlay.Refresh()
+	}
+	if state.alpnMixOverlay != nil {
+		state.alpnMixOverlay.enabled = state.crosshairEnabled
+		state.alpnMixOverlay.Refresh()
+	}
+	if state.chunkedRateOverlay != nil {
+		state.chunkedRateOverlay.enabled = state.crosshairEnabled
+		state.chunkedRateOverlay.Refresh()
+	}
 	if state.tailRatioOverlay != nil {
 		state.tailRatioOverlay.enabled = state.crosshairEnabled
 		state.tailRatioOverlay.Refresh()
@@ -1605,6 +1708,14 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportDNS := fyne.NewMenuItem("Export DNS Lookup Time Chart…", func() { exportChartPNG(state, state.setupDNSImgCanvas, "dns_lookup_time_chart.png") })
 	exportConn := fyne.NewMenuItem("Export TCP Connect Time Chart…", func() { exportChartPNG(state, state.setupConnImgCanvas, "tcp_connect_time_chart.png") })
 	exportTLS := fyne.NewMenuItem("Export TLS Handshake Time Chart…", func() { exportChartPNG(state, state.setupTLSImgCanvas, "tls_handshake_time_chart.png") })
+	// Transport/Protocol exports
+	exportProtocolMix := fyne.NewMenuItem("Export HTTP Protocol Mix…", func() { exportChartPNG(state, state.protocolMixImgCanvas, "http_protocol_mix_chart.png") })
+	exportProtocolAvgSpeed := fyne.NewMenuItem("Export Avg Speed by HTTP Protocol…", func() { exportChartPNG(state, state.protocolAvgSpeedImgCanvas, "avg_speed_by_http_protocol_chart.png") })
+	exportProtocolStallRate := fyne.NewMenuItem("Export Stall Rate by HTTP Protocol…", func() { exportChartPNG(state, state.protocolStallRateImgCanvas, "stall_rate_by_http_protocol_chart.png") })
+	exportProtocolErrorRate := fyne.NewMenuItem("Export Error Rate by HTTP Protocol…", func() { exportChartPNG(state, state.protocolErrorRateImgCanvas, "error_rate_by_http_protocol_chart.png") })
+	exportTLSMix := fyne.NewMenuItem("Export TLS Version Mix…", func() { exportChartPNG(state, state.tlsVersionMixImgCanvas, "tls_version_mix_chart.png") })
+	exportALPNMix := fyne.NewMenuItem("Export ALPN Mix…", func() { exportChartPNG(state, state.alpnMixImgCanvas, "alpn_mix_chart.png") })
+	exportChunkedRate := fyne.NewMenuItem("Export Chunked Transfer Rate…", func() { exportChartPNG(state, state.chunkedRateImgCanvas, "chunked_transfer_rate_chart.png") })
 	// Setup Timings submenu with overlay toggle
 	setupLabel := func() string {
 		if state.showDNSLegacy {
@@ -1631,6 +1742,19 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	)
 	setupSubItem := fyne.NewMenuItem("Setup Timings", nil)
 	setupSubItem.ChildMenu = setupSub
+	// Transport/Protocol submenu
+	transportSub := fyne.NewMenu("Transport",
+		exportProtocolMix,
+		exportProtocolAvgSpeed,
+		exportProtocolStallRate,
+		exportProtocolErrorRate,
+		fyne.NewMenuItemSeparator(),
+		exportTLSMix,
+		exportALPNMix,
+		exportChunkedRate,
+	)
+	transportSubItem := fyne.NewMenuItem("Transport", nil)
+	transportSubItem.ChildMenu = transportSub
 	// Stability exports
 	exportLowSpeed := fyne.NewMenuItem("Export Low-Speed Time Share Chart…", func() { exportChartPNG(state, state.lowSpeedImgCanvas, "low_speed_time_share_chart.png") })
 	exportStallRate := fyne.NewMenuItem("Export Stall Rate Chart…", func() { exportChartPNG(state, state.stallRateImgCanvas, "stall_rate_chart.png") })
@@ -1723,6 +1847,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
 		fyne.NewMenuItemSeparator(),
 		setupSubItem,
+		transportSubItem,
 		avgSubItem,
 		diagSubItem,
 		deltasSubItem,
@@ -2370,6 +2495,63 @@ func redrawCharts(state *uiState) {
 				state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 				state.setupTLSImgCanvas.Refresh()
 			}
+		}
+		// Transport/Protocol charts
+		pmImg := renderHTTPProtocolMixChart(state)
+		if pmImg != nil {
+			state.protocolMixImgCanvas.Image = pmImg
+			cw, chh := chartSize(state)
+			state.protocolMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.protocolMixImgCanvas.Refresh()
+			if state.protocolMixOverlay != nil { state.protocolMixOverlay.Refresh() }
+		}
+		pasImg := renderAvgSpeedByHTTPProtocolChart(state)
+		if pasImg != nil {
+			state.protocolAvgSpeedImgCanvas.Image = pasImg
+			cw, chh := chartSize(state)
+			state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.protocolAvgSpeedImgCanvas.Refresh()
+			if state.protocolAvgSpeedOverlay != nil { state.protocolAvgSpeedOverlay.Refresh() }
+		}
+		psrImg := renderStallRateByHTTPProtocolChart(state)
+		if psrImg != nil {
+			state.protocolStallRateImgCanvas.Image = psrImg
+			cw, chh := chartSize(state)
+			state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.protocolStallRateImgCanvas.Refresh()
+			if state.protocolStallRateOverlay != nil { state.protocolStallRateOverlay.Refresh() }
+		}
+		perImg := renderErrorRateByHTTPProtocolChart(state)
+		if perImg != nil {
+			state.protocolErrorRateImgCanvas.Image = perImg
+			cw, chh := chartSize(state)
+			state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.protocolErrorRateImgCanvas.Refresh()
+			if state.protocolErrorRateOverlay != nil { state.protocolErrorRateOverlay.Refresh() }
+		}
+		tlsMixImg := renderTLSVersionMixChart(state)
+		if tlsMixImg != nil {
+			state.tlsVersionMixImgCanvas.Image = tlsMixImg
+			cw, chh := chartSize(state)
+			state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.tlsVersionMixImgCanvas.Refresh()
+			if state.tlsVersionMixOverlay != nil { state.tlsVersionMixOverlay.Refresh() }
+		}
+		alpnImg := renderALPNMixChart(state)
+		if alpnImg != nil {
+			state.alpnMixImgCanvas.Image = alpnImg
+			cw, chh := chartSize(state)
+			state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.alpnMixImgCanvas.Refresh()
+			if state.alpnMixOverlay != nil { state.alpnMixOverlay.Refresh() }
+		}
+		chunkedImg := renderChunkedTransferRateChart(state)
+		if chunkedImg != nil {
+			state.chunkedRateImgCanvas.Image = chunkedImg
+			cw, chh := chartSize(state)
+			state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.chunkedRateImgCanvas.Refresh()
+			if state.chunkedRateOverlay != nil { state.chunkedRateOverlay.Refresh() }
 		}
 		// Cache Hit Rate chart
 		cacheImg := renderCacheHitRateChart(state)
@@ -5253,6 +5435,505 @@ func renderTLSHandshakeChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderHTTPProtocolMixChart draws per-protocol percentage lines (0..100%).
+func renderHTTPProtocolMixChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	// Collect union of protocol keys
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.HTTPProtocolRatePct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		// No protocol data yet
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	// Build one series per protocol key
+	var series []chart.Series
+	// Simple palette
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.HTTPProtocolRatePct[k]
+			if ys[j] <= 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "HTTP Protocol Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Percentage of requests by negotiated HTTP protocol.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderAvgSpeedByHTTPProtocolChart draws average speed by protocol.
+func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.AvgSpeedByHTTPProtocolKbps {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for j, r := range rows {
+			v := r.AvgSpeedByHTTPProtocolKbps[k] * factor
+			if v <= 0 {
+				ys[j] = math.NaN()
+			} else {
+				ys[j] = v
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
+				valid++
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: fmt.Sprintf("Avg Speed by HTTP Protocol (%s)", unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average speed for requests negotiated with each protocol.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.StallRateByHTTPProtocolPct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.StallRateByHTTPProtocolPct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Stall Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Percentage of stalled requests per protocol.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.ErrorRateByHTTPProtocolPct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.ErrorRateByHTTPProtocolPct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Error Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Error percentage per protocol. Spikes may indicate protocol-specific issues.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+func renderTLSVersionMixChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		return blank(800, 320)
+	}
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.TLSVersionRatePct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet { keys = append(keys, k) }
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.TLSVersionRatePct[k]
+			if ys[j] <= 0 { ys[j] = math.NaN() }
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
+	if state.showHints { padBottom += 18 }
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "TLS Version Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf)
+	if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Distribution of negotiated TLS versions.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+func renderALPNMixChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 { return blank(800, 320) }
+	keySet := map[string]struct{}{}
+	for _, r := range rows { for k := range r.ALPNRatePct { keySet[k] = struct{}{} } }
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet { keys = append(keys, k) }
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows { ys[j] = r.ALPNRatePct[k]; if ys[j] <= 0 { ys[j] = math.NaN() } }
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 { t2 := times[0].Add(1 * time.Second); ys = append([]float64{ys[0]}, ys[0]); series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}) } else { series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st}) }
+		} else {
+			if len(xs) == 1 { x2 := xs[0] + 1; ys = append([]float64{ys[0]}, ys[0]); series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st}) } else { series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st}) }
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
+	if state.showHints { padBottom += 18 }
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "ALPN Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf)
+	if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Negotiated application protocols (ALPN). h2 indicates HTTP/2.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+func renderChunkedTransferRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 { return blank(800, 320) }
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	ys := make([]float64, len(rows))
+	for i, r := range rows { ys[i] = r.ChunkedRatePct }
+	st := pointStyle(chart.ColorBlue)
+	var series chart.Series
+	if timeMode {
+		if len(times) == 1 { t2 := times[0].Add(1 * time.Second); ys = append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name: "Chunked", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st} } else { series = chart.TimeSeries{Name: "Chunked", XValues: times, YValues: ys, Style: st} }
+	} else {
+		if len(xs) == 1 { x2 := xs[0] + 1; ys = append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name: "Chunked", XValues: []float64{xs[0], x2}, YValues: ys, Style: st} } else { series = chart.ContinuousSeries{Name: "Chunked", XValues: xs, YValues: ys, Style: st} }
+	}
+	padBottom := 28
+	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
+	if state.showHints { padBottom += 18 }
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Chunked Transfer Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: []chart.Series{series}}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	img, err := png.Decode(&buf)
+	if err != nil { return blank(cw, chh) }
+	if state.showHints { img = drawHint(img, "Hint: Percentage of responses using chunked transfer encoding.") }
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
 // renderCoVChart draws AvgCoefVariationPct per batch (overall/IPv4/IPv6).
 func renderCoVChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -7903,6 +8584,20 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.setupConnImgCanvas
 		case "setup_tls":
 			imgCanvas = r.c.state.setupTLSImgCanvas
+			case "protocol_mix":
+				imgCanvas = r.c.state.protocolMixImgCanvas
+			case "protocol_avg_speed":
+				imgCanvas = r.c.state.protocolAvgSpeedImgCanvas
+			case "protocol_stall_rate":
+				imgCanvas = r.c.state.protocolStallRateImgCanvas
+			case "protocol_error_rate":
+				imgCanvas = r.c.state.protocolErrorRateImgCanvas
+			case "tls_version_mix":
+				imgCanvas = r.c.state.tlsVersionMixImgCanvas
+			case "alpn_mix":
+				imgCanvas = r.c.state.alpnMixImgCanvas
+			case "chunked_rate":
+				imgCanvas = r.c.state.chunkedRateImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -8367,6 +9062,52 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.0f ms", bs.IPv6.AvgTLSHandshake))
 			}
+		case "protocol_mix":
+			if len(bs.HTTPProtocolRatePct) == 0 {
+				lines = append(lines, "No protocol data")
+				break
+			}
+			// stable order
+			keys := make([]string, 0, len(bs.HTTPProtocolRatePct))
+			for k := range bs.HTTPProtocolRatePct { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.HTTPProtocolRatePct[k])) }
+		case "protocol_avg_speed":
+			if len(bs.AvgSpeedByHTTPProtocolKbps) == 0 {
+				lines = append(lines, "No protocol data")
+				break
+			}
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			keys := make([]string, 0, len(bs.AvgSpeedByHTTPProtocolKbps))
+			for k := range bs.AvgSpeedByHTTPProtocolKbps { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { v := bs.AvgSpeedByHTTPProtocolKbps[k] * factor; if v > 0 { lines = append(lines, fmt.Sprintf("%s: %.1f %s", k, v, unit)) } }
+		case "protocol_stall_rate":
+			if len(bs.StallRateByHTTPProtocolPct) == 0 { lines = append(lines, "No protocol data"); break }
+			keys := make([]string, 0, len(bs.StallRateByHTTPProtocolPct))
+			for k := range bs.StallRateByHTTPProtocolPct { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.StallRateByHTTPProtocolPct[k])) }
+		case "protocol_error_rate":
+			if len(bs.ErrorRateByHTTPProtocolPct) == 0 { lines = append(lines, "No protocol data"); break }
+			keys := make([]string, 0, len(bs.ErrorRateByHTTPProtocolPct))
+			for k := range bs.ErrorRateByHTTPProtocolPct { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorRateByHTTPProtocolPct[k])) }
+		case "tls_version_mix":
+			if len(bs.TLSVersionRatePct) == 0 { lines = append(lines, "No TLS data"); break }
+			keys := make([]string, 0, len(bs.TLSVersionRatePct))
+			for k := range bs.TLSVersionRatePct { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.TLSVersionRatePct[k])) }
+		case "alpn_mix":
+			if len(bs.ALPNRatePct) == 0 { lines = append(lines, "No ALPN data"); break }
+			keys := make([]string, 0, len(bs.ALPNRatePct))
+			for k := range bs.ALPNRatePct { keys = append(keys, k) }
+			sort.Strings(keys)
+			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ALPNRatePct[k])) }
+		case "chunked_rate":
+			lines = append(lines, fmt.Sprintf("Chunked: %.1f%%", bs.ChunkedRatePct))
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 	} else {

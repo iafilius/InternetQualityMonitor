@@ -81,6 +81,17 @@ type BatchSummary struct {
 	ProxyNameRatePct       map[string]float64 `json:"proxy_name_rate_pct,omitempty"`
 	EnvProxyUsageRatePct   float64            `json:"env_proxy_usage_rate_pct,omitempty"`
 	ClassifiedProxyRatePct float64            `json:"classified_proxy_rate_pct,omitempty"`
+	// Protocol/TLS/encoding rollups
+	HTTPProtocolCounts         map[string]int     `json:"http_protocol_counts,omitempty"`
+	HTTPProtocolRatePct        map[string]float64 `json:"http_protocol_rate_pct,omitempty"`
+	AvgSpeedByHTTPProtocolKbps map[string]float64 `json:"avg_speed_by_http_protocol_kbps,omitempty"`
+	StallRateByHTTPProtocolPct map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
+	ErrorRateByHTTPProtocolPct map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
+	TLSVersionCounts           map[string]int     `json:"tls_version_counts,omitempty"`
+	TLSVersionRatePct          map[string]float64 `json:"tls_version_rate_pct,omitempty"`
+	ALPNCounts                 map[string]int     `json:"alpn_counts,omitempty"`
+	ALPNRatePct                map[string]float64 `json:"alpn_rate_pct,omitempty"`
+	ChunkedRatePct             float64            `json:"chunked_rate_pct,omitempty"`
 }
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
@@ -182,6 +193,11 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		connReused         bool
 		plateauStable      bool
 		hasError           bool
+		// protocol/tls/encoding
+		httpProto string
+		tlsVer    string
+		alpn      string
+		chunked   bool
 		// stability
 		stalled        bool
 		stallElapsedMs int64
@@ -325,6 +341,11 @@ readLoop:
 		bs.warmCacheSuspected = sr.WarmCacheSuspected
 		bs.connReused = sr.ConnectionReusedSecond
 		bs.headGetRatio = sr.HeadGetTimeRatio
+		// protocol/tls/encoding telemetry
+		bs.httpProto = sr.HTTPProtocol
+		bs.tlsVer = sr.TLSVersion
+		bs.alpn = sr.ALPN
+		bs.chunked = sr.Chunked
 		records = append(records, bs)
 	}
 	if len(records) == 0 {
@@ -414,6 +435,16 @@ readLoop:
 		proxyClassified := 0
 		// capture situation for this batch (prefer first non-empty)
 		batchSituation := ""
+
+		// protocol/tls/encoding aggregators
+		protoCounts := map[string]int{}
+		protoSpeedSum := map[string]float64{}
+		protoSpeedCnt := map[string]int{}
+		protoStallCnt := map[string]int{}
+		protoErrorCnt := map[string]int{}
+		tlsCounts := map[string]int{}
+		alpnCounts := map[string]int{}
+		chunkedTrue := 0
 
 		buildFamily := func(filter string) *FamilySummary {
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
@@ -611,6 +642,29 @@ readLoop:
 			if r.speed > 0 {
 				speeds = append(speeds, r.speed)
 			}
+			// protocol speed/stall/error aggregations
+			if r.httpProto != "" {
+				protoCounts[r.httpProto]++
+				if r.speed > 0 {
+					protoSpeedSum[r.httpProto] += r.speed
+					protoSpeedCnt[r.httpProto]++
+				}
+				if r.stalled {
+					protoStallCnt[r.httpProto]++
+				}
+				if r.hasError {
+					protoErrorCnt[r.httpProto]++
+				}
+			}
+			if r.tlsVer != "" {
+				tlsCounts[r.tlsVer]++
+			}
+			if r.alpn != "" {
+				alpnCounts[r.alpn]++
+			}
+			if r.chunked {
+				chunkedTrue++
+			}
 			if r.proxyName != "" {
 				proxyNameCounts[r.proxyName]++
 				proxyClassified++
@@ -756,6 +810,41 @@ readLoop:
 				}
 				return float64(stallTimeMsSumAll) / float64(stallCntAll)
 			}(),
+		}
+		// Protocol/TLS/ALPN/chunked rollups
+		if recCount > 0 {
+			if len(protoCounts) > 0 {
+				summary.HTTPProtocolCounts = protoCounts
+				summary.HTTPProtocolRatePct = map[string]float64{}
+				summary.AvgSpeedByHTTPProtocolKbps = map[string]float64{}
+				summary.StallRateByHTTPProtocolPct = map[string]float64{}
+				summary.ErrorRateByHTTPProtocolPct = map[string]float64{}
+				for k, c := range protoCounts {
+					summary.HTTPProtocolRatePct[k] = float64(c) / den * 100
+					if n := protoSpeedCnt[k]; n > 0 {
+						summary.AvgSpeedByHTTPProtocolKbps[k] = protoSpeedSum[k] / float64(n)
+					}
+					if c > 0 {
+						summary.StallRateByHTTPProtocolPct[k] = float64(protoStallCnt[k]) / float64(c) * 100
+						summary.ErrorRateByHTTPProtocolPct[k] = float64(protoErrorCnt[k]) / float64(c) * 100
+					}
+				}
+			}
+			if len(tlsCounts) > 0 {
+				summary.TLSVersionCounts = tlsCounts
+				summary.TLSVersionRatePct = map[string]float64{}
+				for k, c := range tlsCounts {
+					summary.TLSVersionRatePct[k] = float64(c) / den * 100
+				}
+			}
+			if len(alpnCounts) > 0 {
+				summary.ALPNCounts = alpnCounts
+				summary.ALPNRatePct = map[string]float64{}
+				for k, c := range alpnCounts {
+					summary.ALPNRatePct[k] = float64(c) / den * 100
+				}
+			}
+			summary.ChunkedRatePct = float64(chunkedTrue) / den * 100
 		}
 		// TTFB percentiles overall in ms
 		summary.AvgP50TTFBMs = percentile(ttfbs, 50)

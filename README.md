@@ -738,6 +738,18 @@ Use these to correlate: e.g. a rise in `ip_mismatch_rate_pct` plus degraded `avg
 
 Per-family batch objects (`ipv4`, `ipv6`): each, when present, mirrors the core metric names (e.g. `avg_speed_kbps`, `avg_ttfb_ms`, `avg_p50_kbps`, rates like `cache_hit_rate_pct`) restricted to that IP family. They are omitted if a family has zero lines in the batch. Alert JSON currently reports only the combined batch (family-level alerts not yet emitted).
 
+Protocol/TLS/encoding rollups (to help diagnose proxy/network path issues):
+- http_protocol_counts: number of lines per HTTP protocol, e.g. HTTP/1.1 vs HTTP/2.0
+- http_protocol_rate_pct: share for each HTTP protocol within the batch
+- avg_speed_by_http_protocol_kbps: average transfer speed per HTTP protocol
+- stall_rate_by_http_protocol_pct: stall rate for each HTTP protocol
+- error_rate_by_http_protocol_pct: error rate for each HTTP protocol
+- tls_version_counts / tls_version_rate_pct: counts and shares per TLS version (e.g., TLS1.2, TLS1.3)
+- alpn_counts / alpn_rate_pct: counts and shares per negotiated ALPN (e.g., h2, http/1.1)
+- chunked_rate_pct: fraction of lines using chunked transfer encoding
+
+These metrics are derived from the primary GET response and can be used to correlate performance or reliability differences between HTTP/1.1 and HTTP/2, TLS versions, or usage of chunked encoding.
+
 ### Example Batch Summary Console Lines
 <details>
 <summary>Show example console line</summary>
