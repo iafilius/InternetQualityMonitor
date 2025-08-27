@@ -18,7 +18,8 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps.
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
-- Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W).
+- Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
+- Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
 
 ### Theme selection

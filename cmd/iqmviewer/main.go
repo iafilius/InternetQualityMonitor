@@ -7,7 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	png "image/png"
+	"image/png"
 	"math"
 	"os"
 	"os/exec"
@@ -27,8 +27,10 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
 	chart "github.com/wcharczuk/go-chart/v2"
 	"github.com/wcharczuk/go-chart/v2/drawing"
+
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/font/opentype"
@@ -39,20 +41,25 @@ import (
 )
 
 // screenshotThemeGlobal holds the effective theme used for charts/screenshots.
-// Always resolved to "dark" or "light".
+// Values: "dark" or "light".
 var screenshotThemeGlobal = "dark"
 
 // screenshotThemeMode is the user's selection: "auto" (default on first run), "dark", or "light".
 var screenshotThemeMode = "auto"
 
-// resolveTheme returns an effective theme ("dark" or "light") given a mode and optional app context.
+// resolveTheme maps a user-facing mode to an effective chart theme.
 func resolveTheme(mode string, app fyne.App) string {
 	m := strings.ToLower(strings.TrimSpace(mode))
 	switch m {
-	case "light":
-		return "light"
 	case "dark":
 		return "dark"
+	case "light":
+		return "light"
+	case "auto":
+		if isSystemDark() {
+			return "dark"
+		}
+		return "light"
 	default:
 		if isSystemDark() {
 			return "dark"
@@ -61,9 +68,7 @@ func resolveTheme(mode string, app fyne.App) string {
 	}
 }
 
-// isSystemDark best-effort detection of system appearance.
 // Currently supports macOS via `defaults read -g AppleInterfaceStyle`.
-// Falls back to false (light) on other platforms or errors.
 func isSystemDark() bool {
 	switch runtime.GOOS {
 	case "darwin":
@@ -228,10 +233,24 @@ type uiState struct {
 	showRolling     bool // show rolling mean line on Speed/TTFB
 	showRollingBand bool // show translucent ±1σ band around rolling mean
 	rollingWindow   int  // default 7
+
+	// charts registry and search
+	chartsScroll *container.Scroll
+	chartRefs    []chartRef
+	findEntry    *widget.Entry
+	findCountLbl *widget.Label
+	findIndex    int
+	findMatches  []int
+}
+
+// chartRef tracks a chart section for search/navigation
+type chartRef struct {
+	title   string
+	section *fyne.Container
 }
 
 // makeChartSection composes a header row (title + info button) and the stacked image+overlay
-func makeChartSection(title string, help string, stack *fyne.Container) *fyne.Container {
+func makeChartSection(state *uiState, title string, help string, stack *fyne.Container) *fyne.Container {
 	titleLbl := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
 		// Show help in a dialog with wrapping
@@ -241,7 +260,106 @@ func makeChartSection(title string, help string, stack *fyne.Container) *fyne.Co
 	})
 	infoBtn.Importance = widget.LowImportance
 	header := container.New(layout.NewHBoxLayout(), titleLbl, layout.NewSpacer(), infoBtn)
-	return container.NewVBox(header, stack)
+	sec := container.NewVBox(header, stack)
+	if state != nil {
+		state.chartRefs = append(state.chartRefs, chartRef{title: title, section: sec})
+	}
+	return sec
+}
+
+// updateFindMatches recomputes the matching chart indices based on the findEntry text
+func updateFindMatches(state *uiState) {
+	if state == nil {
+		return
+	}
+	query := ""
+	if state.findEntry != nil {
+		query = strings.TrimSpace(strings.ToLower(state.findEntry.Text))
+	}
+	state.findMatches = state.findMatches[:0]
+	if query == "" {
+		state.findIndex = 0
+		if state.findCountLbl != nil {
+			state.findCountLbl.SetText("")
+		}
+		return
+	}
+	for i, r := range state.chartRefs {
+		if strings.Contains(strings.ToLower(r.title), query) {
+			state.findMatches = append(state.findMatches, i)
+		}
+	}
+	if len(state.findMatches) == 0 {
+		state.findIndex = 0
+		if state.findCountLbl != nil {
+			state.findCountLbl.SetText("0/0")
+		}
+		return
+	}
+	if state.findIndex >= len(state.findMatches) || state.findIndex < 0 {
+		state.findIndex = 0
+	}
+	if state.findCountLbl != nil {
+		state.findCountLbl.SetText(fmt.Sprintf("%d/%d", state.findIndex+1, len(state.findMatches)))
+	}
+}
+
+func findScrollToCurrent(state *uiState) {
+	if state == nil || state.chartsScroll == nil || len(state.findMatches) == 0 || state.findIndex < 0 || state.findIndex >= len(state.findMatches) {
+		return
+	}
+	idx := state.findMatches[state.findIndex]
+	if idx < 0 || idx >= len(state.chartRefs) {
+		return
+	}
+	ref := state.chartRefs[idx]
+	if ref.section != nil {
+		// Approximate vertical offset by summing previous sections' heights
+		var offY float32
+		for i := 0; i < idx && i < len(state.chartRefs); i++ {
+			if state.chartRefs[i].section != nil {
+				h := state.chartRefs[i].section.MinSize().Height
+				offY += h + 8 // include separator/spacing estimate
+			}
+		}
+		// Try to use ScrollToOffset if available
+		type scroller interface{ ScrollToOffset(pos fyne.Position) }
+		if s, ok := any(state.chartsScroll).(scroller); ok {
+			s.ScrollToOffset(fyne.NewPos(0, offY))
+		} else {
+			// Fallback: crude heuristic based on position in list
+			if float64(idx) > float64(len(state.chartRefs))/2.0 {
+				state.chartsScroll.ScrollToBottom()
+			} else {
+				state.chartsScroll.ScrollToTop()
+			}
+		}
+	}
+}
+
+func findNext(state *uiState) {
+	if state == nil || len(state.findMatches) == 0 {
+		return
+	}
+	state.findIndex = (state.findIndex + 1) % len(state.findMatches)
+	if state.findCountLbl != nil {
+		state.findCountLbl.SetText(fmt.Sprintf("%d/%d", state.findIndex+1, len(state.findMatches)))
+	}
+	findScrollToCurrent(state)
+}
+
+func findPrev(state *uiState) {
+	if state == nil || len(state.findMatches) == 0 {
+		return
+	}
+	state.findIndex--
+	if state.findIndex < 0 {
+		state.findIndex = len(state.findMatches) - 1
+	}
+	if state.findCountLbl != nil {
+		state.findCountLbl.SetText(fmt.Sprintf("%d/%d", state.findIndex+1, len(state.findMatches)))
+	}
+	findScrollToCurrent(state)
 }
 
 // speedUnitNameAndFactor converts from base kbps to the chosen unit
@@ -670,6 +788,19 @@ func main() {
 		redrawCharts(state)
 	}
 
+	// Find UI
+	state.findEntry = widget.NewEntry()
+	state.findEntry.SetPlaceHolder("Find chart…")
+	state.findCountLbl = widget.NewLabel("")
+	nextBtn := widget.NewButton("Next", func() { findNext(state) })
+	prevBtn := widget.NewButton("Prev", func() { findPrev(state) })
+	state.findEntry.OnChanged = func(string) {
+		updateFindMatches(state)
+	}
+	state.findEntry.OnSubmitted = func(string) {
+		findNext(state)
+	}
+
 	top := container.NewHBox(
 		widget.NewButton("Open…", func() { openFileDialog(state, fileLabel) }),
 		widget.NewButton("Reload", func() { loadAll(state, fileLabel) }),
@@ -684,6 +815,8 @@ func main() {
 		widget.NewLabel("Situation:"), sitSelect,
 		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
 		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
+		layout.NewSpacer(),
+		widget.NewLabel("Find:"), state.findEntry, prevBtn, nextBtn, state.findCountLbl,
 		widget.NewLabel("File:"), fileLabel,
 	)
 	// charts stacked vertically with scroll for future additions
@@ -961,75 +1094,76 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	// charts column (hints are rendered inside chart images when enabled)
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
 	chartsColumn := container.NewVBox(
-		makeChartSection("DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
+		makeChartSection(state, "DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
+		makeChartSection(state, "TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
+		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
+		makeChartSection(state, "Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
 		// Place Speed Percentiles directly under Avg Speed
-		makeChartSection("Speed Percentiles", helpSpeedPct, speedPctlGrid),
+		makeChartSection(state, "Speed Percentiles", helpSpeedPct, speedPctlGrid),
 		widget.NewSeparator(),
-		makeChartSection("TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
+		makeChartSection(state, "TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TTFB Percentiles", helpTTFBPct, ttfbPctlGrid),
+		makeChartSection(state, "TTFB Percentiles", helpTTFBPct, ttfbPctlGrid),
 		widget.NewSeparator(),
-		makeChartSection("Tail Heaviness (P99/P50 Speed)", helpTail, container.NewStack(state.tailRatioImgCanvas, state.tailRatioOverlay)),
+		makeChartSection(state, "Tail Heaviness (P99/P50 Speed)", helpTail, container.NewStack(state.tailRatioImgCanvas, state.tailRatioOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TTFB Tail Heaviness (P95/P50)", helpTTFBTail, container.NewStack(state.ttfbTailRatioImgCanvas, state.ttfbTailRatioOverlay)),
+		makeChartSection(state, "TTFB Tail Heaviness (P95/P50)", helpTTFBTail, container.NewStack(state.ttfbTailRatioImgCanvas, state.ttfbTailRatioOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Family Delta – Speed (IPv6−IPv4)", helpDeltas, container.NewStack(state.speedDeltaImgCanvas, state.speedDeltaOverlay)),
+		makeChartSection(state, "Family Delta – Speed (IPv6−IPv4)", helpDeltas, container.NewStack(state.speedDeltaImgCanvas, state.speedDeltaOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Family Delta – TTFB (IPv4−IPv6)", helpDeltas, container.NewStack(state.ttfbDeltaImgCanvas, state.ttfbDeltaOverlay)),
+		makeChartSection(state, "Family Delta – TTFB (IPv4−IPv6)", helpDeltas, container.NewStack(state.ttfbDeltaImgCanvas, state.ttfbDeltaOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Family Delta – Speed % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.speedDeltaPctImgCanvas, state.speedDeltaPctOverlay)),
+		makeChartSection(state, "Family Delta – Speed % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.speedDeltaPctImgCanvas, state.speedDeltaPctOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Family Delta – TTFB % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.ttfbDeltaPctImgCanvas, state.ttfbDeltaPctOverlay)),
+		makeChartSection(state, "Family Delta – TTFB % (IPv6 vs IPv4)", helpDeltaPct, container.NewStack(state.ttfbDeltaPctImgCanvas, state.ttfbDeltaPctOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("SLA Compliance – Speed", helpSLA, container.NewStack(state.slaSpeedImgCanvas, state.slaSpeedOverlay)),
+		makeChartSection(state, "SLA Compliance – Speed", helpSLA, container.NewStack(state.slaSpeedImgCanvas, state.slaSpeedOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("SLA Compliance – TTFB", helpSLA, container.NewStack(state.slaTTFBImgCanvas, state.slaTTFBOverlay)),
+		makeChartSection(state, "SLA Compliance – TTFB", helpSLA, container.NewStack(state.slaTTFBImgCanvas, state.slaTTFBOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("SLA Compliance Delta – Speed (pp)", helpSLADelta, container.NewStack(state.slaSpeedDeltaImgCanvas, state.slaSpeedDeltaOverlay)),
+		makeChartSection(state, "SLA Compliance Delta – Speed (pp)", helpSLADelta, container.NewStack(state.slaSpeedDeltaImgCanvas, state.slaSpeedDeltaOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("SLA Compliance Delta – TTFB (pp)", helpSLADelta, container.NewStack(state.slaTTFBDeltaImgCanvas, state.slaTTFBDeltaOverlay)),
+		makeChartSection(state, "SLA Compliance Delta – TTFB (pp)", helpSLADelta, container.NewStack(state.slaTTFBDeltaImgCanvas, state.slaTTFBDeltaOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("TTFB P95−P50 Gap", helpTTFBGap, container.NewStack(state.tpctlP95GapImgCanvas, state.tpctlP95GapOverlay)),
+		makeChartSection(state, "TTFB P95−P50 Gap", helpTTFBGap, container.NewStack(state.tpctlP95GapImgCanvas, state.tpctlP95GapOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
+		makeChartSection(state, "Error Rate", helpErr, container.NewStack(state.errImgCanvas, state.errOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Jitter", helpJitter, container.NewStack(state.jitterImgCanvas, state.jitterOverlay)),
+		makeChartSection(state, "Jitter", helpJitter, container.NewStack(state.jitterImgCanvas, state.jitterOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Coefficient of Variation", helpCoV, container.NewStack(state.covImgCanvas, state.covOverlay)),
+		makeChartSection(state, "Coefficient of Variation", helpCoV, container.NewStack(state.covImgCanvas, state.covOverlay)),
 		widget.NewSeparator(),
 		// Stability & quality section
-		makeChartSection("Low-Speed Time Share", helpLowSpeed, container.NewStack(state.lowSpeedImgCanvas, state.lowSpeedOverlay)),
+		makeChartSection(state, "Low-Speed Time Share", helpLowSpeed, container.NewStack(state.lowSpeedImgCanvas, state.lowSpeedOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Stall Rate", helpStallRate, container.NewStack(state.stallRateImgCanvas, state.stallRateOverlay)),
+		makeChartSection(state, "Stall Rate", helpStallRate, container.NewStack(state.stallRateImgCanvas, state.stallRateOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Stalled Requests Count", helpStallCount, container.NewStack(state.stallCountImgCanvas, state.stallCountOverlay)),
+		makeChartSection(state, "Stalled Requests Count", helpStallCount, container.NewStack(state.stallCountImgCanvas, state.stallCountOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Avg Stall Time", helpStallTime, container.NewStack(state.stallTimeImgCanvas, state.stallTimeOverlay)),
+		makeChartSection(state, "Avg Stall Time", helpStallTime, container.NewStack(state.stallTimeImgCanvas, state.stallTimeOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
+		makeChartSection(state, "Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Proxy Suspected Rate", helpProxy, container.NewStack(state.proxyImgCanvas, state.proxyOverlay)),
+		makeChartSection(state, "Proxy Suspected Rate", helpProxy, container.NewStack(state.proxyImgCanvas, state.proxyOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Warm Cache Suspected Rate", helpWarm, container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay)),
+		makeChartSection(state, "Warm Cache Suspected Rate", helpWarm, container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Plateau Count", helpPlCount, container.NewStack(state.plCountImgCanvas, state.plCountOverlay)),
+		makeChartSection(state, "Plateau Count", helpPlCount, container.NewStack(state.plCountImgCanvas, state.plCountOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Longest Plateau", helpPlLongest, container.NewStack(state.plLongestImgCanvas, state.plLongestOverlay)),
+		makeChartSection(state, "Longest Plateau", helpPlLongest, container.NewStack(state.plLongestImgCanvas, state.plLongestOverlay)),
 		widget.NewSeparator(),
-		makeChartSection("Plateau Stable Rate", helpPlStable, container.NewStack(state.plStableImgCanvas, state.plStableOverlay)),
+		makeChartSection(state, "Plateau Stable Rate", helpPlStable, container.NewStack(state.plStableImgCanvas, state.plStableOverlay)),
 	)
 	// Always show stacked percentiles
 	speedPctlGrid.Show()
 	ttfbPctlGrid.Show()
 	chartsScroll := container.NewVScroll(chartsColumn)
 	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
+	state.chartsScroll = chartsScroll
 	// tabs: Batches | Charts
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Batches", state.table),
@@ -1044,6 +1178,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	}
 	content := container.NewBorder(top, nil, nil, nil, tabs)
 	w.SetContent(content)
+	// Initialize find matches now that chartRefs are registered
+	updateFindMatches(state)
 
 	// Redraw charts on window resize so they scale with width
 	if w.Canvas() != nil {
@@ -1684,6 +1820,20 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyR, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { loadAll(state, fileLabel) })
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyW, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) { state.window.Close() })
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyW, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { state.window.Close() })
+		// Find shortcuts
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyF, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) {
+			if state.findEntry != nil {
+				canv.Focus(state.findEntry)
+				// Try to select all if method exists; otherwise rely on user
+				state.findEntry.SetText(state.findEntry.Text) // no-op to keep caret at end
+			}
+		})
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyF, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
+			if state.findEntry != nil {
+				canv.Focus(state.findEntry)
+				state.findEntry.SetText(state.findEntry.Text)
+			}
+		})
 	}
 }
 
