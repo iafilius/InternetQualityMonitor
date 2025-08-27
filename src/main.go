@@ -138,7 +138,18 @@ func main() {
 	analyzeOnly := flag.Bool("analyze-only", false, "If true, analyze existing results and exit (no new collection)")
 	analysisBatches := flag.Int("analysis-batches", 10, "Max number of recent batches to analyze when --analyze-only is set")
 	finalAnalysisBatches := flag.Int("final-analysis-batches", 0, "If >0 in collection mode, after all iterations perform a final full analysis over last N batches")
+	// Self-test flags (default-on)
+	selfTest := flag.Bool("selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
+	selfTestDur := flag.Duration("selftest-duration", 300*time.Millisecond, "Duration for local throughput self-test")
 	flag.Parse()
+
+	if *selfTest {
+		if kbps, err := monitor.LocalMaxSpeedProbe(*selfTestDur); err == nil {
+			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps/1000.0, kbps)
+		} else {
+			fmt.Printf("[selftest] local throughput probe error: %v\n", err)
+		}
+	}
 
 	// Hostname placeholder expansion for --out. Users can specify patterns like
 	// monitor_results_{host}.jsonl and we substitute the current machine hostname.

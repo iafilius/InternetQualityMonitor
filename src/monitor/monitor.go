@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
 	"os"
@@ -158,6 +159,75 @@ type SpeedSample struct {
 	TimeMs int64   `json:"time_ms"`
 	Bytes  int64   `json:"bytes"`
 	Speed  float64 `json:"speed_kbps"`
+}
+
+// LocalMaxSpeedProbe runs a short loopback HTTP transfer to estimate the
+// maximum throughput this process + OS stack can sustain on this machine.
+// It returns kilobits per second (kbps) measured over the given duration.
+// Intended for quick self-tests in dev or optional startup checks in viewer/monitor.
+func LocalMaxSpeedProbe(d time.Duration) (float64, error) {
+	if d <= 0 {
+		d = 500 * time.Millisecond
+	}
+	// Server: stream bytes as fast as possible until client closes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Disable compression and buffering indicators; write large chunks.
+		// Use a fixed-size buffer reused in the loop.
+		buf := make([]byte, 64*1024)
+		for i := range buf {
+			buf[i] = 0xAA
+		}
+		// Flush in a loop; stop when client goes away.
+		for {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	// Client: read for 'd' and compute throughput.
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	// Simple transport without proxy/TLS to minimize overhead.
+	tr := &http.Transport{DisableCompression: true}
+	client := &http.Client{Transport: tr}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	// Read until context deadline.
+	var nBytes int64
+	buf := make([]byte, 64*1024)
+	for {
+		// Stop after requested duration; request context will also cancel reads.
+		if time.Since(start) >= d {
+			break
+		}
+		nr, er := resp.Body.Read(buf)
+		if nr > 0 {
+			nBytes += int64(nr)
+		}
+		if er != nil {
+			if errors.Is(er, io.EOF) {
+				break
+			}
+			// On timeout or other errors, stop and use what we have.
+			break
+		}
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		return 0, fmt.Errorf("elapsed=0")
+	}
+	kbps := (float64(nBytes) * 8.0 / 1000.0) / elapsed
+	return kbps, nil
 }
 
 // PlateauSegment captures a relatively stable throughput window.

@@ -428,6 +428,7 @@ func main() {
 	var shotsTheme string
 	var shotsVariants string
 	var shotsDNSLegacy bool
+	var selfTest bool
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
 	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
@@ -439,7 +440,18 @@ func main() {
 	flag.StringVar(&shotsTheme, "screenshot-theme", "auto", "Screenshot theme: 'auto', 'dark', or 'light'")
 	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.BoolVar(&shotsDNSLegacy, "screenshot-dns-legacy", false, "If true, overlay legacy dns_time_ms as dashed line on DNS chart in screenshots")
+	flag.BoolVar(&selfTest, "selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
 	flag.Parse()
+
+	if selfTest {
+		kbps, err := monitor.LocalMaxSpeedProbe(300 * time.Millisecond)
+		if err != nil {
+			fmt.Println("[selftest] local throughput probe error:", err)
+		} else {
+			_, factor := speedUnitNameAndFactor("Mbps")
+			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps*factor, kbps)
+		}
+	}
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
