@@ -907,7 +907,22 @@ readLoop:
 				}
 				mix = " proto_mix=[" + strings.Join(parts, ", ") + "]"
 			}
-			fmt.Printf("[analysis debug] summary %s lines=%d avg_speed=%.1f avg_ttfb=%.0f errors=%d p50=%.1f ratio=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%%%s\n", summary.RunTag, summary.Lines, summary.AvgSpeed, summary.AvgTTFB, summary.ErrorLines, summary.AvgP50Speed, summary.AvgP99P50Ratio, summary.AvgJitterPct, summary.AvgSlopeKbpsPerSec, summary.AvgCoefVariationPct, summary.CacheHitRatePct, summary.ConnReuseRatePct, mix)
+			// Quick ALPN/TLS known-rate snapshot to help spot environments that omit ALPN/TLS metadata.
+			alpnKnownCnt := 0
+			for _, c := range alpnCounts {
+				alpnKnownCnt += c
+			}
+			tlsKnownCnt := 0
+			for _, c := range tlsCounts {
+				tlsKnownCnt += c
+			}
+			alpnKnownPct := 0.0
+			tlsKnownPct := 0.0
+			if recCount > 0 {
+				alpnKnownPct = float64(alpnKnownCnt) / float64(recCount) * 100
+				tlsKnownPct = float64(tlsKnownCnt) / float64(recCount) * 100
+			}
+			fmt.Printf("[analysis debug] summary %s lines=%d avg_speed=%.1f avg_ttfb=%.0f errors=%d p50=%.1f ratio=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% alpn_known=%.1f%% tls_known=%.1f%%%s\n", summary.RunTag, summary.Lines, summary.AvgSpeed, summary.AvgTTFB, summary.ErrorLines, summary.AvgP50Speed, summary.AvgP99P50Ratio, summary.AvgJitterPct, summary.AvgSlopeKbpsPerSec, summary.AvgCoefVariationPct, summary.CacheHitRatePct, summary.ConnReuseRatePct, alpnKnownPct, tlsKnownPct, mix)
 		}
 	}
 	return summaries, nil

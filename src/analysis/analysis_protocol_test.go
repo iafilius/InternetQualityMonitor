@@ -48,6 +48,11 @@ func TestProtocolTlsAlpnChunkedAggregations(t *testing.T) {
 	env := monitor.ResultEnvelope{Meta: &monitor.Meta{TimestampUTC: ts, RunTag: runTag, SchemaVersion: monitor.SchemaVersion}, SiteResult: sr}
 	writeEnvLine(t, f, env)
 
+	// One HTTP/1.0 (no TLS)
+	sr = &monitor.SiteResult{Name: "c", TransferSpeedKbps: 300, HTTPProtocol: "HTTP/1.0"}
+	env = monitor.ResultEnvelope{Meta: &monitor.Meta{TimestampUTC: ts, RunTag: runTag, SchemaVersion: monitor.SchemaVersion}, SiteResult: sr}
+	writeEnvLine(t, f, env)
+
 	sums, err := AnalyzeRecentResultsFull(path, monitor.SchemaVersion, 5, "")
 	if err != nil {
 		t.Fatalf("analyze: %v", err)
@@ -64,6 +69,9 @@ func TestProtocolTlsAlpnChunkedAggregations(t *testing.T) {
 	if b.HTTPProtocolCounts["HTTP/1.1"] != 1 {
 		t.Fatalf("h1 count= %v", b.HTTPProtocolCounts["HTTP/1.1"])
 	}
+	if b.HTTPProtocolCounts["HTTP/1.0"] != 1 {
+		t.Fatalf("h1.0 count= %v", b.HTTPProtocolCounts["HTTP/1.0"])
+	}
 
 	// Avg speed by protocol
 	if v := b.AvgSpeedByHTTPProtocolKbps["HTTP/2.0"]; (v-2500) > 1e-6 && (2500-v) > 1e-6 {
@@ -71,6 +79,9 @@ func TestProtocolTlsAlpnChunkedAggregations(t *testing.T) {
 	}
 	if v := b.AvgSpeedByHTTPProtocolKbps["HTTP/1.1"]; (v-500) > 1e-6 && (500-v) > 1e-6 {
 		t.Fatalf("avg speed h1 got %.2f want 500", v)
+	}
+	if v := b.AvgSpeedByHTTPProtocolKbps["HTTP/1.0"]; (v-300) > 1e-6 && (300-v) > 1e-6 {
+		t.Fatalf("avg speed h1.0 got %.2f want 300", v)
 	}
 
 	// Stall/Error rate by protocol

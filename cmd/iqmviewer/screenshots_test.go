@@ -102,3 +102,61 @@ func TestScreenshotWidths_BaseSet(t *testing.T) {
 		t.Fatalf("no PNG screenshots found in %s", outDir)
 	}
 }
+
+// TestScreenshotWidths_AllowsShrink ensures charts render correctly at a small width,
+// guarding against regressions that reintroduce large minimum widths.
+func TestScreenshotWidths_AllowsShrink(t *testing.T) {
+	// Force a small full-width value while headless.
+	screenshotWidthOverride = 480
+	// Prepare a tiny synthetic results file.
+	tmpResults, err := os.CreateTemp(t.TempDir(), "results-*.jsonl")
+	if err != nil {
+		t.Fatalf("create temp results: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		writeResultLine(t, tmpResults, "20250101_000000", 1000+float64(i*5), 70)
+	}
+	for i := 0; i < 2; i++ {
+		writeResultLine(t, tmpResults, "20250102_000000", 900+float64(i*5), 85)
+	}
+	if err := tmpResults.Close(); err != nil {
+		t.Fatalf("close results: %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false); err != nil {
+		t.Fatalf("RunScreenshotsMode: %v", err)
+	}
+
+	expectedW, _ := chartSize(nil)
+
+	checked := 0
+	err = filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || filepath.Ext(path) != ".png" {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open %s: %v", path, err)
+		}
+		defer f.Close()
+		img, _, err := image.Decode(f)
+		if err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		if w := img.Bounds().Dx(); w != expectedW {
+			t.Fatalf("image width mismatch for %s: got %d, want %d", filepath.Base(path), w, expectedW)
+		}
+		checked++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk outDir: %v", err)
+	}
+	if checked == 0 {
+		t.Fatalf("no PNG screenshots found in %s", outDir)
+	}
+}

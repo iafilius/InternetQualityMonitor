@@ -540,7 +540,11 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	if parsed.Scheme == "https" {
 		Debugf("[%s %s] TLS handshake", site.Name, ipStr)
 		tlsStart := time.Now()
-		cfg := &tls.Config{ServerName: parsed.Hostname()}
+		cfg := &tls.Config{
+			ServerName: parsed.Hostname(),
+			// Advertise ALPN to learn negotiated protocol (h2 vs http/1.1) from this handshake.
+			NextProtos: []string{"h2", "http/1.1"},
+		}
 		tlsConn := tls.Client(conn, cfg)
 		// Ensure the manual handshake cannot block indefinitely. Use a bounded deadline
 		// based on configured timeouts (prefer the lower of siteTimeout and httpTimeout; fallback 20s).
@@ -613,6 +617,27 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				}
 			}
 		}
+		// Populate TLS fields early from the successful handshake. This ensures
+		// tls_ver and alpn aren’t left unknown if the subsequent GET fails or
+		// if Response.TLS isn’t available for any reason.
+		switch state.Version {
+		case tls.VersionTLS13:
+			sr.TLSVersion = "TLS1.3"
+		case tls.VersionTLS12:
+			sr.TLSVersion = "TLS1.2"
+		case tls.VersionTLS11:
+			sr.TLSVersion = "TLS1.1"
+		case tls.VersionTLS10:
+			sr.TLSVersion = "TLS1.0"
+		default:
+			sr.TLSVersion = fmt.Sprintf("0x%x", state.Version)
+		}
+		if cs := tls.CipherSuiteName(state.CipherSuite); cs != "" {
+			sr.TLSCipher = cs
+		}
+		if np := state.NegotiatedProtocol; np != "" {
+			sr.ALPN = np
+		}
 		tlsConn.Close()
 	} else {
 		conn.Close()
@@ -629,6 +654,10 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		proxyURL, _ := url.Parse(sr.EnvProxyURL)
 		transport = &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				ServerName: parsed.Hostname(),
+				NextProtos: []string{"h2", "http/1.1"},
+			},
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 				c, e := d.DialContext(ctx, network, address)
@@ -657,7 +686,10 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		sr.UsingEnvProxy = true
 	} else {
 		// Direct IP dial preserving Host header
-		transport = &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		transport = &http.Transport{TLSClientConfig: &tls.Config{
+			ServerName: parsed.Hostname(),
+			NextProtos: []string{"h2", "http/1.1"},
+		}, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
 			c, e := d.DialContext(ctx, network, target)
 			if e == nil && remoteIP == "" {
@@ -766,35 +798,7 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 
 	clHeader := resp.Header.Get("Content-Length")
 	// Populate protocol/TLS/encoding telemetry early
-	sr.HTTPProtocol = resp.Proto
-	if resp.TLS != nil {
-		// TLSVersion numeric to string
-		switch resp.TLS.Version {
-		case tls.VersionTLS13:
-			sr.TLSVersion = "TLS1.3"
-		case tls.VersionTLS12:
-			sr.TLSVersion = "TLS1.2"
-		case tls.VersionTLS11:
-			sr.TLSVersion = "TLS1.1"
-		case tls.VersionTLS10:
-			sr.TLSVersion = "TLS1.0"
-		default:
-			sr.TLSVersion = fmt.Sprintf("0x%x", resp.TLS.Version)
-		}
-		sr.TLSCipher = tls.CipherSuiteName(resp.TLS.CipherSuite)
-		if len(resp.TLS.NegotiatedProtocol) > 0 {
-			sr.ALPN = resp.TLS.NegotiatedProtocol
-		}
-	}
-	if len(resp.TransferEncoding) > 0 {
-		sr.TransferEncoding = strings.Join(resp.TransferEncoding, ",")
-		for _, te := range resp.TransferEncoding {
-			if strings.EqualFold(te, "chunked") {
-				sr.Chunked = true
-				break
-			}
-		}
-	}
+	fillProtocolTLSAndEncoding(sr, resp)
 	// content length header handled later into sr.ContentLengthHeader
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
@@ -1502,6 +1506,80 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		tlsv = "(unknown)"
 	}
 	Infof("[%s %s] done head=%d sec_get=%d bytes=%d time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, headStatus, secStatus, transferBytes, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
+}
+
+// fillProtocolTLSAndEncoding extracts protocol (HTTP version), TLS (version/cipher/ALPN),
+// and transfer encoding details from the http.Response and writes them to SiteResult.
+func fillProtocolTLSAndEncoding(sr *SiteResult, resp *http.Response) {
+	if resp == nil || sr == nil {
+		return
+	}
+	// HTTP protocol string (normalize whitespace/case and alias HTTP/2 -> HTTP/2.0)
+	sr.HTTPProtocol = normalizeHTTPProto(resp.Proto)
+
+	// TLS details
+	if resp.TLS != nil {
+		switch resp.TLS.Version {
+		case tls.VersionTLS13:
+			sr.TLSVersion = "TLS1.3"
+		case tls.VersionTLS12:
+			sr.TLSVersion = "TLS1.2"
+		case tls.VersionTLS11:
+			sr.TLSVersion = "TLS1.1"
+		case tls.VersionTLS10:
+			sr.TLSVersion = "TLS1.0"
+		default:
+			sr.TLSVersion = fmt.Sprintf("0x%x", resp.TLS.Version)
+		}
+		sr.TLSCipher = tls.CipherSuiteName(resp.TLS.CipherSuite)
+		if len(resp.TLS.NegotiatedProtocol) > 0 {
+			sr.ALPN = resp.TLS.NegotiatedProtocol
+		}
+	} else {
+		// If the request was HTTPS but Response.TLS is nil, note that we’ll rely on
+		// the earlier manual handshake values (populated before GET).
+		if resp.Request != nil && resp.Request.URL != nil && strings.EqualFold(resp.Request.URL.Scheme, "https") {
+			tv := sr.TLSVersion
+			if tv == "" {
+				tv = "(unknown)"
+			}
+			ap := sr.ALPN
+			if ap == "" {
+				ap = "(unknown)"
+			}
+			Debugf("[protocol] https response missing TLS info (resp.TLS=nil); using handshake values tls_ver=%s alpn=%s", tv, ap)
+		}
+	}
+
+	// Transfer-Encoding
+	if len(resp.TransferEncoding) > 0 {
+		sr.TransferEncoding = strings.Join(resp.TransferEncoding, ",")
+		for _, te := range resp.TransferEncoding {
+			if strings.EqualFold(te, "chunked") {
+				sr.Chunked = true
+				break
+			}
+		}
+	}
+}
+
+// normalizeHTTPProto trims whitespace, upper-cases the token, and maps common aliases.
+// Examples:
+//   - " http/2 "  => "HTTP/2.0"
+//   - "http/2"    => "HTTP/2.0"
+//   - "HtTp/1.1"  => "HTTP/1.1"
+//   - "http/1.0"  => "HTTP/1.0"
+func normalizeHTTPProto(p string) string {
+	if p == "" {
+		return p
+	}
+	s := strings.TrimSpace(p)
+	s = strings.ToUpper(s)
+	switch s {
+	case "HTTP/2":
+		return "HTTP/2.0"
+	}
+	return s
 }
 
 // ---- Root meta & system info helpers (portable) ----

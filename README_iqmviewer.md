@@ -2,6 +2,10 @@
 
 A Fyne-based desktop viewer for InternetQualityMonitor results with clear charts, robust filtering by Situation, rolling trend overlays, and export-ready watermarks.
 
+- All charts render at 100% of the available width, across the entire viewer.
+- The toolbar is horizontally scrollable so the window can be resized to narrow widths.
+- The window can be freely resized; redraws are debounced to avoid feedback loops.
+
 ## Build and run
 
 ```
@@ -21,6 +25,11 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
+
+### Layout and sizing
+- Full-width charts: images use a stretch fill to visually occupy the entire available width.
+- Flexible window size: the window can be made narrow; the toolbar scrolls horizontally when there’s not enough space.
+- Debounced resize: viewer redraws on meaningful width changes only (guarded to prevent jitter-driven redraw loops).
 
 ### Theme selection
 - View → Screenshot Theme: Auto (default), Dark, Light.
@@ -213,10 +222,34 @@ These help emphasize movement over time or relative variation when absolute base
 - Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, and Screenshot Theme mode (Auto/Dark/Light).
 
 ## Design
-- Offscreen rendering via go-chart, displayed as PNG with ImageFillContain.
+- Offscreen rendering via go-chart, displayed as PNG with ImageFillStretch to occupy full width.
+Run with a results file to open the UI:
+- Redraw on resize: a debounced watcher triggers chart redraws only when the canvas width changes beyond a small threshold.
 - Summaries come from `analysis.AnalyzeRecentResultsFullWithOptions` (situation filter and low-speed threshold propagated into analysis).
 - Robust range handling and single-point padding avoid rendering glitches on sparse data.
 - Nice time ticks via `pickTimeStep` + `makeNiceTimeTicks`, actual data timestamps are preserved.
+
+## Tests
+- Width determinism (headless):
+	- `TestScreenshotWidths_BaseSet` ensures all generated screenshots share the same width.
+go run ./cmd/iqmviewer -screenshot -file monitor_results.jsonl -screenshot-outdir docs/images
+- Run:
+
+Flags:
+- -file: Path to monitor_results.jsonl (defaults to ./monitor_results.jsonl if omitted in screenshot mode)
+- -screenshot: Run in headless screenshot mode and save charts
+- -screenshot-outdir: Output directory (created if missing), default docs/images
+- -screenshot-situation: Situation label to render; use 'All' for all situations
+- -screenshot-rolling-window: Rolling window N for overlays (default 7)
+- -screenshot-rolling-band: Show ±1σ band in screenshots (default true)
+- -screenshot-low-speed-threshold-kbps: Threshold for Low-Speed Time Share (default 1000)
+- -screenshot-batches: How many recent batches to include (default 50)
+- -screenshot-theme: 'auto' | 'dark' | 'light' (default auto)
+- -screenshot-variants: 'none' | 'averages' (default 'averages')
+- -screenshot-dns-legacy: Overlay dashed legacy dns_time_ms on the DNS chart (default false)
+```
+go test ./cmd/iqmviewer -run TestScreenshotWidths_ -v
+```
 
 ## Troubleshooting
 - Too few batches? Ensure JSONL has distinct `run_tag` per batch; many lines with the same `run_tag` count as a single batch.

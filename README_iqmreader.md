@@ -15,6 +15,21 @@ go build ./cmd/iqmreader
 ./iqmreader -file monitor_results.jsonl -n 10000 -situation Home_CorporateLaptop_CorpProxy_SequencedTest
 ```
 
+## Try it
+
+Quick start examples using the repo’s `monitor_results.jsonl`:
+
+```
+# Build the CLI
+go build ./cmd/iqmreader
+
+# Show counts for the last 10k records (grouped by run_tag/situation)
+./iqmreader -file monitor_results.jsonl -n 10000
+
+# Focus on a single situation/run_tag
+./iqmreader -file monitor_results.jsonl -n 10000 -situation Home_CorporateLaptop_CorpProxy_SequencedTest
+```
+
 ## Output example
 
 ```
