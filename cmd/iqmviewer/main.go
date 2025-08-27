@@ -844,6 +844,8 @@ func main() {
 		widget.NewLabel("Find:"), state.findEntry, prevBtn, nextBtn, state.findCountLbl,
 		widget.NewLabel("File:"), fileLabel,
 	)
+	// Make the toolbar horizontally scrollable so it doesn't enforce a large minimum window width
+	topScroll := container.NewHScroll(top)
 	// charts stacked vertically with scroll for future additions
 	// ensure reasonable minimum heights for readability
 	// Use full chart width instead of hardcoded sizes so all graphs are 100% width
@@ -1225,8 +1227,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	speedPctlGrid.Show()
 	ttfbPctlGrid.Show()
 	chartsScroll := container.NewVScroll(chartsColumn)
-	// Use a sane static minimum; avoid coupling content min width to canvas width to prevent growth loops
-	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
+	// Remove wide minimums to allow shrinking the window freely
+	chartsScroll.SetMinSize(fyne.NewSize(0, 0))
 	state.chartsScroll = chartsScroll
 	// tabs: Batches | Charts
 	tabs := container.NewAppTabs(
@@ -1240,7 +1242,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 			state.app.Preferences().SetInt("selectedTabIndex", tabs.SelectedIndex())
 		}
 	}
-	content := container.NewBorder(top, nil, nil, nil, tabs)
+	// Use the horizontally scrollable toolbar at the top
+	content := container.NewBorder(topScroll, nil, nil, nil, tabs)
 	w.SetContent(content)
 	// Initialize find matches now that chartRefs are registered
 	updateFindMatches(state)
