@@ -1,9 +1,10 @@
 // Internet Monitor main entrypoint.
 //
 // Two modes:
-//  1. Analyze-only mode (default): parse existing monitor_results.jsonl batches, summarize, compute deltas & alerts, optionally emit JSON report.
-//  2. Collection mode (enable with --analyze-only=false): perform active measurements across configured sites for N iterations, writing JSONL lines;
-//     after each iteration a rolling analysis (of up to last 10 batches or iterations so far) is executed and alerts generated.
+//  1. Collection mode (default): perform active measurements across configured sites for N iterations, writing JSONL lines; after each
+//     iteration a rolling analysis (of up to last 10 batches or iterations so far) is executed and alerts generated.
+//  2. Analyze-only mode (enable with --analyze-only=true): parse existing monitor_results.jsonl batches, summarize, compute deltas & alerts,
+//     optionally emit a structured JSON alert report.
 //
 // Design notes:
 // - Batch identity: run_tag (timestamp base + optional _i<iteration>). Legacy lines missing run_tag are upgraded via timestamp derived tags.
@@ -132,7 +133,7 @@ func main() {
 	progressResolveIP := flag.Bool("progress-resolve-ip", true, "Resolve and append first IP(s) for active sites in progress output")
 	ipFanout := flag.Bool("ip-fanout", true, "If true, pre-resolve all site IPs and randomize site/IP tasks to spread load")
 	alertsJSON := flag.String("alerts-json", "", "Path to write structured alert JSON report (optional)")
-	analyzeOnly := flag.Bool("analyze-only", false, "If true, perform analysis on existing results file and exit (default true for now)")
+	analyzeOnly := flag.Bool("analyze-only", false, "If true, analyze existing results and exit (no new collection)")
 	analysisBatches := flag.Int("analysis-batches", 10, "Max number of recent batches to analyze when --analyze-only is set")
 	finalAnalysisBatches := flag.Int("final-analysis-batches", 0, "If >0 in collection mode, after all iterations perform a final full analysis over last N batches")
 	flag.Parse()
@@ -183,10 +184,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-
-	// Init async writer
-	monitor.InitResultWriter(*outFile)
-	defer monitor.CloseResultWriter()
 
 	// ANALYSIS ONLY MODE (skip collection)
 	if *analyzeOnly {
@@ -322,6 +319,10 @@ func main() {
 			fmt.Println("[analysis] no batches found")
 			return
 		}
+
+		// Init async writer (collection mode only)
+		monitor.InitResultWriter(*outFile)
+		defer monitor.CloseResultWriter()
 		if len(summaries) == 1 {
 			last := summaries[0]
 			fmt.Printf("[batch-compare %s] only one batch available\n", last.RunTag)
@@ -552,6 +553,10 @@ func main() {
 							} else {
 								fmt.Printf("[iteration %d progress] workers_busy=%d/%d remaining=%d done=%d/%d\n", iter, inF, workerCount, remaining, comp, totalTasks)
 							}
+							// Stop progress loop when all tasks are completed
+							if int(comp) >= totalTasks {
+								return
+							}
 							// Simple stall heuristic: only one task left (remaining==0, comp<total), one worker busy for >2 progress intervals without completion
 							if !warned && remaining == 0 && int(comp) < totalTasks && inF == 1 {
 								stuckFor := time.Since(lastChange)
@@ -657,6 +662,9 @@ func main() {
 								fmt.Printf("[iteration %d progress] workers_busy=%d/%d remaining=%d done=%d/%d active=[%s]\n", iter, inF, workerCount, remaining, comp, totalSites, strings.Join(names, ","))
 							} else {
 								fmt.Printf("[iteration %d progress] workers_busy=%d/%d remaining=%d done=%d/%d\n", iter, inF, workerCount, remaining, comp, totalSites)
+							}
+							if int(comp) >= totalSites {
+								return
 							}
 						}
 					}

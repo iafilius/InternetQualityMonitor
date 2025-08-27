@@ -490,7 +490,19 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		tlsStart := time.Now()
 		cfg := &tls.Config{ServerName: parsed.Hostname()}
 		tlsConn := tls.Client(conn, cfg)
+		// Ensure the manual handshake cannot block indefinitely. Use a bounded deadline
+		// based on configured timeouts (prefer the lower of siteTimeout and httpTimeout; fallback 20s).
+		hsDeadline := 20 * time.Second
+		if httpTimeout > 0 && httpTimeout < hsDeadline {
+			hsDeadline = httpTimeout
+		}
+		if siteTimeout > 0 && siteTimeout < hsDeadline {
+			hsDeadline = siteTimeout
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(hsDeadline))
 		herr := tlsConn.Handshake()
+		// Clear deadline after handshake attempt
+		_ = tlsConn.SetDeadline(time.Time{})
 		tlt := time.Since(tlsStart)
 		sr.SSLHandshakeTimeMs = tlt.Milliseconds()
 		if herr != nil {
@@ -587,6 +599,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 			},
 			TLSHandshakeTimeout:   20 * time.Second,
 			ResponseHeaderTimeout: httpTimeout,
+			IdleConnTimeout:       30 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
 		}
 		sr.UsingEnvProxy = true
 	} else {
@@ -607,7 +621,12 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				}
 			}
 			return c, e
-		}}
+		},
+			TLSHandshakeTimeout:   20 * time.Second,
+			ResponseHeaderTimeout: httpTimeout,
+			IdleConnTimeout:       30 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
+		}
 	}
 	client := &http.Client{Transport: transport, Timeout: httpTimeout}
 
