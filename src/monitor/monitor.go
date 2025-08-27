@@ -1488,7 +1488,20 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	tcpMs := sr.TCPTimeMs
 	sslMs := sr.SSLHandshakeTimeMs
 	ttfbMs := sr.TraceTTFBMs
-	Infof("[%s %s] done head=%d sec_get=%d bytes=%d time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms", site.Name, ipStr, headStatus, secStatus, transferBytes, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs)
+	// Include negotiated HTTP protocol, ALPN, and TLS version for debugging missing protocol cases
+	proto := sr.HTTPProtocol
+	if proto == "" {
+		proto = "(unknown)"
+	}
+	alpn := sr.ALPN
+	if alpn == "" {
+		alpn = "(unknown)"
+	}
+	tlsv := sr.TLSVersion
+	if tlsv == "" {
+		tlsv = "(unknown)"
+	}
+	Infof("[%s %s] done head=%d sec_get=%d bytes=%d time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, headStatus, secStatus, transferBytes, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
 }
 
 // ---- Root meta & system info helpers (portable) ----
