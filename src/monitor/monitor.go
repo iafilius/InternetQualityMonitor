@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -68,28 +69,40 @@ type SiteResult struct {
 	SecondGetError        string `json:"second_get_error,omitempty"`
 	SecondGetCachePresent bool   `json:"second_get_cache_present,omitempty"`
 	// Warm HEAD / connection reuse
-	WarmHeadTimeMs         int64    `json:"warm_head_time_ms,omitempty"`
-	WarmHeadSpeedup        bool     `json:"warm_head_speedup,omitempty"`
-	WarmCacheSuspected     bool     `json:"warm_cache_suspected,omitempty"`
-	DialCount              int      `json:"dial_count,omitempty"`
-	ConnectionReusedSecond bool     `json:"connection_reused_second_get,omitempty"`
-	CountryConfigured      string   `json:"country_configured,omitempty"`
-	CountryGeoIP           string   `json:"country_geoip,omitempty"`
-	DNSIPs                 []string `json:"dns_ips,omitempty"`
-	DNSTimeMs              int64    `json:"dns_time_ms,omitempty"`
-	ResolvedIP             string   `json:"resolved_ip,omitempty"`
-	IPIndex                int      `json:"ip_index,omitempty"`
-	IPFamily               string   `json:"ip_family,omitempty"`
-	ASNNumber              uint     `json:"asn_number,omitempty"`
-	ASNOrg                 string   `json:"asn_org,omitempty"`
-	RemoteIP               string   `json:"remote_ip,omitempty"`
-	CachePresent           bool     `json:"cache_present,omitempty"`
-	IPMismatch             bool     `json:"ip_mismatch,omitempty"`
-	PrefetchSuspected      bool     `json:"prefetch_suspected,omitempty"`
-	ProxySuspected         bool     `json:"proxy_suspected,omitempty"`
-	ProbeHeaderValue       string   `json:"probe_header_value,omitempty"`
-	ProbeEchoed            bool     `json:"probe_echoed,omitempty"`
-	HeadGetTimeRatio       float64  `json:"head_get_time_ratio,omitempty"`
+	WarmHeadTimeMs         int64 `json:"warm_head_time_ms,omitempty"`
+	WarmHeadSpeedup        bool  `json:"warm_head_speedup,omitempty"`
+	WarmCacheSuspected     bool  `json:"warm_cache_suspected,omitempty"`
+	DialCount              int   `json:"dial_count,omitempty"`
+	ConnectionReusedSecond bool  `json:"connection_reused_second_get,omitempty"`
+	// Protocol/TLS/encoding telemetry (for diagnostics, esp. with proxies)
+	HTTPProtocol      string   `json:"http_protocol,omitempty"`     // e.g., HTTP/1.1, HTTP/2.0
+	TLSVersion        string   `json:"tls_version,omitempty"`       // e.g., TLS1.2, TLS1.3
+	TLSCipher         string   `json:"tls_cipher,omitempty"`        // e.g., TLS_AES_128_GCM_SHA256
+	ALPN              string   `json:"alpn,omitempty"`              // e.g., h2, http/1.1
+	TransferEncoding  string   `json:"transfer_encoding,omitempty"` // joined list, e.g., chunked
+	Chunked           bool     `json:"chunked,omitempty"`
+	CountryConfigured string   `json:"country_configured,omitempty"`
+	CountryGeoIP      string   `json:"country_geoip,omitempty"`
+	DNSIPs            []string `json:"dns_ips,omitempty"`
+	DNSTimeMs         int64    `json:"dns_time_ms,omitempty"`
+	ResolvedIP        string   `json:"resolved_ip,omitempty"`
+	IPIndex           int      `json:"ip_index,omitempty"`
+	IPFamily          string   `json:"ip_family,omitempty"`
+	ASNNumber         uint     `json:"asn_number,omitempty"`
+	ASNOrg            string   `json:"asn_org,omitempty"`
+	RemoteIP          string   `json:"remote_ip,omitempty"`
+	CachePresent      bool     `json:"cache_present,omitempty"`
+	IPMismatch        bool     `json:"ip_mismatch,omitempty"`
+	PrefetchSuspected bool     `json:"prefetch_suspected,omitempty"`
+	ProxySuspected    bool     `json:"proxy_suspected,omitempty"`
+	ProbeHeaderValue  string   `json:"probe_header_value,omitempty"`
+	ProbeEchoed       bool     `json:"probe_echoed,omitempty"`
+	HeadGetTimeRatio  float64  `json:"head_get_time_ratio,omitempty"`
+	// Control-plane flags
+	RetriedOnce  bool `json:"retried_once,omitempty"`
+	RetriedHead  bool `json:"retried_head,omitempty"`
+	RetriedGet   bool `json:"retried_get,omitempty"`
+	RetriedRange bool `json:"retried_range,omitempty"`
 	// Trace timings
 	TraceDNSMs        int64 `json:"trace_dns_ms,omitempty"`
 	TraceConnectMs    int64 `json:"trace_connect_ms,omitempty"`
@@ -225,8 +238,9 @@ var (
 	currentSituation  string
 	httpTimeout       = 120 * time.Second
 	stallTimeout      = 20 * time.Second
-	siteTimeout       time.Duration // overall per-site timeout (covers DNS+all IP attempts)
-	maxIPsPerSite     int           // if >0 limit IPs processed per site (e.g. first v4 + first v6)
+	siteTimeout       time.Duration     // overall per-site timeout (covers DNS+all IP attempts)
+	dnsTimeoutDefault = 5 * time.Second // used for DNS when siteTimeout is 0
+	maxIPsPerSite     int               // if >0 limit IPs processed per site (e.g. first v4 + first v6)
 )
 
 // SetHTTPTimeout configures the per-request total timeout (HEAD, GET, range & warm HEAD individually).
@@ -243,6 +257,13 @@ func SetStallTimeout(d time.Duration) {
 	}
 }
 
+// SetDNSTimeout configures the default DNS timeout used when no siteTimeout is set.
+func SetDNSTimeout(d time.Duration) {
+	if d > 0 {
+		dnsTimeoutDefault = d
+	}
+}
+
 // SetSiteTimeout sets an upper bound on total time spent inside one MonitorSite call.
 // 0 disables the limit.
 func SetSiteTimeout(d time.Duration) {
@@ -255,6 +276,35 @@ func SetSiteTimeout(d time.Duration) {
 func SetMaxIPsPerSite(n int) {
 	if n > 0 {
 		maxIPsPerSite = n
+	}
+}
+
+// isTransientNetErr returns true for common transient network errors where a single retry may succeed.
+func isTransientNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Unwrap and inspect error messages conservatively; avoid brittle exact matches.
+	es := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, io.EOF):
+		return true
+	case strings.Contains(es, "use of closed network connection"):
+		return true
+	case strings.Contains(es, "connection reset by peer"):
+		return true
+	case strings.Contains(es, "broken pipe"):
+		return true
+	case strings.Contains(es, "http2") && strings.Contains(es, "stream closed"):
+		return true
+	case strings.Contains(es, "temporary") || strings.Contains(es, "timeout"):
+		// don't treat context deadline exceeded as transient
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(es, "context deadline exceeded") {
+			return false
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -317,21 +367,23 @@ func MonitorSite(site types.Site) {
 		defer cancel()
 	}
 
-	// DNS resolve once (context-aware where possible)
+	// DNS resolve once (always context-aware). If no siteTimeout is set, bound DNS to 5s.
 	Debugf("[%s] DNS lookup %s", site.Name, host)
 	start := time.Now()
 	var ips []net.IP
-	if siteTimeout > 0 { // use context-aware resolver
-		addrs, derr := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if derr != nil {
-			err = derr
-		} else {
-			for _, a := range addrs {
-				ips = append(ips, a.IP)
-			}
-		}
+	dnsCtx := ctx
+	var dnsCancel context.CancelFunc
+	if siteTimeout <= 0 {
+		dnsCtx, dnsCancel = context.WithTimeout(context.Background(), dnsTimeoutDefault)
+		defer dnsCancel()
+	}
+	addrs, derr := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+	if derr != nil {
+		err = derr
 	} else {
-		ips, err = net.LookupIP(host)
+		for _, a := range addrs {
+			ips = append(ips, a.IP)
+		}
 	}
 	dnsTime := time.Since(start)
 	if err != nil || len(ips) == 0 {
@@ -630,13 +682,23 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	}
 	client := &http.Client{Transport: transport, Timeout: httpTimeout}
 
-	// HEAD
+	// HEAD (with one-shot transient retry)
 	Debugf("[%s %s] HEAD %s", site.Name, ipStr, site.URL)
-	headReq, _ := http.NewRequestWithContext(ctx, "HEAD", site.URL, nil)
-	headReq.Header.Set("X-Probe", probeVal)
-	headStart := time.Now()
-	headResp, headErr := client.Do(headReq)
-	headTime := time.Since(headStart)
+	doHEAD := func() (*http.Response, time.Duration, error) {
+		req, _ := http.NewRequestWithContext(ctx, "HEAD", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		st := time.Now()
+		r, e := client.Do(req)
+		return r, time.Since(st), e
+	}
+	headResp, headTime, headErr := doHEAD()
+	if headErr != nil && isTransientNetErr(headErr) {
+		Warnf("[%s %s] HEAD transient error, retrying once: %v", site.Name, ipStr, headErr)
+		time.Sleep(300 * time.Millisecond)
+		sr.RetriedOnce = true
+		sr.RetriedHead = true
+		headResp, headTime, headErr = doHEAD()
+	}
 	sr.HeadTimeMs = headTime.Milliseconds()
 	if headErr == nil && headResp != nil {
 		headResp.Body.Close()
@@ -645,45 +707,94 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		sr.HeadError = headErr.Error()
 	}
 
-	// GET with trace
+	// GET with trace (with one-shot retry on transient errors like EOF/reset)
 	var dnsStartT, dnsDoneT, connStartT, connDoneT, tlsStartT, tlsDoneT, gotConnT, gotFirstByteT time.Time
 	Debugf("[%s %s] GET %s", site.Name, ipStr, site.URL)
-	getReq, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
-	getReq.Header.Set("X-Probe", probeVal)
-	trace := &httptrace.ClientTrace{DNSStart: func(info httptrace.DNSStartInfo) { dnsStartT = time.Now() }, DNSDone: func(info httptrace.DNSDoneInfo) { dnsDoneT = time.Now() }, ConnectStart: func(network, addr string) { connStartT = time.Now() }, ConnectDone: func(network, addr string, err error) { connDoneT = time.Now() }, TLSHandshakeStart: func() { tlsStartT = time.Now() }, TLSHandshakeDone: func(cs tls.ConnectionState, err error) { tlsDoneT = time.Now() }, GotConn: func(info httptrace.GotConnInfo) { gotConnT = time.Now() }, GotFirstResponseByte: func() { gotFirstByteT = time.Now() }}
-	getReq = getReq.WithContext(httptrace.WithClientTrace(getReq.Context(), trace))
-	start = time.Now()
-	resp, gerr := client.Do(getReq)
-	httpConnectTime := time.Since(start)
-	sr.HTTPConnectTimeMs = httpConnectTime.Milliseconds()
-	if !dnsStartT.IsZero() && !dnsDoneT.IsZero() {
-		sr.TraceDNSMs = dnsDoneT.Sub(dnsStartT).Milliseconds()
-		// stored in sr.TraceDNSMs
+	doGET := func() (*http.Response, error) {
+		dnsStartT, dnsDoneT, connStartT, connDoneT, tlsStartT, tlsDoneT, gotConnT, gotFirstByteT = time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}
+		req, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		trace := &httptrace.ClientTrace{DNSStart: func(info httptrace.DNSStartInfo) { dnsStartT = time.Now() }, DNSDone: func(info httptrace.DNSDoneInfo) { dnsDoneT = time.Now() }, ConnectStart: func(network, addr string) { connStartT = time.Now() }, ConnectDone: func(network, addr string, err error) { connDoneT = time.Now() }, TLSHandshakeStart: func() { tlsStartT = time.Now() }, TLSHandshakeDone: func(cs tls.ConnectionState, err error) { tlsDoneT = time.Now() }, GotConn: func(info httptrace.GotConnInfo) { gotConnT = time.Now() }, GotFirstResponseByte: func() { gotFirstByteT = time.Now() }}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		start = time.Now()
+		r, e := client.Do(req)
+		httpConnectTime := time.Since(start)
+		sr.HTTPConnectTimeMs = httpConnectTime.Milliseconds()
+		if !dnsStartT.IsZero() && !dnsDoneT.IsZero() {
+			sr.TraceDNSMs = dnsDoneT.Sub(dnsStartT).Milliseconds()
+		}
+		if !connStartT.IsZero() && !connDoneT.IsZero() {
+			sr.TraceConnectMs = connDoneT.Sub(connStartT).Milliseconds()
+		}
+		if !tlsStartT.IsZero() && !tlsDoneT.IsZero() {
+			sr.TraceTLSMs = tlsDoneT.Sub(tlsStartT).Milliseconds()
+		}
+		if !gotConnT.IsZero() {
+			sr.TraceTimeToConnMs = gotConnT.Sub(start).Milliseconds()
+		}
+		if !gotFirstByteT.IsZero() {
+			sr.TraceTTFBMs = gotFirstByteT.Sub(start).Milliseconds()
+		}
+		return r, e
 	}
-	if !connStartT.IsZero() && !connDoneT.IsZero() {
-		sr.TraceConnectMs = connDoneT.Sub(connStartT).Milliseconds()
-		// stored in sr.TraceConnectMs
-	}
-	if !tlsStartT.IsZero() && !tlsDoneT.IsZero() {
-		sr.TraceTLSMs = tlsDoneT.Sub(tlsStartT).Milliseconds()
-		// stored in sr.TraceTLSMs
-	}
-	if !gotConnT.IsZero() {
-		sr.TraceTimeToConnMs = gotConnT.Sub(start).Milliseconds()
-		// stored in sr.TraceTimeToConnMs
-	}
-	if !gotFirstByteT.IsZero() {
-		sr.TraceTTFBMs = gotFirstByteT.Sub(start).Milliseconds()
+	resp, gerr := doGET()
+	if gerr != nil {
+		// One-shot retry on transient errors (EOF/reset)
+		if isTransientNetErr(gerr) {
+			Warnf("[%s %s] GET transient error, retrying once: %v", site.Name, ipStr, gerr)
+			time.Sleep(300 * time.Millisecond)
+			sr.RetriedOnce = true
+			sr.RetriedGet = true
+			if r2, e2 := doGET(); e2 == nil {
+				resp = r2
+				gerr = nil
+			} else {
+				gerr = e2
+			}
+		}
 	}
 	if gerr != nil {
-		// Record HTTP GET error distinctly
 		sr.HTTPError = gerr.Error()
+		if errors.Is(gerr, context.DeadlineExceeded) || strings.Contains(strings.ToLower(gerr.Error()), "context deadline exceeded") {
+			Warnf("[%s %s] GET timeout (context deadline exceeded)", site.Name, ipStr)
+		} else {
+			Warnf("[%s %s] GET failed: %v", site.Name, ipStr, gerr)
+		}
 		writeResult(wrapRoot(sr))
-		Warnf("[%s %s] GET failed: %v", site.Name, ipStr, gerr)
 		return
 	}
 
 	clHeader := resp.Header.Get("Content-Length")
+	// Populate protocol/TLS/encoding telemetry early
+	sr.HTTPProtocol = resp.Proto
+	if resp.TLS != nil {
+		// TLSVersion numeric to string
+		switch resp.TLS.Version {
+		case tls.VersionTLS13:
+			sr.TLSVersion = "TLS1.3"
+		case tls.VersionTLS12:
+			sr.TLSVersion = "TLS1.2"
+		case tls.VersionTLS11:
+			sr.TLSVersion = "TLS1.1"
+		case tls.VersionTLS10:
+			sr.TLSVersion = "TLS1.0"
+		default:
+			sr.TLSVersion = fmt.Sprintf("0x%x", resp.TLS.Version)
+		}
+		sr.TLSCipher = tls.CipherSuiteName(resp.TLS.CipherSuite)
+		if len(resp.TLS.NegotiatedProtocol) > 0 {
+			sr.ALPN = resp.TLS.NegotiatedProtocol
+		}
+	}
+	if len(resp.TransferEncoding) > 0 {
+		sr.TransferEncoding = strings.Join(resp.TransferEncoding, ",")
+		for _, te := range resp.TransferEncoding {
+			if strings.EqualFold(te, "chunked") {
+				sr.Chunked = true
+				break
+			}
+		}
+	}
 	// content length header handled later into sr.ContentLengthHeader
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
@@ -716,7 +827,9 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 	sr.IPMismatch = ipMismatch
-	prefetchSuspect := headErr == nil && headTime > 0 && httpConnectTime < (headTime/2)
+	// derive connect duration from recorded metric
+	connectDur := time.Duration(sr.HTTPConnectTimeMs) * time.Millisecond
+	prefetchSuspect := headErr == nil && headTime > 0 && connectDur > 0 && connectDur < (headTime/2)
 	sr.PrefetchSuspected = prefetchSuspect
 	proxySuspected := ipMismatch || via != "" || xcache != ""
 	// Basic heuristic mapping to identify common CDN/proxy names and enterprise proxies (Zscaler, Bluecoat etc.)
@@ -856,8 +969,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	sr.ProbeHeaderValue = probeVal
 	probeEcho := resp.Header.Get("X-Probe")
 	sr.ProbeEchoed = (probeEcho != "")
-	if headTime > 0 && headTime.Milliseconds() > 0 {
-		sr.HeadGetTimeRatio = float64(httpConnectTime.Milliseconds()) / float64(headTime.Milliseconds())
+	if headTime > 0 && headTime.Milliseconds() > 0 && sr.HTTPConnectTimeMs > 0 {
+		sr.HeadGetTimeRatio = float64(sr.HTTPConnectTimeMs) / float64(headTime.Milliseconds())
 	}
 	if remoteIP != "" {
 		if asnNum, asnOrg, ok := lookupGeoIP2ASN(remoteIP); ok {
@@ -880,11 +993,18 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	nextSample := transferStart.Add(SpeedSampleInterval)
 	lastProgressLog := time.Now()
 	lastProgress := time.Now()
+	// If Content-Length header is present, pre-parse expected total bytes for richer progress logs
+	var expectedBytes int64
+	if clHeader != "" {
+		if v, e := strconv.ParseInt(clHeader, 10, 64); e == nil && v > 0 {
+			expectedBytes = v
+		}
+	}
 	// Watchdog goroutine: logs if no additional bytes for half stallTimeout (but does not abort; abort handled inline)
 	watchdogQuit := make(chan struct{})
 	var lastBytesLogged int64
 	if stallTimeout > 0 {
-		go func(name, ip string) {
+		go func(name, ip string, expected int64) {
 			interval := stallTimeout / 2
 			if interval < 5*time.Second {
 				interval = 5 * time.Second
@@ -896,14 +1016,24 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				case <-time.After(interval):
 					br := bytesRead
 					if br == lastBytesLogged {
-						Warnf("[%s %s] watchdog: no progress for %s (total %d bytes)", name, ip, interval, br)
+						if expected > 0 {
+							pct := (float64(br) * 100.0) / float64(expected)
+							Warnf("[%s %s] watchdog: no progress for %s (%d/%d bytes, %.1f%%)", name, ip, interval, br, expected, pct)
+						} else {
+							Warnf("[%s %s] watchdog: no progress for %s (%d/unknown bytes)", name, ip, interval, br)
+						}
 					} else if getLevel() == LevelDebug {
-						Debugf("[%s %s] watchdog: progress %d(+%d) bytes", name, ip, br, br-lastBytesLogged)
+						if expected > 0 {
+							pct := (float64(br) * 100.0) / float64(expected)
+							Debugf("[%s %s] watchdog: progress %d(+%d) bytes (%.1f%%)", name, ip, br, br-lastBytesLogged, pct)
+						} else {
+							Debugf("[%s %s] watchdog: progress %d(+%d)/unknown bytes", name, ip, br, br-lastBytesLogged)
+						}
 					}
 					lastBytesLogged = br
 				}
 			}
-		}(site.Name, ipStr)
+		}(site.Name, ipStr, expectedBytes)
 	}
 	for {
 		n, er := resp.Body.Read(buf)
@@ -917,9 +1047,19 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 		if time.Since(lastProgressLog) >= progressInterval {
 			if getLevel() == LevelDebug {
-				Debugf("[%s %s] transfer progress %d bytes", site.Name, ipStr, bytesRead)
+				if expectedBytes > 0 {
+					pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+					Debugf("[%s %s] transfer progress %d/%d bytes (%.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, pct)
+				} else {
+					Debugf("[%s %s] transfer progress %d/unknown bytes", site.Name, ipStr, bytesRead)
+				}
 			} else if getLevel() == LevelInfo {
-				Infof("[%s %s] progress %d bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+				if expectedBytes > 0 {
+					pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+					Infof("[%s %s] progress %d/%d bytes (%.1f MB, %.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, float64(bytesRead)/1024.0/1024.0, pct)
+				} else {
+					Infof("[%s %s] progress %d/unknown bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+				}
 			}
 			lastProgressLog = time.Now()
 		}
@@ -941,7 +1081,12 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 		// Stall detection
 		if stallTimeout > 0 && time.Since(lastProgress) > stallTimeout {
-			Warnf("[%s %s] transfer stalled for %s, aborting", site.Name, ipStr, time.Since(lastProgress))
+			if expectedBytes > 0 {
+				pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+				Warnf("[%s %s] transfer stalled for %s, aborting (%d/%d bytes, %.1f%%)", site.Name, ipStr, time.Since(lastProgress), bytesRead, expectedBytes, pct)
+			} else {
+				Warnf("[%s %s] transfer stalled for %s, aborting (%d/unknown bytes)", site.Name, ipStr, time.Since(lastProgress), bytesRead)
+			}
 			sr.TransferStalled = true
 			sr.StallElapsedMs = time.Since(transferStart).Milliseconds()
 			break
@@ -979,13 +1124,23 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 
-	// Secondary Range GET
-	secondGetStart := time.Now()
-	secondReq, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
-	secondReq.Header.Set("X-Probe", probeVal)
-	secondReq.Header.Set("Range", "bytes=0-65535")
-	secondResp, secondErr := client.Do(secondReq)
-	secondGetTime := time.Since(secondGetStart)
+	// Secondary Range GET (with one-shot transient retry)
+	doSecondGET := func() (*http.Response, time.Duration, error) {
+		st := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		req.Header.Set("Range", "bytes=0-65535")
+		r, e := client.Do(req)
+		return r, time.Since(st), e
+	}
+	secondResp, secondGetTime, secondErr := doSecondGET()
+	if secondErr != nil && isTransientNetErr(secondErr) {
+		Warnf("[%s %s] Range GET transient error, retrying once: %v", site.Name, ipStr, secondErr)
+		time.Sleep(300 * time.Millisecond)
+		sr.RetriedOnce = true
+		sr.RetriedRange = true
+		secondResp, secondGetTime, secondErr = doSecondGET()
+	}
 	if secondErr == nil && secondResp != nil {
 		sr.SecondGetStatus = secondResp.StatusCode
 		sr.SecondGetTimeMs = secondGetTime.Milliseconds()
@@ -994,7 +1149,66 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		if rng := secondResp.Header.Get("Content-Range"); rng != "" {
 			sr.SecondGetContentRange = rng
 		}
-		io.Copy(io.Discard, secondResp.Body)
+		// Read Range body with lightweight progress logs
+		var expectedRange int64
+		if cr := sr.SecondGetContentRange; cr != "" {
+			// Parse format: "bytes start-end/total"
+			parts := strings.Fields(cr)
+			if len(parts) == 2 && strings.ToLower(parts[0]) == "bytes" {
+				rng := parts[1]
+				// split start-end/total
+				se := strings.SplitN(rng, "/", 2)
+				if len(se) >= 1 {
+					re := strings.SplitN(se[0], "-", 2)
+					if len(re) == 2 {
+						if start, e1 := strconv.ParseInt(re[0], 10, 64); e1 == nil {
+							if end, e2 := strconv.ParseInt(re[1], 10, 64); e2 == nil && end >= start {
+								expectedRange = (end - start + 1)
+							}
+						}
+					}
+				}
+			}
+		}
+		if expectedRange == 0 {
+			if cl := secondResp.Header.Get("Content-Length"); cl != "" {
+				if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v > 0 {
+					expectedRange = v
+				}
+			}
+		}
+		buf2 := make([]byte, 32*1024)
+		var rangeBytes int64
+		lastRangeProgressLog := time.Now()
+		for {
+			n, er := secondResp.Body.Read(buf2)
+			rangeBytes += int64(n)
+			progressInterval := 3 * time.Second
+			if getLevel() == LevelInfo {
+				progressInterval = 10 * time.Second
+			}
+			if time.Since(lastRangeProgressLog) >= progressInterval {
+				if getLevel() == LevelDebug {
+					if expectedRange > 0 {
+						pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+						Debugf("[%s %s] range progress %d/%d bytes (%.1f%%)", site.Name, ipStr, rangeBytes, expectedRange, pct)
+					} else {
+						Debugf("[%s %s] range progress %d/unknown bytes", site.Name, ipStr, rangeBytes)
+					}
+				} else if getLevel() == LevelInfo {
+					if expectedRange > 0 {
+						pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+						Infof("[%s %s] range progress %d/%d bytes (%.1f%%)", site.Name, ipStr, rangeBytes, expectedRange, pct)
+					} else {
+						Infof("[%s %s] range progress %d/unknown bytes", site.Name, ipStr, rangeBytes)
+					}
+				}
+				lastRangeProgressLog = time.Now()
+			}
+			if er != nil {
+				break
+			}
+		}
 		secondResp.Body.Close()
 	} else if secondErr != nil {
 		sr.SecondGetError = secondErr.Error()
@@ -1586,31 +1800,6 @@ func writeResult(env *ResultEnvelope) {
 	f.WriteString(string(b) + "\n")
 }
 
-// hostPort retained for potential future use when constructing explicit authority; nolint to silence unused warning.
-//
-//nolint:unused
-func hostPort(u *url.URL) string {
-	port := u.Port()
-	if port == "" {
-		if u.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	return u.Hostname() + ":" + port
-}
-
-// resolveIP retained for potential future diagnostic utilities; nolint to silence unused warning.
-//
-//nolint:unused
-func resolveIP(host string) string {
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return ""
-	}
-	return ips[0].String()
-}
 func containsCI(haystack, needle string) bool {
 	if needle == "" {
 		return true

@@ -15,6 +15,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -121,6 +122,7 @@ func main() {
 	httpTimeout := flag.Duration("http-timeout", 120*time.Second, "Per-request total timeout (including body transfer)")
 	stallTimeout := flag.Duration("stall-timeout", 20*time.Second, "Abort transfer if no progress for this long")
 	siteTimeout := flag.Duration("site-timeout", 120*time.Second, "Optional overall timeout per site (DNS + all IP probes). 0 disables.")
+	dnsTimeout := flag.Duration("dns-timeout", 5*time.Second, "Default DNS timeout when no site-timeout is set; also used as upper bound for fanout DNS")
 	maxIPsPerSite := flag.Int("max-ips-per-site", 0, "If >0 limit number of IPs probed per site (e.g. 2 for first v4+v6). 0 = all")
 	situation := flag.String("situation", "Unknown", "Label describing current network/context situation (e.g. Office, Home, VPN, Travel). Added to meta for later comparative analysis")
 	speedDropAlert := flag.Float64("speed-drop-alert", 30, "Speed drop alert threshold percent")
@@ -167,6 +169,7 @@ func main() {
 	monitor.SetHTTPTimeout(*httpTimeout)
 	monitor.SetStallTimeout(*stallTimeout)
 	monitor.SetSiteTimeout(*siteTimeout)
+	monitor.SetDNSTimeout(*dnsTimeout)
 	monitor.SetMaxIPsPerSite(*maxIPsPerSite)
 	monitor.SetSituation(*situation)
 
@@ -438,7 +441,18 @@ func main() {
 				}
 				host := u.Hostname()
 				startDNS := time.Now()
-				ips, derr := net.LookupIP(host)
+				// Context-aware DNS with bounded timeout: min(site-timeout, --dns-timeout)
+				perLookupTimeout := *dnsTimeout
+				if siteTimeout != nil && *siteTimeout > 0 && *siteTimeout < perLookupTimeout {
+					perLookupTimeout = *siteTimeout
+				}
+				dnsCtx, dnsCancel := context.WithTimeout(context.Background(), perLookupTimeout)
+				addrs, derr := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+				dnsCancel()
+				var ips []net.IP
+				for _, a := range addrs {
+					ips = append(ips, a.IP)
+				}
 				dnsDur := time.Since(startDNS)
 				if derr != nil || len(ips) == 0 {
 					fmt.Printf("[dns %s] failed: %v\n", s.Name, derr)
@@ -681,24 +695,20 @@ func main() {
 							if *progressResolveIP {
 								if u, err := url.Parse(site.URL); err == nil {
 									host := u.Hostname()
-									resCh := make(chan []string, 1)
-									go func(h string) {
-										ips, _ := net.LookupIP(h)
-										var out []string
-										for _, ip := range ips {
-											out = append(out, ip.String())
-											if len(out) >= 2 {
-												break
-											}
+									// Resolve with 1s context deadline; ensure cancel to avoid leaks
+									dnsCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+									addrs, _ := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+									cancel()
+									var ips []string
+									for _, a := range addrs {
+										ips = append(ips, a.IP.String())
+										if len(ips) >= 2 {
+											break
 										}
-										resCh <- out
-									}(host)
-									select {
-									case ips := <-resCh:
-										if len(ips) > 0 {
-											ipSuffix = "(" + strings.Join(ips, "/") + ")"
-										}
-									case <-time.After(1 * time.Second):
+									}
+									if len(ips) > 0 {
+										ipSuffix = "(" + strings.Join(ips, "/") + ")"
+									} else {
 										ipSuffix = "(dns-timeout)"
 									}
 								}

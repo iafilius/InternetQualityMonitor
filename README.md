@@ -195,6 +195,26 @@ Operational conveniences:
 - Asynchronous single-writer result queue (low contention, durable append)
 - Multiple iterations (--iterations)
 
+### Runtime logging (progress, stalls, watchdog)
+
+The monitor emits concise progress and stall logs during transfers. When the target size is known (via Content-Length or Content-Range), logs include current/target bytes and percentage; otherwise they show current/unknown.
+
+- Periodic progress (primary GET):
+   - Debug: "[site ip] transfer progress current/target bytes (X.Y%)" or "current/unknown"
+   - Info: "[site ip] progress current/target bytes (MB, X.Y%)" or "current/unknown (MB)"
+   - Frequency: ~3s at debug; ~10s at info level.
+- Watchdog (no recent progress):
+   - Known size: "watchdog: no progress for 10s (current/target bytes, X.Y%)"
+   - Unknown size: "watchdog: no progress for 10s (current/unknown bytes)"
+- Stall abort (past stall-timeout without reads):
+   - Known size: "transfer stalled for 20s, aborting (current/target bytes, X.Y%)"
+   - Unknown size: "transfer stalled for 20s, aborting (current/unknown bytes)"
+- Secondary Range GET progress:
+   - Uses Content-Range to determine the expected bytes (fallback to Content-Length if present).
+   - Logs similar progress lines: "range progress current/target bytes (X.Y%)" or "current/unknown".
+
+Tip: Increase `--log-level=debug` to see more frequent progress updates.
+
 ## Usage
 1. Add sites to `sites.jsonc`
 2. Run the monitor from your local PC or via SSH
@@ -477,12 +497,17 @@ Flags:
 - `--http-timeout` (duration, default `120s`): Overall timeout per individual HTTP request (HEAD / GET / range / warm HEAD) including body transfer.
 - `--stall-timeout` (duration, default `20s`): Abort an in-progress body transfer if no additional bytes arrive within this window (marks line with `transfer_stalled`).
 - `--site-timeout` (duration, default `120s`): Overall budget per site (sequential mode) or per (site,IP) task (fanout) including DNS and all probes; aborts remaining steps if exceeded.
+- `--dns-timeout` (duration, default `5s`): Default DNS lookup timeout used when `--site-timeout` is 0. In IP fanout, each pre-resolve uses `min(--site-timeout, --dns-timeout)`.
 - `--max-ips-per-site` (int, default `0` = unlimited): Limit probed IPs per site (first IPv4 + first IPv6 typical when set to 2) to prevent long multi-IP sites monopolizing workers.
 - `--ip-fanout` (bool, default `true`): Pre-resolve all sites, build one task per selected IP, shuffle for fairness, then process concurrently. Disable with `--ip-fanout=false` to use classic per-site sequential IP iteration.
 - Progress logging controls (collection mode):
    - `--progress-interval` (duration, default `5s`): Emit periodic worker status (0 disables).
    - `--progress-sites` (bool, default `true`): Show active site/IP labels in progress lines.
    - `--progress-resolve-ip` (bool, default `true`): In non-fanout mode, attempt short-timeout DNS to display first 1–2 IPs inline.
+
+Notes:
+- DNS lookups in the monitor are always context-aware. When `--site-timeout` is set, DNS is bounded by that value; otherwise it uses `--dns-timeout`.
+- Progress inline IP resolution uses a fixed 1s DNS deadline to avoid blocking the progress logger.
 - `--situation` (string, default `Unknown`): Arbitrary label describing the current network context (e.g. `Home`, `Office`, `VPN`, `Hotel`). Stored in each result's `meta.situation` to segment and compare batches later.
 - Alert thresholds (percentages unless noted) to emit `[alert ...]` lines comparing the newest batch vs aggregate of prior batches:
    - `--speed-drop-alert` (default `30`): Trigger if average speed decreased by at least this percent.
