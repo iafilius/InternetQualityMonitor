@@ -891,12 +891,20 @@ readLoop:
 			if len(summary.HTTPProtocolRatePct) > 0 {
 				// stable order
 				ks := make([]string, 0, len(summary.HTTPProtocolRatePct))
-				for k := range summary.HTTPProtocolRatePct { ks = append(ks, k) }
+				for k := range summary.HTTPProtocolRatePct {
+					ks = append(ks, k)
+				}
 				sort.Strings(ks)
 				var parts []string
 				sum := 0.0
-				for _, k := range ks { v := summary.HTTPProtocolRatePct[k]; parts = append(parts, fmt.Sprintf("%s=%.1f%%", k, v)); sum += v }
-				if sum < 99.9 { parts = append(parts, fmt.Sprintf("remainder=%.1f%%", 100.0-sum)) }
+				for _, k := range ks {
+					v := summary.HTTPProtocolRatePct[k]
+					parts = append(parts, fmt.Sprintf("%s=%.1f%%", k, v))
+					sum += v
+				}
+				if sum < 99.9 {
+					parts = append(parts, fmt.Sprintf("remainder=%.1f%%", 100.0-sum))
+				}
 				mix = " proto_mix=[" + strings.Join(parts, ", ") + "]"
 			}
 			fmt.Printf("[analysis debug] summary %s lines=%d avg_speed=%.1f avg_ttfb=%.0f errors=%d p50=%.1f ratio=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%%%s\n", summary.RunTag, summary.Lines, summary.AvgSpeed, summary.AvgTTFB, summary.ErrorLines, summary.AvgP50Speed, summary.AvgP99P50Ratio, summary.AvgJitterPct, summary.AvgSlopeKbpsPerSec, summary.AvgCoefVariationPct, summary.CacheHitRatePct, summary.ConnReuseRatePct, mix)

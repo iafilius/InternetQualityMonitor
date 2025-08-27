@@ -47,6 +47,10 @@ var screenshotThemeGlobal = "dark"
 // screenshotThemeMode is the user's selection: "auto" (default on first run), "dark", or "light".
 var screenshotThemeMode = "auto"
 
+// screenshotWidthOverride lets tests force a specific chart width in headless mode (no window).
+// When > 0 and state.window==nil, chartSize will return this width. Normal app runs ignore this.
+var screenshotWidthOverride = 0
+
 // resolveTheme maps a user-facing mode to an effective chart theme.
 func resolveTheme(mode string, app fyne.App) string {
 	m := strings.ToLower(strings.TrimSpace(mode))
@@ -136,13 +140,13 @@ type uiState struct {
 	warmCacheImgCanvas *canvas.Image
 
 	// transport/protocol charts
-	protocolMixImgCanvas        *canvas.Image // HTTP protocol mix (%)
-	protocolAvgSpeedImgCanvas   *canvas.Image // Avg speed by HTTP protocol
-	protocolStallRateImgCanvas  *canvas.Image // Stall rate by HTTP protocol (%)
-	protocolErrorRateImgCanvas  *canvas.Image // Error rate by HTTP protocol (%)
-	tlsVersionMixImgCanvas      *canvas.Image // TLS version mix (%)
-	alpnMixImgCanvas            *canvas.Image // ALPN mix (%)
-	chunkedRateImgCanvas        *canvas.Image // Chunked transfer rate (%)
+	protocolMixImgCanvas       *canvas.Image // HTTP protocol mix (%)
+	protocolAvgSpeedImgCanvas  *canvas.Image // Avg speed by HTTP protocol
+	protocolStallRateImgCanvas *canvas.Image // Stall rate by HTTP protocol (%)
+	protocolErrorRateImgCanvas *canvas.Image // Error rate by HTTP protocol (%)
+	tlsVersionMixImgCanvas     *canvas.Image // TLS version mix (%)
+	alpnMixImgCanvas           *canvas.Image // ALPN mix (%)
+	chunkedRateImgCanvas       *canvas.Image // Chunked transfer rate (%)
 
 	// internal guards
 	initializing bool
@@ -732,13 +736,13 @@ func main() {
 
 	// chart placeholders
 	// Compute initial chart size to give all images full application width from the start
-	iw, ih := chartSize(state)
+	_, ih := chartSize(state)
 	state.speedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.speedImgCanvas.FillMode = canvas.ImageFillContain
-	state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.speedImgCanvas.FillMode = canvas.ImageFillStretch
+	state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.ttfbImgCanvas.FillMode = canvas.ImageFillContain
-	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.ttfbImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 
 	// layout
 	// top bar
@@ -843,38 +847,38 @@ func main() {
 	// charts stacked vertically with scroll for future additions
 	// ensure reasonable minimum heights for readability
 	// Use full chart width instead of hardcoded sizes so all graphs are 100% width
-	state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	// overlays for crosshair
 	state.speedOverlay = newCrosshairOverlay(state, "speed")
 	state.ttfbOverlay = newCrosshairOverlay(state, "ttfb")
 	// new percentiles + error charts placeholders (stacked view only)
 	// compare view canvases (vertical stack: Overall, IPv4, IPv6)
 	state.pctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.pctlOverallImg.FillMode = canvas.ImageFillContain
+	state.pctlOverallImg.FillMode = canvas.ImageFillStretch
 	state.pctlIPv4Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.pctlIPv4Img.FillMode = canvas.ImageFillContain
+	state.pctlIPv4Img.FillMode = canvas.ImageFillStretch
 	state.pctlIPv6Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.pctlIPv6Img.FillMode = canvas.ImageFillContain
+	state.pctlIPv6Img.FillMode = canvas.ImageFillStretch
 	// set initial min sizes to full chart size
-	cw, chh := chartSize(state)
-	state.pctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-	state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-	state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	_, chh := chartSize(state)
+	state.pctlOverallImg.SetMinSize(fyne.NewSize(0, float32(chh)))
+	state.pctlIPv4Img.SetMinSize(fyne.NewSize(0, float32(chh)))
+	state.pctlIPv6Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 	// Create overlays for percentiles charts
 	state.pctlOverallOverlay = newCrosshairOverlay(state, "pctl_overall")
 	state.pctlIPv4Overlay = newCrosshairOverlay(state, "pctl_ipv4")
 	state.pctlIPv6Overlay = newCrosshairOverlay(state, "pctl_ipv6")
 	// TTFB percentile canvases
 	state.tpctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.tpctlOverallImg.FillMode = canvas.ImageFillContain
+	state.tpctlOverallImg.FillMode = canvas.ImageFillStretch
 	state.tpctlIPv4Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.tpctlIPv4Img.FillMode = canvas.ImageFillContain
+	state.tpctlIPv4Img.FillMode = canvas.ImageFillStretch
 	state.tpctlIPv6Img = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.tpctlIPv6Img.FillMode = canvas.ImageFillContain
-	state.tpctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-	state.tpctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
-	state.tpctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+	state.tpctlIPv6Img.FillMode = canvas.ImageFillStretch
+	state.tpctlOverallImg.SetMinSize(fyne.NewSize(0, float32(chh)))
+	state.tpctlIPv4Img.SetMinSize(fyne.NewSize(0, float32(chh)))
+	state.tpctlIPv6Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 	// overlays for TTFB percentiles
 	state.tpctlOverallOverlay = newCrosshairOverlay(state, "tpctl_overall")
 	state.tpctlIPv4Overlay = newCrosshairOverlay(state, "tpctl_ipv4")
@@ -882,41 +886,41 @@ func main() {
 	// Previously used a combined percentiles grid; now split into separate sections below.
 	state.pctlGrid = nil
 	state.errImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.errImgCanvas.FillMode = canvas.ImageFillContain
-	state.errImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.errImgCanvas.FillMode = canvas.ImageFillStretch
+	state.errImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	// overlay for error rate
 	state.errOverlay = newCrosshairOverlay(state, "error")
 	// jitter & coefficient of variation charts
 	state.jitterImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.jitterImgCanvas.FillMode = canvas.ImageFillContain
-	state.jitterImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.jitterImgCanvas.FillMode = canvas.ImageFillStretch
+	state.jitterImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.jitterOverlay = newCrosshairOverlay(state, "jitter")
 	state.covImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.covImgCanvas.FillMode = canvas.ImageFillContain
-	state.covImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.covImgCanvas.FillMode = canvas.ImageFillStretch
+	state.covImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.covOverlay = newCrosshairOverlay(state, "cov")
 	// plateau charts
 	state.plCountImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.plCountImgCanvas.FillMode = canvas.ImageFillContain
-	state.plCountImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.plCountImgCanvas.FillMode = canvas.ImageFillStretch
+	state.plCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.plCountOverlay = newCrosshairOverlay(state, "plateau_count")
 	state.plLongestImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.plLongestImgCanvas.FillMode = canvas.ImageFillContain
-	state.plLongestImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.plLongestImgCanvas.FillMode = canvas.ImageFillStretch
+	state.plLongestImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.plLongestOverlay = newCrosshairOverlay(state, "plateau_longest")
 	// plateau stability rate chart
 	state.plStableImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.plStableImgCanvas.FillMode = canvas.ImageFillContain
-	state.plStableImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.plStableImgCanvas.FillMode = canvas.ImageFillStretch
+	state.plStableImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.plStableOverlay = newCrosshairOverlay(state, "plateau_stable")
 	// cache/proxy/warm-cache rate charts
 	state.cacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.cacheImgCanvas.FillMode = canvas.ImageFillContain
-	state.cacheImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.cacheImgCanvas.FillMode = canvas.ImageFillStretch
+	state.cacheImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.cacheOverlay = newCrosshairOverlay(state, "cache_hit")
 	state.proxyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.proxyImgCanvas.FillMode = canvas.ImageFillContain
-	state.proxyImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.proxyImgCanvas.FillMode = canvas.ImageFillStretch
+	state.proxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.proxyOverlay = newCrosshairOverlay(state, "proxy_suspected")
 	state.warmCacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	// transport/protocol canvases
@@ -927,15 +931,15 @@ func main() {
 	state.tlsVersionMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.alpnMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.chunkedRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.warmCacheImgCanvas.FillMode = canvas.ImageFillContain
-	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.protocolMixImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
-	state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.warmCacheImgCanvas.FillMode = canvas.ImageFillStretch
+	state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.protocolMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.warmCacheOverlay = newCrosshairOverlay(state, "warm_cache")
 	// transport/protocol overlays
 	state.protocolMixOverlay = newCrosshairOverlay(state, "protocol_mix")
@@ -948,95 +952,95 @@ func main() {
 
 	// new charts: tail heaviness (P99/P50), IPv6-IPv4 deltas, SLA compliance
 	state.tailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.tailRatioImgCanvas.FillMode = canvas.ImageFillContain
-	state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.tailRatioImgCanvas.FillMode = canvas.ImageFillStretch
+	state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.tailRatioOverlay = newCrosshairOverlay(state, "tail_ratio")
 
 	// TTFB Tail Heaviness (P95/P50)
 	state.ttfbTailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.ttfbTailRatioImgCanvas.FillMode = canvas.ImageFillContain
-	state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.ttfbTailRatioImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbTailRatioOverlay = newCrosshairOverlay(state, "ttfb_tail_ratio")
 
 	state.speedDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.speedDeltaImgCanvas.FillMode = canvas.ImageFillContain
-	state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.speedDeltaImgCanvas.FillMode = canvas.ImageFillStretch
+	state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.speedDeltaOverlay = newCrosshairOverlay(state, "speed_delta")
 
 	state.ttfbDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.ttfbDeltaImgCanvas.FillMode = canvas.ImageFillContain
-	state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.ttfbDeltaImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbDeltaOverlay = newCrosshairOverlay(state, "ttfb_delta")
 
 	// Percent-based deltas
 	state.speedDeltaPctImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.speedDeltaPctImgCanvas.FillMode = canvas.ImageFillContain
-	state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.speedDeltaPctImgCanvas.FillMode = canvas.ImageFillStretch
+	state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.speedDeltaPctOverlay = newCrosshairOverlay(state, "speed_delta_pct")
 
 	state.ttfbDeltaPctImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.ttfbDeltaPctImgCanvas.FillMode = canvas.ImageFillContain
-	state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.ttfbDeltaPctImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbDeltaPctOverlay = newCrosshairOverlay(state, "ttfb_delta_pct")
 
 	state.slaSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.slaSpeedImgCanvas.FillMode = canvas.ImageFillContain
-	state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.slaSpeedImgCanvas.FillMode = canvas.ImageFillStretch
+	state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.slaSpeedOverlay = newCrosshairOverlay(state, "sla_speed")
 
 	state.slaTTFBImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.slaTTFBImgCanvas.FillMode = canvas.ImageFillContain
-	state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.slaTTFBImgCanvas.FillMode = canvas.ImageFillStretch
+	state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.slaTTFBOverlay = newCrosshairOverlay(state, "sla_ttfb")
 
 	// SLA delta charts (percentage points difference IPv6−IPv4)
 	state.slaSpeedDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.slaSpeedDeltaImgCanvas.FillMode = canvas.ImageFillContain
-	state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.slaSpeedDeltaImgCanvas.FillMode = canvas.ImageFillStretch
+	state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.slaSpeedDeltaOverlay = newCrosshairOverlay(state, "sla_speed_delta")
 
 	state.slaTTFBDeltaImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.slaTTFBDeltaImgCanvas.FillMode = canvas.ImageFillContain
-	state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.slaTTFBDeltaImgCanvas.FillMode = canvas.ImageFillStretch
+	state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.slaTTFBDeltaOverlay = newCrosshairOverlay(state, "sla_ttfb_delta")
 
 	// TTFB P95−P50 Gap chart
 	state.tpctlP95GapImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.tpctlP95GapImgCanvas.FillMode = canvas.ImageFillContain
-	state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.tpctlP95GapImgCanvas.FillMode = canvas.ImageFillStretch
+	state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.tpctlP95GapOverlay = newCrosshairOverlay(state, "ttfb_p95_gap")
 
 	// Stability & quality placeholders
 	state.lowSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.lowSpeedImgCanvas.FillMode = canvas.ImageFillContain
-	state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.lowSpeedImgCanvas.FillMode = canvas.ImageFillStretch
+	state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.lowSpeedOverlay = newCrosshairOverlay(state, "low_speed_share")
 	state.stallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.stallRateImgCanvas.FillMode = canvas.ImageFillContain
-	state.stallRateImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.stallRateImgCanvas.FillMode = canvas.ImageFillStretch
+	state.stallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.stallRateOverlay = newCrosshairOverlay(state, "stall_rate")
 	// Stalled Requests Count (interim)
 	state.stallCountImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.stallCountImgCanvas.FillMode = canvas.ImageFillContain
-	state.stallCountImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.stallCountImgCanvas.FillMode = canvas.ImageFillStretch
+	state.stallCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.stallCountOverlay = newCrosshairOverlay(state, "stall_count")
 	state.stallTimeImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.stallTimeImgCanvas.FillMode = canvas.ImageFillContain
-	state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.stallTimeImgCanvas.FillMode = canvas.ImageFillStretch
+	state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.stallTimeOverlay = newCrosshairOverlay(state, "stall_time")
 
 	// Setup breakdown placeholders
 	state.setupDNSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.setupDNSImgCanvas.FillMode = canvas.ImageFillContain
-	state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.setupDNSImgCanvas.FillMode = canvas.ImageFillStretch
+	state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.setupDNSOverlay = newCrosshairOverlay(state, "setup_dns")
 	state.setupConnImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.setupConnImgCanvas.FillMode = canvas.ImageFillContain
-	state.setupConnImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.setupConnImgCanvas.FillMode = canvas.ImageFillStretch
+	state.setupConnImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.setupConnOverlay = newCrosshairOverlay(state, "setup_conn")
 	state.setupTLSImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.setupTLSImgCanvas.FillMode = canvas.ImageFillContain
-	state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(float32(iw), float32(ih)))
+	state.setupTLSImgCanvas.FillMode = canvas.ImageFillStretch
+	state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.setupTLSOverlay = newCrosshairOverlay(state, "setup_tls")
 
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
@@ -1221,13 +1225,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	speedPctlGrid.Show()
 	ttfbPctlGrid.Show()
 	chartsScroll := container.NewVScroll(chartsColumn)
-	// Set initial min width to the current full chart width so it fills the content area
-	if cw, _ := chartSize(state); cw > 0 {
-		chartsScroll.SetMinSize(fyne.NewSize(float32(cw), 650))
-	} else {
-		// Fallback only if chartSize is not yet available; will be updated on resize ticker
-		chartsScroll.SetMinSize(fyne.NewSize(900, 650))
-	}
+	// Use a sane static minimum; avoid coupling content min width to canvas width to prevent growth loops
+	chartsScroll.SetMinSize(fyne.NewSize(900, 650))
 	state.chartsScroll = chartsScroll
 	// tabs: Batches | Charts
 	tabs := container.NewAppTabs(
@@ -1249,6 +1248,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	// Redraw charts on window resize so they scale with width
 	if w.Canvas() != nil {
 		prevW := int(w.Canvas().Size().Width)
+		// Minimum pixel delta to consider as a real resize. Avoids redraw loops from tiny width jitters.
+		const minWidthDelta = 8
 		done := make(chan struct{})
 		w.SetOnClosed(func() {
 			// ensure latest UI state (including crosshair) is persisted
@@ -1270,16 +1271,12 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 					sz := c.Size()
 					curW := int(sz.Width)
 					if curW != prevW {
-						prevW = curW
-						fyne.Do(func() {
-							// update scroll container min width to full chart width
-							if state != nil && state.chartsScroll != nil {
-								if cw, _ := chartSize(state); cw > 0 {
-									state.chartsScroll.SetMinSize(fyne.NewSize(float32(cw), state.chartsScroll.MinSize().Height))
-								}
-							}
-							redrawCharts(state)
-						})
+						if curW > prevW+minWidthDelta || curW < prevW-minWidthDelta {
+							prevW = curW
+							fyne.Do(func() {
+								redrawCharts(state)
+							})
+						}
 					}
 				}
 			}
@@ -1737,8 +1734,12 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	// Transport/Protocol exports
 	exportProtocolMix := fyne.NewMenuItem("Export HTTP Protocol Mix…", func() { exportChartPNG(state, state.protocolMixImgCanvas, "http_protocol_mix_chart.png") })
 	exportProtocolAvgSpeed := fyne.NewMenuItem("Export Avg Speed by HTTP Protocol…", func() { exportChartPNG(state, state.protocolAvgSpeedImgCanvas, "avg_speed_by_http_protocol_chart.png") })
-	exportProtocolStallRate := fyne.NewMenuItem("Export Stall Rate by HTTP Protocol…", func() { exportChartPNG(state, state.protocolStallRateImgCanvas, "stall_rate_by_http_protocol_chart.png") })
-	exportProtocolErrorRate := fyne.NewMenuItem("Export Error Rate by HTTP Protocol…", func() { exportChartPNG(state, state.protocolErrorRateImgCanvas, "error_rate_by_http_protocol_chart.png") })
+	exportProtocolStallRate := fyne.NewMenuItem("Export Stall Rate by HTTP Protocol…", func() {
+		exportChartPNG(state, state.protocolStallRateImgCanvas, "stall_rate_by_http_protocol_chart.png")
+	})
+	exportProtocolErrorRate := fyne.NewMenuItem("Export Error Rate by HTTP Protocol…", func() {
+		exportChartPNG(state, state.protocolErrorRateImgCanvas, "error_rate_by_http_protocol_chart.png")
+	})
 	exportTLSMix := fyne.NewMenuItem("Export TLS Version Mix…", func() { exportChartPNG(state, state.tlsVersionMixImgCanvas, "tls_version_mix_chart.png") })
 	exportALPNMix := fyne.NewMenuItem("Export ALPN Mix…", func() { exportChartPNG(state, state.alpnMixImgCanvas, "alpn_mix_chart.png") })
 	exportChunkedRate := fyne.NewMenuItem("Export Chunked Transfer Rate…", func() { exportChartPNG(state, state.chunkedRateImgCanvas, "chunked_transfer_rate_chart.png") })
@@ -2176,9 +2177,9 @@ func redrawCharts(state *uiState) {
 			state.speedImgCanvas.Image = spImg
 		}
 		// ensure the image reserves enough width/height to show the rendered chart
-		cw, chh := chartSize(state)
+		_, chh := chartSize(state)
 		if state.speedImgCanvas != nil {
-			state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.speedImgCanvas.Refresh()
 		}
 		// also refresh overlay so crosshair rebinds to new image rects
@@ -2191,9 +2192,9 @@ func redrawCharts(state *uiState) {
 		if state.ttfbImgCanvas != nil {
 			state.ttfbImgCanvas.Image = ttImg
 		}
-		cw, chh := chartSize(state)
+		_, chh := chartSize(state)
 		if state.ttfbImgCanvas != nil {
-			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.ttfbImgCanvas.Refresh()
 		}
 		if state.ttfbOverlay != nil {
@@ -2206,8 +2207,8 @@ func redrawCharts(state *uiState) {
 			img := renderPercentilesChartWithFamily(state, "overall")
 			if img != nil {
 				state.pctlOverallImg.Image = img
-				cw, chh := chartSize(state)
-				state.pctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.pctlOverallImg.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.pctlOverallImg.Show()
 				state.pctlOverallImg.Refresh()
 				if state.pctlOverallOverlay != nil {
@@ -2223,8 +2224,8 @@ func redrawCharts(state *uiState) {
 			img := renderPercentilesChartWithFamily(state, "ipv4")
 			if img != nil {
 				state.pctlIPv4Img.Image = img
-				cw, chh := chartSize(state)
-				state.pctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.pctlIPv4Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.pctlIPv4Img.Show()
 				state.pctlIPv4Img.Refresh()
 				if state.pctlIPv4Overlay != nil {
@@ -2240,8 +2241,8 @@ func redrawCharts(state *uiState) {
 			img := renderPercentilesChartWithFamily(state, "ipv6")
 			if img != nil {
 				state.pctlIPv6Img.Image = img
-				cw, chh := chartSize(state)
-				state.pctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.pctlIPv6Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.pctlIPv6Img.Show()
 				state.pctlIPv6Img.Refresh()
 				if state.pctlIPv6Overlay != nil {
@@ -2261,8 +2262,8 @@ func redrawCharts(state *uiState) {
 			img := renderTTFBPercentilesChartWithFamily(state, "overall")
 			if img != nil {
 				state.tpctlOverallImg.Image = img
-				cw, chh := chartSize(state)
-				state.tpctlOverallImg.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.tpctlOverallImg.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.tpctlOverallImg.Show()
 				state.tpctlOverallImg.Refresh()
 				if state.tpctlOverallOverlay != nil {
@@ -2278,8 +2279,8 @@ func redrawCharts(state *uiState) {
 			img := renderTTFBPercentilesChartWithFamily(state, "ipv4")
 			if img != nil {
 				state.tpctlIPv4Img.Image = img
-				cw, chh := chartSize(state)
-				state.tpctlIPv4Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.tpctlIPv4Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.tpctlIPv4Img.Show()
 				state.tpctlIPv4Img.Refresh()
 				if state.tpctlIPv4Overlay != nil {
@@ -2295,8 +2296,8 @@ func redrawCharts(state *uiState) {
 			img := renderTTFBPercentilesChartWithFamily(state, "ipv6")
 			if img != nil {
 				state.tpctlIPv6Img.Image = img
-				cw, chh := chartSize(state)
-				state.tpctlIPv6Img.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.tpctlIPv6Img.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.tpctlIPv6Img.Show()
 				state.tpctlIPv6Img.Refresh()
 				if state.tpctlIPv6Overlay != nil {
@@ -2312,8 +2313,8 @@ func redrawCharts(state *uiState) {
 	if trImg != nil {
 		if state.tailRatioImgCanvas != nil {
 			state.tailRatioImgCanvas.Image = trImg
-			cw, chh := chartSize(state)
-			state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.tailRatioImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.tailRatioImgCanvas.Refresh()
 			if state.tailRatioOverlay != nil {
 				state.tailRatioOverlay.Refresh()
@@ -2325,8 +2326,8 @@ func redrawCharts(state *uiState) {
 	if ttrImg != nil {
 		if state.ttfbTailRatioImgCanvas != nil {
 			state.ttfbTailRatioImgCanvas.Image = ttrImg
-			cw, chh := chartSize(state)
-			state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.ttfbTailRatioImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.ttfbTailRatioImgCanvas.Refresh()
 			if state.ttfbTailRatioOverlay != nil {
 				state.ttfbTailRatioOverlay.Refresh()
@@ -2338,8 +2339,8 @@ func redrawCharts(state *uiState) {
 	if sdImg != nil {
 		if state.speedDeltaImgCanvas != nil {
 			state.speedDeltaImgCanvas.Image = sdImg
-			cw, chh := chartSize(state)
-			state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.speedDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.speedDeltaImgCanvas.Refresh()
 			if state.speedDeltaOverlay != nil {
 				state.speedDeltaOverlay.Refresh()
@@ -2351,8 +2352,8 @@ func redrawCharts(state *uiState) {
 	if tdImg != nil {
 		if state.ttfbDeltaImgCanvas != nil {
 			state.ttfbDeltaImgCanvas.Image = tdImg
-			cw, chh := chartSize(state)
-			state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.ttfbDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.ttfbDeltaImgCanvas.Refresh()
 			if state.ttfbDeltaOverlay != nil {
 				state.ttfbDeltaOverlay.Refresh()
@@ -2364,8 +2365,8 @@ func redrawCharts(state *uiState) {
 	if sdpImg != nil {
 		if state.speedDeltaPctImgCanvas != nil {
 			state.speedDeltaPctImgCanvas.Image = sdpImg
-			cw, chh := chartSize(state)
-			state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.speedDeltaPctImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.speedDeltaPctImgCanvas.Refresh()
 			if state.speedDeltaPctOverlay != nil {
 				state.speedDeltaPctOverlay.Refresh()
@@ -2377,8 +2378,8 @@ func redrawCharts(state *uiState) {
 	if tdpImg != nil {
 		if state.ttfbDeltaPctImgCanvas != nil {
 			state.ttfbDeltaPctImgCanvas.Image = tdpImg
-			cw, chh := chartSize(state)
-			state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.ttfbDeltaPctImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.ttfbDeltaPctImgCanvas.Refresh()
 			if state.ttfbDeltaPctOverlay != nil {
 				state.ttfbDeltaPctOverlay.Refresh()
@@ -2390,8 +2391,8 @@ func redrawCharts(state *uiState) {
 	if slasImg != nil {
 		if state.slaSpeedImgCanvas != nil {
 			state.slaSpeedImgCanvas.Image = slasImg
-			cw, chh := chartSize(state)
-			state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.slaSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.slaSpeedImgCanvas.Refresh()
 			if state.slaSpeedOverlay != nil {
 				state.slaSpeedOverlay.Refresh()
@@ -2403,8 +2404,8 @@ func redrawCharts(state *uiState) {
 	if slatImg != nil {
 		if state.slaTTFBImgCanvas != nil {
 			state.slaTTFBImgCanvas.Image = slatImg
-			cw, chh := chartSize(state)
-			state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.slaTTFBImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.slaTTFBImgCanvas.Refresh()
 			if state.slaTTFBOverlay != nil {
 				state.slaTTFBOverlay.Refresh()
@@ -2416,8 +2417,8 @@ func redrawCharts(state *uiState) {
 	if slaSpdDelta != nil {
 		if state.slaSpeedDeltaImgCanvas != nil {
 			state.slaSpeedDeltaImgCanvas.Image = slaSpdDelta
-			cw, chh := chartSize(state)
-			state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.slaSpeedDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.slaSpeedDeltaImgCanvas.Refresh()
 			if state.slaSpeedDeltaOverlay != nil {
 				state.slaSpeedDeltaOverlay.Refresh()
@@ -2429,8 +2430,8 @@ func redrawCharts(state *uiState) {
 	if slaTtfbDelta != nil {
 		if state.slaTTFBDeltaImgCanvas != nil {
 			state.slaTTFBDeltaImgCanvas.Image = slaTtfbDelta
-			cw, chh := chartSize(state)
-			state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.slaTTFBDeltaImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.slaTTFBDeltaImgCanvas.Refresh()
 			if state.slaTTFBDeltaOverlay != nil {
 				state.slaTTFBDeltaOverlay.Refresh()
@@ -2442,8 +2443,8 @@ func redrawCharts(state *uiState) {
 	if gapImg != nil {
 		if state.tpctlP95GapImgCanvas != nil {
 			state.tpctlP95GapImgCanvas.Image = gapImg
-			cw, chh := chartSize(state)
-			state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.tpctlP95GapImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.tpctlP95GapImgCanvas.Refresh()
 			if state.tpctlP95GapOverlay != nil {
 				state.tpctlP95GapOverlay.Refresh()
@@ -2456,9 +2457,9 @@ func redrawCharts(state *uiState) {
 		if state.errImgCanvas != nil {
 			state.errImgCanvas.Image = erImg
 		}
-		cw, chh := chartSize(state)
+		_, chh := chartSize(state)
 		if state.errImgCanvas != nil {
-			state.errImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.errImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.errImgCanvas.Refresh()
 		}
 		if state.errOverlay != nil {
@@ -2471,9 +2472,9 @@ func redrawCharts(state *uiState) {
 		if state.jitterImgCanvas != nil {
 			state.jitterImgCanvas.Image = jitImg
 		}
-		cw, chh := chartSize(state)
+		_, chh := chartSize(state)
 		if state.jitterImgCanvas != nil {
-			state.jitterImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.jitterImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.jitterImgCanvas.Refresh()
 		}
 		if state.jitterOverlay != nil {
@@ -2486,9 +2487,9 @@ func redrawCharts(state *uiState) {
 		if state.covImgCanvas != nil {
 			state.covImgCanvas.Image = covImg
 		}
-		cw, chh := chartSize(state)
+		_, chh := chartSize(state)
 		if state.covImgCanvas != nil {
-			state.covImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			state.covImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.covImgCanvas.Refresh()
 		}
 		if state.covOverlay != nil {
@@ -2499,8 +2500,8 @@ func redrawCharts(state *uiState) {
 		if dnsImg != nil {
 			if state.setupDNSImgCanvas != nil {
 				state.setupDNSImgCanvas.Image = dnsImg
-				cw, chh := chartSize(state)
-				state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.setupDNSImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.setupDNSImgCanvas.Refresh()
 			}
 		}
@@ -2508,8 +2509,8 @@ func redrawCharts(state *uiState) {
 		if connImg != nil {
 			if state.setupConnImgCanvas != nil {
 				state.setupConnImgCanvas.Image = connImg
-				cw, chh := chartSize(state)
-				state.setupConnImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.setupConnImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.setupConnImgCanvas.Refresh()
 			}
 		}
@@ -2517,8 +2518,8 @@ func redrawCharts(state *uiState) {
 		if tlsImg != nil {
 			if state.setupTLSImgCanvas != nil {
 				state.setupTLSImgCanvas.Image = tlsImg
-				cw, chh := chartSize(state)
-				state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				_, chh := chartSize(state)
+				state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.setupTLSImgCanvas.Refresh()
 			}
 		}
@@ -2526,58 +2527,72 @@ func redrawCharts(state *uiState) {
 		pmImg := renderHTTPProtocolMixChart(state)
 		if pmImg != nil {
 			state.protocolMixImgCanvas.Image = pmImg
-			cw, chh := chartSize(state)
-			state.protocolMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.protocolMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.protocolMixImgCanvas.Refresh()
-			if state.protocolMixOverlay != nil { state.protocolMixOverlay.Refresh() }
+			if state.protocolMixOverlay != nil {
+				state.protocolMixOverlay.Refresh()
+			}
 		}
 		pasImg := renderAvgSpeedByHTTPProtocolChart(state)
 		if pasImg != nil {
 			state.protocolAvgSpeedImgCanvas.Image = pasImg
-			cw, chh := chartSize(state)
-			state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.protocolAvgSpeedImgCanvas.Refresh()
-			if state.protocolAvgSpeedOverlay != nil { state.protocolAvgSpeedOverlay.Refresh() }
+			if state.protocolAvgSpeedOverlay != nil {
+				state.protocolAvgSpeedOverlay.Refresh()
+			}
 		}
 		psrImg := renderStallRateByHTTPProtocolChart(state)
 		if psrImg != nil {
 			state.protocolStallRateImgCanvas.Image = psrImg
-			cw, chh := chartSize(state)
-			state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.protocolStallRateImgCanvas.Refresh()
-			if state.protocolStallRateOverlay != nil { state.protocolStallRateOverlay.Refresh() }
+			if state.protocolStallRateOverlay != nil {
+				state.protocolStallRateOverlay.Refresh()
+			}
 		}
 		perImg := renderErrorRateByHTTPProtocolChart(state)
 		if perImg != nil {
 			state.protocolErrorRateImgCanvas.Image = perImg
-			cw, chh := chartSize(state)
-			state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.protocolErrorRateImgCanvas.Refresh()
-			if state.protocolErrorRateOverlay != nil { state.protocolErrorRateOverlay.Refresh() }
+			if state.protocolErrorRateOverlay != nil {
+				state.protocolErrorRateOverlay.Refresh()
+			}
 		}
 		tlsMixImg := renderTLSVersionMixChart(state)
 		if tlsMixImg != nil {
 			state.tlsVersionMixImgCanvas.Image = tlsMixImg
-			cw, chh := chartSize(state)
-			state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.tlsVersionMixImgCanvas.Refresh()
-			if state.tlsVersionMixOverlay != nil { state.tlsVersionMixOverlay.Refresh() }
+			if state.tlsVersionMixOverlay != nil {
+				state.tlsVersionMixOverlay.Refresh()
+			}
 		}
 		alpnImg := renderALPNMixChart(state)
 		if alpnImg != nil {
 			state.alpnMixImgCanvas.Image = alpnImg
-			cw, chh := chartSize(state)
-			state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.alpnMixImgCanvas.Refresh()
-			if state.alpnMixOverlay != nil { state.alpnMixOverlay.Refresh() }
+			if state.alpnMixOverlay != nil {
+				state.alpnMixOverlay.Refresh()
+			}
 		}
 		chunkedImg := renderChunkedTransferRateChart(state)
 		if chunkedImg != nil {
 			state.chunkedRateImgCanvas.Image = chunkedImg
-			cw, chh := chartSize(state)
-			state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+			_, chh := chartSize(state)
+			state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.chunkedRateImgCanvas.Refresh()
-			if state.chunkedRateOverlay != nil { state.chunkedRateOverlay.Refresh() }
+			if state.chunkedRateOverlay != nil {
+				state.chunkedRateOverlay.Refresh()
+			}
 		}
 		// Cache Hit Rate chart
 		cacheImg := renderCacheHitRateChart(state)
@@ -2585,9 +2600,9 @@ func redrawCharts(state *uiState) {
 			if state.cacheImgCanvas != nil {
 				state.cacheImgCanvas.Image = cacheImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.cacheImgCanvas != nil {
-				state.cacheImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.cacheImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.cacheImgCanvas.Refresh()
 			}
 			if state.cacheOverlay != nil {
@@ -2600,9 +2615,9 @@ func redrawCharts(state *uiState) {
 			if state.proxyImgCanvas != nil {
 				state.proxyImgCanvas.Image = proxyImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.proxyImgCanvas != nil {
-				state.proxyImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.proxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.proxyImgCanvas.Refresh()
 			}
 			if state.proxyOverlay != nil {
@@ -2615,9 +2630,9 @@ func redrawCharts(state *uiState) {
 			if state.warmCacheImgCanvas != nil {
 				state.warmCacheImgCanvas.Image = warmImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.warmCacheImgCanvas != nil {
-				state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.warmCacheImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.warmCacheImgCanvas.Refresh()
 			}
 			if state.warmCacheOverlay != nil {
@@ -2630,9 +2645,9 @@ func redrawCharts(state *uiState) {
 			if state.lowSpeedImgCanvas != nil {
 				state.lowSpeedImgCanvas.Image = lssImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.lowSpeedImgCanvas != nil {
-				state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.lowSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.lowSpeedImgCanvas.Refresh()
 			}
 			if state.lowSpeedOverlay != nil {
@@ -2645,9 +2660,9 @@ func redrawCharts(state *uiState) {
 			if state.stallRateImgCanvas != nil {
 				state.stallRateImgCanvas.Image = srImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.stallRateImgCanvas != nil {
-				state.stallRateImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.stallRateImgCanvas.Refresh()
 			}
 			if state.stallRateOverlay != nil {
@@ -2660,9 +2675,9 @@ func redrawCharts(state *uiState) {
 			if state.stallTimeImgCanvas != nil {
 				state.stallTimeImgCanvas.Image = stImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.stallTimeImgCanvas != nil {
-				state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallTimeImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.stallTimeImgCanvas.Refresh()
 			}
 			if state.stallTimeOverlay != nil {
@@ -2675,9 +2690,9 @@ func redrawCharts(state *uiState) {
 			if state.stallCountImgCanvas != nil {
 				state.stallCountImgCanvas.Image = scImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.stallCountImgCanvas != nil {
-				state.stallCountImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.stallCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.stallCountImgCanvas.Refresh()
 			}
 			if state.stallCountOverlay != nil {
@@ -2690,9 +2705,9 @@ func redrawCharts(state *uiState) {
 			if state.plCountImgCanvas != nil {
 				state.plCountImgCanvas.Image = plcImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.plCountImgCanvas != nil {
-				state.plCountImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.plCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.plCountImgCanvas.Refresh()
 			}
 			if state.plCountOverlay != nil {
@@ -2705,9 +2720,9 @@ func redrawCharts(state *uiState) {
 			if state.plLongestImgCanvas != nil {
 				state.plLongestImgCanvas.Image = pllImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.plLongestImgCanvas != nil {
-				state.plLongestImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.plLongestImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.plLongestImgCanvas.Refresh()
 			}
 			if state.plLongestOverlay != nil {
@@ -2720,9 +2735,9 @@ func redrawCharts(state *uiState) {
 			if state.plStableImgCanvas != nil {
 				state.plStableImgCanvas.Image = plsImg
 			}
-			cw, chh := chartSize(state)
+			_, chh := chartSize(state)
 			if state.plStableImgCanvas != nil {
-				state.plStableImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
+				state.plStableImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.plStableImgCanvas.Refresh()
 			}
 			if state.plStableOverlay != nil {
@@ -2736,7 +2751,7 @@ func redrawCharts(state *uiState) {
 func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
+		w, h := chartSize(state)
 		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
@@ -2914,8 +2929,8 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3167,7 +3182,8 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 func renderCacheHitRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3288,7 +3304,8 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 func renderProxySuspectedRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3409,7 +3426,8 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3530,7 +3548,8 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 func renderLowSpeedShareChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3766,7 +3785,8 @@ func renderStallRateChart(state *uiState) image.Image {
 func renderStallTimeChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -3879,12 +3899,27 @@ func renderStallTimeChart(state *uiState) image.Image {
 
 // chartSize computes a chart size based on the current window width so charts use more X-axis space.
 func chartSize(state *uiState) (int, int) {
+	// Headless/screenshot mode: allow tests to override width for exact checks.
 	if state == nil || state.window == nil || state.window.Canvas() == nil {
+		if screenshotWidthOverride > 0 {
+			w := screenshotWidthOverride
+			if w < 800 {
+				w = 800
+			}
+			h := int(float32(w) * 0.33)
+			if h < 280 {
+				h = 280
+			}
+			if h > 520 {
+				h = 520
+			}
+			return w, h
+		}
 		return 1100, 340
 	}
+	// UI mode: use the full canvas width for charts (no artificial shrink).
 	sz := state.window.Canvas().Size()
-	// Use ~95% of the available width, minus a small margin for scrollbars/padding
-	w := int(sz.Width*0.95) - 12
+	w := int(sz.Width)
 	if w < 800 {
 		w = 800
 	}
@@ -3903,8 +3938,8 @@ func renderSpeedChart(state *uiState) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	// build X axis according to mode
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
@@ -4227,8 +4262,8 @@ func renderSpeedChart(state *uiState) image.Image {
 func renderTTFBChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -4811,7 +4846,8 @@ func renderStallCountChart(state *uiState) image.Image {
 func renderErrorRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -4947,7 +4983,8 @@ func renderErrorRateChart(state *uiState) image.Image {
 func renderJitterChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -5068,8 +5105,8 @@ func renderJitterChart(state *uiState) image.Image {
 func renderDNSLookupChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -5243,8 +5280,8 @@ func renderDNSLookupChart(state *uiState) image.Image {
 func renderTCPConnectChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -5358,8 +5395,8 @@ func renderTCPConnectChart(state *uiState) image.Image {
 func renderTLSHandshakeChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -5473,8 +5510,8 @@ func renderTLSHandshakeChart(state *uiState) image.Image {
 func renderHTTPProtocolMixChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	// Collect union of protocol keys
 	keySet := map[string]struct{}{}
@@ -5524,7 +5561,7 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 			} else {
 				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
 			}
-	}
+		}
 	}
 	padBottom := 28
 	switch state.xAxisMode {
@@ -5561,7 +5598,8 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
@@ -5673,7 +5711,8 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
@@ -5754,7 +5793,8 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
@@ -5835,8 +5875,8 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 func renderTLSVersionMixChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
-	return blank(w, h)
+		w, h := chartSize(state)
+		return blank(w, h)
 	}
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
@@ -5849,7 +5889,9 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
 	}
 	keys := make([]string, 0, len(keySet))
-	for k := range keySet { keys = append(keys, k) }
+	for k := range keySet {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	var series []chart.Series
@@ -5858,7 +5900,9 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 		ys := make([]float64, len(rows))
 		for j, r := range rows {
 			ys[j] = r.TLSVersionRatePct[k]
-			if ys[j] <= 0 { ys[j] = math.NaN() }
+			if ys[j] <= 0 {
+				ys[j] = math.NaN()
+			}
 		}
 		st := pointStyle(palette[i%len(palette)])
 		name := k
@@ -5881,8 +5925,15 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 		}
 	}
 	padBottom := 28
-	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
-	if state.showHints { padBottom += 18 }
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	ch := chart.Chart{Title: "TLS Version Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
@@ -5890,42 +5941,81 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Distribution of negotiated TLS versions.") }
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Distribution of negotiated TLS versions.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 func renderALPNMixChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
-	if len(rows) == 0 { w, h := chartSize(state); return blank(w, h) }
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
 	keySet := map[string]struct{}{}
-	for _, r := range rows { for k := range r.ALPNRatePct { keySet[k] = struct{}{} } }
+	for _, r := range rows {
+		for k := range r.ALPNRatePct {
+			keySet[k] = struct{}{}
+		}
+	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
 		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
 	}
 	keys := make([]string, 0, len(keySet))
-	for k := range keySet { keys = append(keys, k) }
+	for k := range keySet {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	var series []chart.Series
 	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
 	for i, k := range keys {
 		ys := make([]float64, len(rows))
-		for j, r := range rows { ys[j] = r.ALPNRatePct[k]; if ys[j] <= 0 { ys[j] = math.NaN() } }
+		for j, r := range rows {
+			ys[j] = r.ALPNRatePct[k]
+			if ys[j] <= 0 {
+				ys[j] = math.NaN()
+			}
+		}
 		st := pointStyle(palette[i%len(palette)])
 		name := k
 		if timeMode {
-			if len(times) == 1 { t2 := times[0].Add(1 * time.Second); ys = append([]float64{ys[0]}, ys[0]); series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}) } else { series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st}) }
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
 		} else {
-			if len(xs) == 1 { x2 := xs[0] + 1; ys = append([]float64{ys[0]}, ys[0]); series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st}) } else { series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st}) }
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
 		}
 	}
 	padBottom := 28
-	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
-	if state.showHints { padBottom += 18 }
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	ch := chart.Chart{Title: "ALPN Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
@@ -5933,29 +6023,59 @@ func renderALPNMixChart(state *uiState) image.Image {
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Negotiated application protocols (ALPN). h2 indicates HTTP/2.") }
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Negotiated application protocols (ALPN). h2 indicates HTTP/2.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 func renderChunkedTransferRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
-	if len(rows) == 0 { w, h := chartSize(state); return blank(w, h) }
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
-	for i, r := range rows { ys[i] = r.ChunkedRatePct }
+	for i, r := range rows {
+		ys[i] = r.ChunkedRatePct
+	}
 	st := pointStyle(chart.ColorBlue)
 	var series chart.Series
 	if timeMode {
-		if len(times) == 1 { t2 := times[0].Add(1 * time.Second); ys = append([]float64{ys[0]}, ys[0]); series = chart.TimeSeries{Name: "Chunked", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st} } else { series = chart.TimeSeries{Name: "Chunked", XValues: times, YValues: ys, Style: st} }
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "Chunked", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "Chunked", XValues: times, YValues: ys, Style: st}
+		}
 	} else {
-		if len(xs) == 1 { x2 := xs[0] + 1; ys = append([]float64{ys[0]}, ys[0]); series = chart.ContinuousSeries{Name: "Chunked", XValues: []float64{xs[0], x2}, YValues: ys, Style: st} } else { series = chart.ContinuousSeries{Name: "Chunked", XValues: xs, YValues: ys, Style: st} }
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "Chunked", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "Chunked", XValues: xs, YValues: ys, Style: st}
+		}
 	}
 	padBottom := 28
-	switch state.xAxisMode { case "run_tag": padBottom = 90; case "time": padBottom = 48 }
-	if state.showHints { padBottom += 18 }
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	ch := chart.Chart{Title: "Chunked Transfer Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: []chart.Series{series}}
 	themeChart(&ch)
@@ -5963,10 +6083,16 @@ func renderChunkedTransferRateChart(state *uiState) image.Image {
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Percentage of responses using chunked transfer encoding.") }
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Percentage of responses using chunked transfer encoding.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
@@ -6573,7 +6699,8 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -6661,7 +6788,8 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -6748,7 +6876,8 @@ func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -6835,7 +6964,8 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -6922,7 +7052,8 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 func renderSLASpeedDeltaChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -7011,7 +7142,8 @@ func renderSLASpeedDeltaChart(state *uiState) image.Image {
 func renderSLATTFBDeltaChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	ys := make([]float64, len(rows))
@@ -7140,7 +7272,8 @@ func renderSLASpeedChart(state *uiState) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -7239,7 +7372,8 @@ func renderSLASpeedChart(state *uiState) image.Image {
 func renderSLATTFBChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-		return blank(800, 320)
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	series := []chart.Series{}
@@ -7677,7 +7811,7 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
-	w, h := chartSize(state)
+		w, h := chartSize(state)
 		return blank(w, h)
 	}
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
@@ -8600,20 +8734,20 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.setupConnImgCanvas
 		case "setup_tls":
 			imgCanvas = r.c.state.setupTLSImgCanvas
-			case "protocol_mix":
-				imgCanvas = r.c.state.protocolMixImgCanvas
-			case "protocol_avg_speed":
-				imgCanvas = r.c.state.protocolAvgSpeedImgCanvas
-			case "protocol_stall_rate":
-				imgCanvas = r.c.state.protocolStallRateImgCanvas
-			case "protocol_error_rate":
-				imgCanvas = r.c.state.protocolErrorRateImgCanvas
-			case "tls_version_mix":
-				imgCanvas = r.c.state.tlsVersionMixImgCanvas
-			case "alpn_mix":
-				imgCanvas = r.c.state.alpnMixImgCanvas
-			case "chunked_rate":
-				imgCanvas = r.c.state.chunkedRateImgCanvas
+		case "protocol_mix":
+			imgCanvas = r.c.state.protocolMixImgCanvas
+		case "protocol_avg_speed":
+			imgCanvas = r.c.state.protocolAvgSpeedImgCanvas
+		case "protocol_stall_rate":
+			imgCanvas = r.c.state.protocolStallRateImgCanvas
+		case "protocol_error_rate":
+			imgCanvas = r.c.state.protocolErrorRateImgCanvas
+		case "tls_version_mix":
+			imgCanvas = r.c.state.tlsVersionMixImgCanvas
+		case "alpn_mix":
+			imgCanvas = r.c.state.alpnMixImgCanvas
+		case "chunked_rate":
+			imgCanvas = r.c.state.chunkedRateImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -9085,9 +9219,14 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			// stable order
 			keys := make([]string, 0, len(bs.HTTPProtocolRatePct))
-			for k := range bs.HTTPProtocolRatePct { keys = append(keys, k) }
+			for k := range bs.HTTPProtocolRatePct {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { v := bs.HTTPProtocolRatePct[k]; lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, v)) }
+			for _, k := range keys {
+				v := bs.HTTPProtocolRatePct[k]
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, v))
+			}
 		case "protocol_avg_speed":
 			if len(bs.AvgSpeedByHTTPProtocolKbps) == 0 {
 				lines = append(lines, "No protocol data")
@@ -9095,33 +9234,68 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
 			keys := make([]string, 0, len(bs.AvgSpeedByHTTPProtocolKbps))
-			for k := range bs.AvgSpeedByHTTPProtocolKbps { keys = append(keys, k) }
+			for k := range bs.AvgSpeedByHTTPProtocolKbps {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { v := bs.AvgSpeedByHTTPProtocolKbps[k] * factor; if v > 0 { lines = append(lines, fmt.Sprintf("%s: %.1f %s", k, v, unit)) } }
+			for _, k := range keys {
+				v := bs.AvgSpeedByHTTPProtocolKbps[k] * factor
+				if v > 0 {
+					lines = append(lines, fmt.Sprintf("%s: %.1f %s", k, v, unit))
+				}
+			}
 		case "protocol_stall_rate":
-			if len(bs.StallRateByHTTPProtocolPct) == 0 { lines = append(lines, "No protocol data"); break }
+			if len(bs.StallRateByHTTPProtocolPct) == 0 {
+				lines = append(lines, "No protocol data")
+				break
+			}
 			keys := make([]string, 0, len(bs.StallRateByHTTPProtocolPct))
-			for k := range bs.StallRateByHTTPProtocolPct { keys = append(keys, k) }
+			for k := range bs.StallRateByHTTPProtocolPct {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.StallRateByHTTPProtocolPct[k])) }
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.StallRateByHTTPProtocolPct[k]))
+			}
 		case "protocol_error_rate":
-			if len(bs.ErrorRateByHTTPProtocolPct) == 0 { lines = append(lines, "No protocol data"); break }
+			if len(bs.ErrorRateByHTTPProtocolPct) == 0 {
+				lines = append(lines, "No protocol data")
+				break
+			}
 			keys := make([]string, 0, len(bs.ErrorRateByHTTPProtocolPct))
-			for k := range bs.ErrorRateByHTTPProtocolPct { keys = append(keys, k) }
+			for k := range bs.ErrorRateByHTTPProtocolPct {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorRateByHTTPProtocolPct[k])) }
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorRateByHTTPProtocolPct[k]))
+			}
 		case "tls_version_mix":
-			if len(bs.TLSVersionRatePct) == 0 { lines = append(lines, "No TLS data"); break }
+			if len(bs.TLSVersionRatePct) == 0 {
+				lines = append(lines, "No TLS data")
+				break
+			}
 			keys := make([]string, 0, len(bs.TLSVersionRatePct))
-			for k := range bs.TLSVersionRatePct { keys = append(keys, k) }
+			for k := range bs.TLSVersionRatePct {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.TLSVersionRatePct[k])) }
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.TLSVersionRatePct[k]))
+			}
 		case "alpn_mix":
-			if len(bs.ALPNRatePct) == 0 { lines = append(lines, "No ALPN data"); break }
+			if len(bs.ALPNRatePct) == 0 {
+				lines = append(lines, "No ALPN data")
+				break
+			}
 			keys := make([]string, 0, len(bs.ALPNRatePct))
-			for k := range bs.ALPNRatePct { keys = append(keys, k) }
+			for k := range bs.ALPNRatePct {
+				keys = append(keys, k)
+			}
 			sort.Strings(keys)
-			for _, k := range keys { lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ALPNRatePct[k])) }
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ALPNRatePct[k]))
+			}
 		case "chunked_rate":
 			lines = append(lines, fmt.Sprintf("Chunked: %.1f%%", bs.ChunkedRatePct))
 		}
