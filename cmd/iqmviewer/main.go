@@ -517,82 +517,12 @@ func main() {
 	overallChk := widget.NewCheck("Overall", nil)
 	ipv4Chk := widget.NewCheck("IPv4", nil)
 	ipv6Chk := widget.NewCheck("IPv6", nil)
-	crosshairChk := widget.NewCheck("Crosshair", nil)
-	// initialize crosshair check from preloaded preference before wiring events
-	crosshairChk.SetChecked(state.crosshairEnabled)
+	// (Crosshair checkbox removed from toolbar; use Settings → Crosshair)
 
-	// axis mode selectors
-	xAxisSelect := widget.NewSelect([]string{"Batch", "RunTag", "Time"}, nil)
-	switch state.xAxisMode {
-	case "run_tag":
-		xAxisSelect.Selected = "RunTag"
-	case "time":
-		xAxisSelect.Selected = "Time"
-	default:
-		xAxisSelect.Selected = "Batch"
-	}
-	yScaleSelect := widget.NewSelect([]string{"Absolute", "Relative"}, nil)
-
-	// (removed: percentiles family selector)
-	if state.useRelative {
-		yScaleSelect.Selected = "Relative"
-	} else {
-		yScaleSelect.Selected = "Absolute"
-	}
+	// (X-Axis and Y-Scale moved to Settings menu)
 
 	// (removed: compare toggle)
-
-	// hints toggle (callback assigned later, after canvases are created)
-	hintsChk := widget.NewCheck("Hints", nil)
-	hintsChk.SetChecked(state.showHints)
-	// (DNS legacy overlay toggle moved to Settings menu)
-
-	// SLA threshold inputs (configurable)
-	slaSpeedEntry := widget.NewEntry()
-	slaSpeedEntry.SetPlaceHolder("kbps")
-	slaSpeedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
-	slaSpeedEntry.OnChanged = func(v string) {
-		iv, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return
-		}
-		// clamp to reasonable range
-		if iv < 1000 {
-			iv = 1000
-		}
-		if iv > 10_000_000 {
-			iv = 10_000_000
-		}
-		if iv == state.slaSpeedThresholdKbps {
-			return
-		}
-		state.slaSpeedThresholdKbps = iv
-		savePrefs(state)
-		redrawCharts(state)
-	}
-
-	slaTTFBEntry := widget.NewEntry()
-	slaTTFBEntry.SetPlaceHolder("ms")
-	slaTTFBEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
-	slaTTFBEntry.OnChanged = func(v string) {
-		iv, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return
-		}
-		// clamp to reasonable range
-		if iv < 50 {
-			iv = 50
-		}
-		if iv > 10000 {
-			iv = 10000
-		}
-		if iv == state.slaTTFBThresholdMs {
-			return
-		}
-		state.slaTTFBThresholdMs = iv
-		savePrefs(state)
-		redrawCharts(state)
-	}
+	// (Hints toggle removed from toolbar; use Settings → Hints)
 
 	// Situation selector (options filled after first load)
 	sitSelect := widget.NewSelect([]string{}, func(v string) {
@@ -623,32 +553,7 @@ func main() {
 	sitSelect.PlaceHolder = "All"
 	state.situationSelect = sitSelect
 
-	// Batches control: - [label] +
-	state.batchesLabel = widget.NewLabel(fmt.Sprintf("%d", state.batchesN))
-	decB := widget.NewButton("-", func() {
-		n := state.batchesN - 10
-		if n < 10 {
-			n = 10
-		}
-		if n != state.batchesN {
-			state.batchesN = n
-			state.batchesLabel.SetText(fmt.Sprintf("%d", n))
-			savePrefs(state)
-			loadAll(state, fileLabel)
-		}
-	})
-	incB := widget.NewButton("+", func() {
-		n := state.batchesN + 10
-		if n > 500 {
-			n = 500
-		}
-		if n != state.batchesN {
-			state.batchesN = n
-			state.batchesLabel.SetText(fmt.Sprintf("%d", n))
-			savePrefs(state)
-			loadAll(state, fileLabel)
-		}
-	})
+	// (Batches control moved to Settings menu)
 
 	// Data table (batches overview)
 	state.table = widget.NewTable(
@@ -759,72 +664,13 @@ func main() {
 
 	// layout
 	// top bar
-	// Low-speed threshold input (configurable)
-	lowSpeedEntry := widget.NewEntry()
-	lowSpeedEntry.SetPlaceHolder("kbps")
-	if state.lowSpeedThresholdKbps <= 0 {
-		state.lowSpeedThresholdKbps = 1000
-	}
-	lowSpeedEntry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
-	lowSpeedEntry.OnChanged = func(v string) {
-		iv, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return
-		}
-		if iv < 100 {
-			iv = 100
-		}
-		if iv > 100_000_000 {
-			iv = 100_000_000
-		}
-		if iv == state.lowSpeedThresholdKbps {
-			return
-		}
-		state.lowSpeedThresholdKbps = iv
-		savePrefs(state)
-		// threshold affects computed summaries; re-analyze
-		loadAll(state, fileLabel)
-	}
+	// (Low-speed threshold moved to Settings menu)
 
 	// Rolling overlays controls
 	if state.rollingWindow <= 0 {
 		state.rollingWindow = 7
 	}
-	rollingEntry := widget.NewEntry()
-	rollingEntry.SetPlaceHolder("N")
-	rollingEntry.SetText(strconv.Itoa(state.rollingWindow))
-	rollingEntry.OnChanged = func(v string) {
-		iv, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil {
-			return
-		}
-		if iv < 2 {
-			iv = 2
-		}
-		if iv > 500 {
-			iv = 500
-		}
-		if iv == state.rollingWindow {
-			return
-		}
-		state.rollingWindow = iv
-		savePrefs(state)
-		redrawCharts(state)
-	}
-	rollingChk := widget.NewCheck("Rolling Overlays", nil)
-	rollingChk.SetChecked(state.showRolling)
-	rollingChk.OnChanged = func(b bool) {
-		state.showRolling = b
-		savePrefs(state)
-		redrawCharts(state)
-	}
-	rollingBandChk := widget.NewCheck("±1σ Band", nil)
-	rollingBandChk.SetChecked(state.showRollingBand)
-	rollingBandChk.OnChanged = func(b bool) {
-		state.showRollingBand = b
-		savePrefs(state)
-		redrawCharts(state)
-	}
+	// (Rolling Window and Rolling toggles moved to Settings menu)
 
 	// Find UI
 	state.findEntry = widget.NewEntry()
@@ -842,15 +688,11 @@ func main() {
 	top := container.NewHBox(
 		widget.NewButton("Open…", func() { openFileDialog(state, fileLabel) }),
 		widget.NewButton("Reload", func() { loadAll(state, fileLabel) }),
-		widget.NewLabel("X-Axis:"), xAxisSelect,
-		widget.NewLabel("Y-Scale:"), yScaleSelect,
-		widget.NewLabel("SLA P50 Speed (kbps):"), slaSpeedEntry,
-		widget.NewLabel("SLA P95 TTFB (ms):"), slaTTFBEntry,
-		widget.NewLabel("Low-Speed Threshold (kbps):"), lowSpeedEntry,
-		widget.NewLabel("Rolling Window:"), rollingEntry, rollingChk, rollingBandChk,
+		// (X-Axis and Y-Scale moved to Settings menu)
+		// (SLA, Low-Speed Threshold, Rolling Window moved to Settings menu)
 		widget.NewLabel("Situation:"), sitSelect,
-		widget.NewLabel("Batches:"), decB, state.batchesLabel, incB,
-		overallChk, ipv4Chk, ipv6Chk, crosshairChk, hintsChk,
+		// (Batches moved to Settings menu)
+		overallChk, ipv4Chk, ipv6Chk,
 		layout.NewSpacer(),
 		widget.NewLabel("Find:"), state.findEntry, prevBtn, nextBtn, state.findCountLbl,
 		widget.NewLabel("File:"), fileLabel,
@@ -1063,7 +905,7 @@ func main() {
 	state.setupTLSOverlay = newCrosshairOverlay(state, "setup_tls")
 
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
-	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) using the toolbar control.\n- Y-Scale can be toggled (Absolute | Relative) to choose between zero baseline and tighter ‘nice’ bounds.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
+	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) from Settings → X-Axis.\n- Y-Scale can be toggled (Absolute | Relative) from Settings → Y-Scale.\n- Batches count is configurable in Settings → Batches.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
 - Useful for tracking overall performance trends over time or across runs.
 - Pair with Speed Percentiles to understand variability not visible in averages.
@@ -1101,7 +943,7 @@ References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 
 	// Stability & quality help
 	helpLowSpeed := `Low-Speed Time Share (%): share of transfer time spent below the Low-Speed Threshold.
-- Indicates how often the link is underperforming. Threshold is configurable in the toolbar.
+- Indicates how often the link is underperforming. Set the threshold in Settings → Low-Speed Threshold.
 Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip
 	helpStallRate := `Stall Rate (%): fraction of requests that experienced any stall during transfer.
 - Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip
@@ -1113,8 +955,8 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
-- Preferred source is httptrace (trace_dns_ms). When unavailable, legacy dns_time_ms is used.
-- Toggle "Show pre-resolve DNS (dns_time_ms)" in the toolbar to overlay the legacy series (dashed) for comparison.
+ - Preferred source is httptrace (trace_dns_ms). When unavailable, legacy dns_time_ms is used.
+ - Toggle Settings → "Overlay legacy DNS (dns_time_ms)" to overlay the legacy series (dashed) for comparison.
 - Elevated values can indicate resolver or network issues.` + axesTip
 	helpConn := `TCP Connect Time (ms): average time to establish the TCP connection (SYN→ACK and socket connect).
 - Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip
@@ -1132,7 +974,7 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 	helpSLA := `SLA Compliance (%): share of lines meeting thresholds.
 	- Speed SLA: median (P50) speed ≥ threshold.
 	- TTFB SLA: P95 TTFB ≤ threshold.
-Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 TTFB ≤ 200 ms).` + axesTip
+Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P95 TTFB ≤ 200 ms).` + axesTip
 
 	// Extra comparisons
 	helpDeltaPct := `Percent-based Family Deltas:
@@ -1313,202 +1155,17 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		redrawCharts(state)
 	}
 
-	// Wire select and hints callbacks after canvases exist
-	xAxisSelect.OnChanged = func(v string) {
-		switch strings.ToLower(v) {
-		case "batch":
-			state.xAxisMode = "batch"
-		case "runtag", "run_tag":
-			state.xAxisMode = "run_tag"
-		case "time":
-			state.xAxisMode = "time"
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	}
-	yScaleSelect.OnChanged = func(v string) {
-		if strings.EqualFold(v, "Relative") {
-			state.yScaleMode = "relative"
-			state.useRelative = true
-		} else {
-			state.yScaleMode = "absolute"
-			state.useRelative = false
-		}
-		savePrefs(state)
-		redrawCharts(state)
-	}
+	// (X-Axis and Y-Scale callbacks moved to Settings menu)
 	// (removed: pctlFamily/change and compare handlers)
-	hintsChk.OnChanged = func(b bool) {
-		state.showHints = b
-		savePrefs(state)
-		redrawCharts(state)
-	}
 	ipv4Chk.OnChanged = func(b bool) { state.showIPv4 = b; savePrefs(state); updateColumnVisibility(state); redrawCharts(state) }
 	ipv6Chk.OnChanged = func(b bool) { state.showIPv6 = b; savePrefs(state); updateColumnVisibility(state); redrawCharts(state) }
-	crosshairChk.OnChanged = func(b bool) {
-		state.crosshairEnabled = b
-		savePrefs(state)
-		if state.speedOverlay != nil {
-			state.speedOverlay.enabled = b
-			state.speedOverlay.Refresh()
-		}
-		if state.ttfbOverlay != nil {
-			state.ttfbOverlay.enabled = b
-			state.ttfbOverlay.Refresh()
-		}
-		if state.pctlOverallOverlay != nil {
-			state.pctlOverallOverlay.enabled = b
-			state.pctlOverallOverlay.Refresh()
-		}
-		if state.pctlIPv4Overlay != nil {
-			state.pctlIPv4Overlay.enabled = b
-			state.pctlIPv4Overlay.Refresh()
-		}
-		if state.pctlIPv6Overlay != nil {
-			state.pctlIPv6Overlay.enabled = b
-			state.pctlIPv6Overlay.Refresh()
-		}
-		if state.errOverlay != nil {
-			state.errOverlay.enabled = b
-			state.errOverlay.Refresh()
-		}
-		if state.jitterOverlay != nil {
-			state.jitterOverlay.enabled = b
-			state.jitterOverlay.Refresh()
-		}
-		if state.covOverlay != nil {
-			state.covOverlay.enabled = b
-			state.covOverlay.Refresh()
-		}
-		if state.tpctlOverallOverlay != nil {
-			state.tpctlOverallOverlay.enabled = b
-			state.tpctlOverallOverlay.Refresh()
-		}
-		if state.tpctlIPv4Overlay != nil {
-			state.tpctlIPv4Overlay.enabled = b
-			state.tpctlIPv4Overlay.Refresh()
-		}
-		if state.tpctlIPv6Overlay != nil {
-			state.tpctlIPv6Overlay.enabled = b
-			state.tpctlIPv6Overlay.Refresh()
-		}
-		if state.plCountOverlay != nil {
-			state.plCountOverlay.enabled = b
-			state.plCountOverlay.Refresh()
-		}
-		if state.plLongestOverlay != nil {
-			state.plLongestOverlay.enabled = b
-			state.plLongestOverlay.Refresh()
-		}
-		if state.plStableOverlay != nil {
-			state.plStableOverlay.enabled = b
-			state.plStableOverlay.Refresh()
-		}
-		if state.cacheOverlay != nil {
-			state.cacheOverlay.enabled = b
-			state.cacheOverlay.Refresh()
-		}
-		if state.proxyOverlay != nil {
-			state.proxyOverlay.enabled = b
-			state.proxyOverlay.Refresh()
-		}
-		if state.warmCacheOverlay != nil {
-			state.warmCacheOverlay.enabled = b
-			state.warmCacheOverlay.Refresh()
-		}
-		if state.protocolMixOverlay != nil {
-			state.protocolMixOverlay.enabled = b
-			state.protocolMixOverlay.Refresh()
-		}
-		if state.protocolAvgSpeedOverlay != nil {
-			state.protocolAvgSpeedOverlay.enabled = b
-			state.protocolAvgSpeedOverlay.Refresh()
-		}
-		if state.protocolStallRateOverlay != nil {
-			state.protocolStallRateOverlay.enabled = b
-			state.protocolStallRateOverlay.Refresh()
-		}
-		if state.protocolErrorRateOverlay != nil {
-			state.protocolErrorRateOverlay.enabled = b
-			state.protocolErrorRateOverlay.Refresh()
-		}
-		if state.tlsVersionMixOverlay != nil {
-			state.tlsVersionMixOverlay.enabled = b
-			state.tlsVersionMixOverlay.Refresh()
-		}
-		if state.alpnMixOverlay != nil {
-			state.alpnMixOverlay.enabled = b
-			state.alpnMixOverlay.Refresh()
-		}
-		if state.chunkedRateOverlay != nil {
-			state.chunkedRateOverlay.enabled = b
-			state.chunkedRateOverlay.Refresh()
-		}
-		if state.setupDNSOverlay != nil {
-			state.setupDNSOverlay.enabled = b
-			state.setupDNSOverlay.Refresh()
-		}
-		if state.setupConnOverlay != nil {
-			state.setupConnOverlay.enabled = b
-			state.setupConnOverlay.Refresh()
-		}
-		if state.setupTLSOverlay != nil {
-			state.setupTLSOverlay.enabled = b
-			state.setupTLSOverlay.Refresh()
-		}
-		if state.tailRatioOverlay != nil {
-			state.tailRatioOverlay.enabled = b
-			state.tailRatioOverlay.Refresh()
-		}
-		if state.speedDeltaOverlay != nil {
-			state.speedDeltaOverlay.enabled = b
-			state.speedDeltaOverlay.Refresh()
-		}
-		if state.ttfbDeltaOverlay != nil {
-			state.ttfbDeltaOverlay.enabled = b
-			state.ttfbDeltaOverlay.Refresh()
-		}
-		if state.slaSpeedOverlay != nil {
-			state.slaSpeedOverlay.enabled = b
-			state.slaSpeedOverlay.Refresh()
-		}
-		if state.slaTTFBOverlay != nil {
-			state.slaTTFBOverlay.enabled = b
-			state.slaTTFBOverlay.Refresh()
-		}
-		if state.lowSpeedOverlay != nil {
-			state.lowSpeedOverlay.enabled = b
-			state.lowSpeedOverlay.Refresh()
-		}
-		if state.stallRateOverlay != nil {
-			state.stallRateOverlay.enabled = b
-			state.stallRateOverlay.Refresh()
-		}
-		if state.stallTimeOverlay != nil {
-			state.stallTimeOverlay.enabled = b
-			state.stallTimeOverlay.Refresh()
-		}
-		if state.stallCountOverlay != nil {
-			state.stallCountOverlay.enabled = b
-			state.stallCountOverlay.Refresh()
-		}
-		if !b { // close popups
-			if state.lastSpeedPopup != nil {
-				state.lastSpeedPopup.Hide()
-				state.lastSpeedPopup = nil
-			}
-			if state.lastTTFBPopup != nil {
-				state.lastTTFBPopup.Hide()
-				state.lastTTFBPopup = nil
-			}
-		}
-	}
+	// (crosshair toggle moved to Settings menu)
 
 	// (removed duplicate wiring block)
 
 	// menus, prefs, initial load
 	buildMenus(state, fileLabel)
-	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, xAxisSelect, yScaleSelect, tabs, nil)
+	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, tabs)
 	// Pre-populate Situation selector to reflect saved preference immediately (no save on init)
 	if state.situationSelect != nil {
 		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
@@ -1527,16 +1184,11 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		}
 		state.situationSelect.Refresh()
 	}
-	// Reflect loaded prefs in SLA entries
-	slaSpeedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
-	slaTTFBEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
-	// Reflect loaded low-speed threshold
-	lowSpeedEntry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
+	// (SLA and low-speed inputs removed from toolbar)
 	// Set initial checkbox states explicitly now that callbacks exist
 	overallChk.SetChecked(state.showOverall)
 	ipv4Chk.SetChecked(state.showIPv4)
 	ipv6Chk.SetChecked(state.showIPv6)
-	crosshairChk.SetChecked(state.crosshairEnabled)
 	// (DNS legacy checkbox removed from toolbar)
 	// Ensure overlays reflect current preference immediately
 	if state.speedOverlay != nil {
@@ -2224,7 +1876,148 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	speedUnitSubItem := fyne.NewMenuItem("Speed Unit", nil)
 	speedUnitSubItem.ChildMenu = speedUnitSub
 
-	settingsMenu := fyne.NewMenu("Settings",
+	// X-Axis submenu under Settings
+	xAxisLabelFor := func(lbl, mode string) string {
+		if strings.EqualFold(state.xAxisMode, mode) {
+			return lbl + " ✓"
+		}
+		return lbl
+	}
+	setXAxis := func(mode string) {
+		if strings.EqualFold(state.xAxisMode, mode) {
+			return
+		}
+		state.xAxisMode = mode
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	}
+	xaBatch := fyne.NewMenuItem(xAxisLabelFor("Batch", "batch"), func() { setXAxis("batch") })
+	xaRunTag := fyne.NewMenuItem(xAxisLabelFor("RunTag", "run_tag"), func() { setXAxis("run_tag") })
+	xaTime := fyne.NewMenuItem(xAxisLabelFor("Time", "time"), func() { setXAxis("time") })
+	xAxisSub := fyne.NewMenu("X-Axis", xaBatch, xaRunTag, xaTime)
+	xAxisSubItem := fyne.NewMenuItem("X-Axis", nil)
+	xAxisSubItem.ChildMenu = xAxisSub
+
+	// Y-Scale submenu under Settings
+	yScaleLabelFor := func(lbl, mode string) string {
+		if strings.EqualFold(state.yScaleMode, mode) {
+			return lbl + " ✓"
+		}
+		return lbl
+	}
+	setYScale := func(mode string) {
+		if strings.EqualFold(state.yScaleMode, mode) {
+			return
+		}
+		state.yScaleMode = mode
+		state.useRelative = strings.EqualFold(mode, "relative")
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	}
+	ysAbs := fyne.NewMenuItem(yScaleLabelFor("Absolute", "absolute"), func() { setYScale("absolute") })
+	ysRel := fyne.NewMenuItem(yScaleLabelFor("Relative", "relative"), func() { setYScale("relative") })
+	yScaleSub := fyne.NewMenu("Y-Scale", ysAbs, ysRel)
+	yScaleSubItem := fyne.NewMenuItem("Y-Scale", nil)
+	yScaleSubItem.ChildMenu = yScaleSub
+
+	// Batches dialog under Settings
+	openBatchesDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Batches (recent N batches)")
+		if state.batchesN <= 0 { state.batchesN = 50 }
+		entry.SetText(strconv.Itoa(state.batchesN))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Batches (recent N)", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 10 { iv = 10 }
+				if iv > 1000 { iv = 1000 }
+				if iv != state.batchesN {
+					state.batchesN = iv
+					savePrefs(state)
+					loadAll(state, fileLabel)
+				}
+			}
+		}}
+		d := dialog.NewCustomConfirm("Batches", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d.Resize(fyne.NewSize(360, 160))
+		d.Show()
+	}
+
+	// SLA thresholds dialog
+	openSLADialog := func() {
+		speedEntry := widget.NewEntry()
+		speedEntry.SetPlaceHolder("P50 Speed (kbps)")
+		speedEntry.SetText(strconv.Itoa(state.slaSpeedThresholdKbps))
+		ttfbEntry := widget.NewEntry()
+		ttfbEntry.SetPlaceHolder("P95 TTFB (ms)")
+		ttfbEntry.SetText(strconv.Itoa(state.slaTTFBThresholdMs))
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "P50 Speed (kbps)", Widget: speedEntry},
+				{Text: "P95 TTFB (ms)", Widget: ttfbEntry},
+			},
+			OnSubmit: func() {
+				if iv, err := strconv.Atoi(strings.TrimSpace(speedEntry.Text)); err == nil {
+					if iv < 1000 { iv = 1000 }
+					if iv > 10_000_000 { iv = 10_000_000 }
+					state.slaSpeedThresholdKbps = iv
+				}
+				if iv, err := strconv.Atoi(strings.TrimSpace(ttfbEntry.Text)); err == nil {
+					if iv < 50 { iv = 50 }
+					if iv > 10000 { iv = 10000 }
+					state.slaTTFBThresholdMs = iv
+				}
+				savePrefs(state)
+				redrawCharts(state)
+			},
+		}
+		d := dialog.NewCustomConfirm("SLA Thresholds", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
+		d.Resize(fyne.NewSize(380, 200))
+		d.Show()
+	}
+	openLowSpeedDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Low-Speed Threshold (kbps)")
+		if state.lowSpeedThresholdKbps <= 0 { state.lowSpeedThresholdKbps = 1000 }
+		entry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Low-Speed Threshold (kbps)", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 100 { iv = 100 }
+				if iv > 100_000_000 { iv = 100_000_000 }
+				state.lowSpeedThresholdKbps = iv
+				savePrefs(state)
+				loadAll(state, fileLabel) // re-analyze summaries
+			}
+		}} 
+		d := dialog.NewCustomConfirm("Low-Speed Threshold", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d.Resize(fyne.NewSize(380, 160))
+		d.Show()
+	}
+	openRollingDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Rolling Window (N)")
+		if state.rollingWindow <= 0 { state.rollingWindow = 7 }
+		entry.SetText(strconv.Itoa(state.rollingWindow))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Rolling Window (N)", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 2 { iv = 2 }
+				if iv > 500 { iv = 500 }
+				state.rollingWindow = iv
+				savePrefs(state)
+				redrawCharts(state)
+			}
+		}} 
+		d := dialog.NewCustomConfirm("Rolling Window", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d.Resize(fyne.NewSize(360, 160))
+		d.Show()
+	}
+
+    settingsMenu := fyne.NewMenu("Settings",
 		crosshairToggle,
 		hintsToggle,
 		fyne.NewMenuItemSeparator(),
@@ -2232,6 +2025,13 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		bandToggle,
 		fyne.NewMenuItemSeparator(),
 		dnsToggle,
+		fyne.NewMenuItem("SLA Thresholds…", func() { openSLADialog() }),
+		fyne.NewMenuItem("Low-Speed Threshold…", func() { openLowSpeedDialog() }),
+		fyne.NewMenuItem("Rolling Window…", func() { openRollingDialog() }),
+		fyne.NewMenuItemSeparator(),
+		xAxisSubItem,
+		yScaleSubItem,
+		fyne.NewMenuItem("Batches…", func() { openBatchesDialog() }),
 		fyne.NewMenuItemSeparator(),
 		speedUnitSubItem,
 		fyne.NewMenuItemSeparator(),
@@ -8816,7 +8616,7 @@ func savePrefs(state *uiState) {
 	// (removed: pctl prefs)
 }
 
-func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, xAxis *widget.Select, yScale *widget.Select, tabs *container.AppTabs, speedUnitSel *widget.Select) {
+func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, tabs *container.AppTabs) {
 	if state == nil || state.app == nil {
 		return
 	}
@@ -8862,34 +8662,14 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	case "batch", "run_tag", "time":
 		state.xAxisMode = mode
 	}
-	if xAxis != nil {
-		switch state.xAxisMode {
-		case "run_tag":
-			xAxis.Selected = "RunTag"
-		case "time":
-			xAxis.Selected = "Time"
-		default:
-			xAxis.Selected = "Batch"
-		}
-	}
 	ymode := prefs.StringWithFallback("yScaleMode", state.yScaleMode)
 	switch ymode {
 	case "absolute", "relative":
 		state.yScaleMode = ymode
 	}
-	if yScale != nil {
-		state.useRelative = strings.EqualFold(state.yScaleMode, "relative")
-		if state.useRelative {
-			yScale.Selected = "Relative"
-		} else {
-			yScale.Selected = "Absolute"
-		}
-	}
+	state.useRelative = strings.EqualFold(state.yScaleMode, "relative")
 	if su := prefs.StringWithFallback("speedUnit", state.speedUnit); su != "" {
 		state.speedUnit = su
-	}
-	if speedUnitSel != nil {
-		speedUnitSel.Selected = state.speedUnit
 	}
 	state.crosshairEnabled = prefs.BoolWithFallback("crosshair", state.crosshairEnabled)
 	if tabs != nil {

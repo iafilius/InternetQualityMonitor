@@ -348,15 +348,15 @@ TTFB Tail Heaviness (P95/P50)
 - Situation filter: Use the Situation dropdown in the toolbar to scope charts and the table to a single scenario or All.
 - Titles: Chart titles are kept clean and do not include the situation label.
 - Watermark: The active Situation is shown in a subtle bottom-right on-image watermark (e.g., "Situation: Home_WiFi"). This watermark is embedded into exported PNGs so context is preserved when sharing.
-- X-Axis modes: Batch, RunTag, or Time. Y-Scale: Absolute (zero baseline) or Relative (nice bounds).
-- SLA thresholds (configurable): Two toolbar fields let you set corporate‑friendly defaults or your own targets:
+- X-Axis modes: Batch, RunTag, or Time (Settings → X‑Axis). Y-Scale: Absolute (zero baseline) or Relative (nice bounds) (Settings → Y‑Scale).
+- SLA thresholds (configurable): Settings → “SLA Thresholds…” lets you set corporate‑friendly defaults or your own targets:
    - SLA P50 Speed (kbps): default 10,000 kbps (≈10 Mbps). Used by the SLA Compliance – Speed chart and hover labels.
    - SLA P95 TTFB (ms): default 200 ms. Used by the SLA Compliance – TTFB chart and hover labels.
    Values are persisted across sessions. Chart titles reflect the current thresholds and units.
 - Exports: Individual export items mirror the on‑screen order. "Export All (One Image)" stitches charts together in the same order shown in the UI, maintaining the watermark per chart.
 
 Rolling overlays (Avg Speed & Avg TTFB)
-- Rolling window N: default 7 (persisted). Smooths out short-term noise.
+- Rolling window N: default 7 (persisted). Change via Settings → “Rolling Window…”. Smooths out short-term noise.
 - Rolling Mean (μ): toggle to show a smoothed trend line across the last N batches.
 - ±1σ Band: independent toggle to show a translucent band between μ−σ and μ+σ. Legend shows a single entry “Rolling μ±1σ (N)” per chart when enabled.
 - Help dialogs on the Speed/TTFB charts include a short hint on what the band means and how changing N affects smoothing and band width.
@@ -368,7 +368,7 @@ Stability & quality (viewer)
 - Stalled Requests Count: quick absolute count derived as round(Lines × Stall Rate%). Has a dedicated export option.
 
 Low‑Speed Threshold control
-- Toolbar control “Low‑Speed Threshold (kbps)” sets the cutoff for Low‑Speed Time Share. Default 1000 kbps; persisted. Changing it re‑analyzes data on the fly. Stall metrics are independent of this threshold.
+- Settings → “Low‑Speed Threshold…” sets the cutoff for Low‑Speed Time Share. Default 1000 kbps; persisted. Changing it re‑analyzes data on the fly. Stall metrics are independent of this threshold.
 
 See also: the dedicated viewer docs in `README_iqmviewer.md` for a compact, feature‑focused overview and troubleshooting notes.
 

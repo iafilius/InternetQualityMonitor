@@ -18,7 +18,7 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 ## Features at a glance
 - Load `monitor_results.jsonl` and display the latest N batches (grouped by `run_tag`).
 - Situation filter with "All" option (default). The active Situation appears as a subtle on-image watermark and is embedded into exports.
-- X-axis modes: Batch, RunTag, and Time with rounded ticks. Y-scale: Absolute or Relative.
+- X-axis modes: Batch, RunTag, and Time (Settings → X-Axis) with rounded ticks. Y-scale: Absolute or Relative (Settings → Y-Scale).
 - Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps (select under Settings → Speed Unit).
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
@@ -29,6 +29,9 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 ### Settings menu
 - Crosshair, Hints, Rolling Mean overlay, and ±1σ Band toggles
 - Overlay legacy DNS (dns_time_ms) toggle for the DNS chart
+- X-Axis: Batch, RunTag, Time
+- Y-Scale: Absolute, Relative
+- Batches…: set recent N batches
 - Speed Unit: kbps, kBps, Mbps, MBps, Gbps, GBps
 - Screenshot Theme: Auto, Dark, Light
 
@@ -84,20 +87,20 @@ Examples:
 
 Low‑Speed Threshold control
 
-- Toolbar field “Low‑Speed Threshold (kbps)” sets the cutoff used for Low‑Speed Time Share.
+- Settings → “Low‑Speed Threshold (kbps)” sets the cutoff used for Low‑Speed Time Share.
 - Persisted in preferences and applied immediately on change (data is re‑analyzed).
 - Default: 1000 kbps. Tune to your baseline (e.g., 500 for low‑bandwidth links, 2000 for HD video expectations).
 - Exports: Individual and combined PNG exports include the active Situation watermark. The threshold affects Low‑Speed Time Share only; stall metrics are independent.
 
 ## Rolling overlays: mean and ±1σ band
 
-- Rolling window: Default N = 7 batches (persisted). Change via toolbar “Rolling Window (N)”.
+- Rolling window: Default N = 7 batches (persisted). Change via Settings → “Rolling Window (N)”.
 - Overlays available on Avg Speed and Avg TTFB charts:
 	- Rolling Mean (μ): a smoothed trend line over the last N batches.
 	- ±1σ Band: translucent band between μ−σ and μ+σ.
 - Independent toggles:
-	- “Rolling Mean” checkbox shows/hides the mean line.
-	- “±1σ Band” checkbox shows/hides the band separately from the mean.
+	- Settings → “Rolling Overlays” toggles the mean line.
+	- Settings → “±1σ Band” toggles the band separately from the mean.
 - Legend: a single entry “Rolling μ±1σ (N)” appears per chart when the band is enabled. The mean line label remains concise.
 - Help: Speed/TTFB help dialogs include a quick hint explaining the μ±1σ band and how the window N affects smoothing and band width.
 
