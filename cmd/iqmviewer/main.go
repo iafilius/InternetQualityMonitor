@@ -140,13 +140,14 @@ type uiState struct {
 	warmCacheImgCanvas *canvas.Image
 
 	// transport/protocol charts
-	protocolMixImgCanvas       *canvas.Image // HTTP protocol mix (%)
-	protocolAvgSpeedImgCanvas  *canvas.Image // Avg speed by HTTP protocol
-	protocolStallRateImgCanvas *canvas.Image // Stall rate by HTTP protocol (%)
-	protocolErrorRateImgCanvas *canvas.Image // Error rate by HTTP protocol (%)
-	tlsVersionMixImgCanvas     *canvas.Image // TLS version mix (%)
-	alpnMixImgCanvas           *canvas.Image // ALPN mix (%)
-	chunkedRateImgCanvas       *canvas.Image // Chunked transfer rate (%)
+	protocolMixImgCanvas         *canvas.Image // HTTP protocol mix (%)
+	protocolAvgSpeedImgCanvas    *canvas.Image // Avg speed by HTTP protocol
+	protocolStallRateImgCanvas   *canvas.Image // Stall rate by HTTP protocol (%)
+	protocolErrorRateImgCanvas   *canvas.Image // Error rate by HTTP protocol (%)
+	protocolPartialRateImgCanvas *canvas.Image // Partial body rate by HTTP protocol (%)
+	tlsVersionMixImgCanvas       *canvas.Image // TLS version mix (%)
+	alpnMixImgCanvas             *canvas.Image // ALPN mix (%)
+	chunkedRateImgCanvas         *canvas.Image // Chunked transfer rate (%)
 
 	// Local throughput self-test chart
 	selfTestImgCanvas *canvas.Image // Local loopback throughput baseline (kbps -> chosen unit)
@@ -169,10 +170,12 @@ type uiState struct {
 	tpctlP95GapImgCanvas *canvas.Image // TTFB P95−P50 gap (ms)
 
 	// stability & quality charts
-	lowSpeedImgCanvas   *canvas.Image // Low-Speed Time Share (%)
-	stallRateImgCanvas  *canvas.Image // Stall Rate (%)
-	stallTimeImgCanvas  *canvas.Image // Avg Stall Time (ms)
-	stallCountImgCanvas *canvas.Image // Stalled Requests Count (interim)
+	lowSpeedImgCanvas    *canvas.Image // Low-Speed Time Share (%)
+	stallRateImgCanvas   *canvas.Image // Stall Rate (%)
+	pretffbImgCanvas     *canvas.Image // Pre-TTFB Stall Rate (%)
+	stallTimeImgCanvas   *canvas.Image // Avg Stall Time (ms)
+	stallCountImgCanvas  *canvas.Image // Stalled Requests Count (interim)
+	partialBodyImgCanvas *canvas.Image // Partial Body Rate (%)
 
 	// connection setup breakdown charts
 	setupDNSImgCanvas  *canvas.Image // Avg DNS time (ms)
@@ -194,13 +197,14 @@ type uiState struct {
 	proxyOverlay     *crosshairOverlay
 	warmCacheOverlay *crosshairOverlay
 	// overlays for transport/protocol charts
-	protocolMixOverlay       *crosshairOverlay
-	protocolAvgSpeedOverlay  *crosshairOverlay
-	protocolStallRateOverlay *crosshairOverlay
-	protocolErrorRateOverlay *crosshairOverlay
-	tlsVersionMixOverlay     *crosshairOverlay
-	alpnMixOverlay           *crosshairOverlay
-	chunkedRateOverlay       *crosshairOverlay
+	protocolMixOverlay         *crosshairOverlay
+	protocolAvgSpeedOverlay    *crosshairOverlay
+	protocolStallRateOverlay   *crosshairOverlay
+	protocolErrorRateOverlay   *crosshairOverlay
+	protocolPartialRateOverlay *crosshairOverlay
+	tlsVersionMixOverlay       *crosshairOverlay
+	alpnMixOverlay             *crosshairOverlay
+	chunkedRateOverlay         *crosshairOverlay
 	// overlays for new charts
 	tailRatioOverlay     *crosshairOverlay
 	ttfbTailRatioOverlay *crosshairOverlay
@@ -219,10 +223,16 @@ type uiState struct {
 	selfTestOverlay *crosshairOverlay
 
 	// stability overlays
-	lowSpeedOverlay   *crosshairOverlay
-	stallRateOverlay  *crosshairOverlay
-	stallTimeOverlay  *crosshairOverlay
-	stallCountOverlay *crosshairOverlay
+	lowSpeedOverlay    *crosshairOverlay
+	stallRateOverlay   *crosshairOverlay
+	pretffbOverlay     *crosshairOverlay
+	stallTimeOverlay   *crosshairOverlay
+	stallCountOverlay  *crosshairOverlay
+	partialBodyOverlay *crosshairOverlay
+
+	// section containers for conditional visibility
+	pretffbBlock   *fyne.Container // wraps separator + Pre‑TTFB chart section for hide/show
+	pretffbSection *fyne.Container // inner chart section (header + stack)
 
 	// SLA thresholds (configurable via UI)
 	slaSpeedThresholdKbps int // default 10000 (10 Mbps)
@@ -783,6 +793,7 @@ func main() {
 	state.protocolAvgSpeedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolStallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolErrorRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.protocolPartialRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.tlsVersionMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.alpnMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.chunkedRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -792,6 +803,7 @@ func main() {
 	state.protocolAvgSpeedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.protocolPartialRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.tlsVersionMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.alpnMixImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.chunkedRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
@@ -801,6 +813,7 @@ func main() {
 	state.protocolAvgSpeedOverlay = newCrosshairOverlay(state, "protocol_avg_speed")
 	state.protocolStallRateOverlay = newCrosshairOverlay(state, "protocol_stall_rate")
 	state.protocolErrorRateOverlay = newCrosshairOverlay(state, "protocol_error_rate")
+	state.protocolPartialRateOverlay = newCrosshairOverlay(state, "protocol_partial_rate")
 	state.tlsVersionMixOverlay = newCrosshairOverlay(state, "tls_version_mix")
 	state.alpnMixOverlay = newCrosshairOverlay(state, "alpn_mix")
 	state.chunkedRateOverlay = newCrosshairOverlay(state, "chunked_rate")
@@ -880,6 +893,16 @@ func main() {
 	state.stallRateImgCanvas.FillMode = canvas.ImageFillStretch
 	state.stallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.stallRateOverlay = newCrosshairOverlay(state, "stall_rate")
+	// Pre‑TTFB Stall Rate
+	state.pretffbImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.pretffbImgCanvas.FillMode = canvas.ImageFillStretch
+	state.pretffbImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.pretffbOverlay = newCrosshairOverlay(state, "pretffb_stall_rate")
+	// Partial Body Rate
+	state.partialBodyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.partialBodyImgCanvas.FillMode = canvas.ImageFillStretch
+	state.partialBodyImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.partialBodyOverlay = newCrosshairOverlay(state, "partial_body_rate")
 	// Stalled Requests Count (interim)
 	state.stallCountImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.stallCountImgCanvas.FillMode = canvas.ImageFillStretch
@@ -952,6 +975,8 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 	helpStallCount := `Stalled Requests Count: estimated number of stalled requests per batch.
 - Interim metric derived as: round(Lines × Stall Rate / 100).
 - Use alongside Stall Rate and Avg Stall Time.` + axesTip
+	helpPartialBody := `Partial Body Rate (%): fraction of requests that finished with an incomplete body (Content-Length mismatch or early EOF).
+- Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
@@ -1003,6 +1028,11 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 
 	// charts column (hints are rendered inside chart images when enabled)
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
+	helpPreTTFB := `Pre‑TTFB Stall Rate (%): fraction of requests canceled due to a pre‑TTFB stall (no first byte within stall timeout).\n- Requires monitor runs with IQM_PRE_TTFB_STALL=1.\n- Useful to spot early server/network stalls before any response bytes.` + axesTip
+	// Build Pre‑TTFB section block separately so we can hide/show it dynamically
+	state.pretffbSection = makeChartSection(state, "Pre‑TTFB Stall Rate", helpPreTTFB, container.NewStack(state.pretffbImgCanvas, state.pretffbOverlay))
+	state.pretffbBlock = container.NewVBox(widget.NewSeparator(), state.pretffbSection)
+
 	chartsColumn := container.NewVBox(
 		makeChartSection(state, "DNS Lookup Time (ms)", helpDNS, container.NewStack(state.setupDNSImgCanvas, state.setupDNSOverlay)),
 		widget.NewSeparator(),
@@ -1015,6 +1045,8 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance."+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Stall rate per protocol. Higher means more stalls."+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Percentage of requests with incomplete body per protocol. Helps spot protocol-specific truncations or early EOF."+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Error rate per protocol."+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
 		widget.NewSeparator(),
@@ -1067,6 +1099,10 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "Low-Speed Time Share", helpLowSpeed, container.NewStack(state.lowSpeedImgCanvas, state.lowSpeedOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Stall Rate", helpStallRate, container.NewStack(state.stallRateImgCanvas, state.stallRateOverlay)),
+		// Pre‑TTFB block (may be hidden when metric is all‑zero across all batches)
+		state.pretffbBlock,
+		widget.NewSeparator(),
+		makeChartSection(state, "Partial Body Rate", helpPartialBody, container.NewStack(state.partialBodyImgCanvas, state.partialBodyOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Stalled Requests Count", helpStallCount, container.NewStack(state.stallCountImgCanvas, state.stallCountOverlay)),
 		widget.NewSeparator(),
@@ -1343,6 +1379,10 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		state.stallCountOverlay.enabled = state.crosshairEnabled
 		state.stallCountOverlay.Refresh()
 	}
+	if state.partialBodyOverlay != nil {
+		state.partialBodyOverlay.enabled = state.crosshairEnabled
+		state.partialBodyOverlay.Refresh()
+	}
 	// Always load data once at startup (will fallback to monitor_results.jsonl if available)
 	loadAll(state, fileLabel)
 
@@ -1407,6 +1447,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportProtocolErrorRate := fyne.NewMenuItem("Export Error Rate by HTTP Protocol…", func() {
 		exportChartPNG(state, state.protocolErrorRateImgCanvas, "error_rate_by_http_protocol_chart.png")
 	})
+	exportProtocolPartialRate := fyne.NewMenuItem("Export Partial Body Rate by HTTP Protocol…", func() {
+		exportChartPNG(state, state.protocolPartialRateImgCanvas, "partial_body_rate_by_http_protocol_chart.png")
+	})
 	exportTLSMix := fyne.NewMenuItem("Export TLS Version Mix…", func() { exportChartPNG(state, state.tlsVersionMixImgCanvas, "tls_version_mix_chart.png") })
 	exportALPNMix := fyne.NewMenuItem("Export ALPN Mix…", func() { exportChartPNG(state, state.alpnMixImgCanvas, "alpn_mix_chart.png") })
 	exportChunkedRate := fyne.NewMenuItem("Export Chunked Transfer Rate…", func() { exportChartPNG(state, state.chunkedRateImgCanvas, "chunked_transfer_rate_chart.png") })
@@ -1423,6 +1466,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportProtocolMix,
 		exportProtocolAvgSpeed,
 		exportProtocolStallRate,
+		exportProtocolPartialRate,
 		exportProtocolErrorRate,
 		fyne.NewMenuItemSeparator(),
 		exportTLSMix,
@@ -1434,9 +1478,11 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	// Stability exports
 	exportLowSpeed := fyne.NewMenuItem("Export Low-Speed Time Share Chart…", func() { exportChartPNG(state, state.lowSpeedImgCanvas, "low_speed_time_share_chart.png") })
 	exportStallRate := fyne.NewMenuItem("Export Stall Rate Chart…", func() { exportChartPNG(state, state.stallRateImgCanvas, "stall_rate_chart.png") })
+	exportPreTTFB := fyne.NewMenuItem("Export Pre‑TTFB Stall Rate Chart…", func() { exportChartPNG(state, state.pretffbImgCanvas, "pretffb_stall_rate_chart.png") })
 	exportStallTime := fyne.NewMenuItem("Export Avg Stall Time Chart…", func() { exportChartPNG(state, state.stallTimeImgCanvas, "avg_stall_time_chart.png") })
 	// Interim stability export
 	exportStallCount := fyne.NewMenuItem("Export Stalled Requests Count…", func() { exportChartPNG(state, state.stallCountImgCanvas, "stall_count_chart.png") })
+	exportPartialBody := fyne.NewMenuItem("Export Partial Body Rate Chart…", func() { exportChartPNG(state, state.partialBodyImgCanvas, "partial_body_rate_chart.png") })
 	exportCache := fyne.NewMenuItem("Export Cache Hit Rate Chart…", func() { exportChartPNG(state, state.cacheImgCanvas, "cache_hit_rate_chart.png") })
 	exportProxy := fyne.NewMenuItem("Export Proxy Suspected Rate Chart…", func() { exportChartPNG(state, state.proxyImgCanvas, "proxy_suspected_rate_chart.png") })
 	exportWarmCache := fyne.NewMenuItem("Export Warm Cache Suspected Rate Chart…", func() { exportChartPNG(state, state.warmCacheImgCanvas, "warm_cache_suspected_rate_chart.png") })
@@ -1497,8 +1543,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	stabilitySub := fyne.NewMenu("Stability & Quality",
 		exportLowSpeed,
 		exportStallRate,
-		exportStallTime,
+		exportPreTTFB,
+		exportPartialBody,
 		exportStallCount,
+		exportStallTime,
 	)
 	stabilitySubItem := fyne.NewMenuItem("Stability & Quality", nil)
 	stabilitySubItem.ChildMenu = stabilitySub
@@ -1703,6 +1751,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		if state.protocolErrorRateOverlay != nil {
 			state.protocolErrorRateOverlay.enabled = b
 			state.protocolErrorRateOverlay.Refresh()
+		}
+		if state.protocolPartialRateOverlay != nil {
+			state.protocolPartialRateOverlay.enabled = b
+			state.protocolPartialRateOverlay.Refresh()
 		}
 		if state.tlsVersionMixOverlay != nil {
 			state.tlsVersionMixOverlay.enabled = b
@@ -1926,12 +1978,18 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	openBatchesDialog := func() {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Batches (recent N batches)")
-		if state.batchesN <= 0 { state.batchesN = 50 }
+		if state.batchesN <= 0 {
+			state.batchesN = 50
+		}
 		entry.SetText(strconv.Itoa(state.batchesN))
 		form := &widget.Form{Items: []*widget.FormItem{{Text: "Batches (recent N)", Widget: entry}}, OnSubmit: func() {
 			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
-				if iv < 10 { iv = 10 }
-				if iv > 1000 { iv = 1000 }
+				if iv < 10 {
+					iv = 10
+				}
+				if iv > 1000 {
+					iv = 1000
+				}
 				if iv != state.batchesN {
 					state.batchesN = iv
 					savePrefs(state)
@@ -1939,7 +1997,11 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 				}
 			}
 		}}
-		d := dialog.NewCustomConfirm("Batches", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d := dialog.NewCustomConfirm("Batches", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
 		d.Resize(fyne.NewSize(360, 160))
 		d.Show()
 	}
@@ -1959,13 +2021,21 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			},
 			OnSubmit: func() {
 				if iv, err := strconv.Atoi(strings.TrimSpace(speedEntry.Text)); err == nil {
-					if iv < 1000 { iv = 1000 }
-					if iv > 10_000_000 { iv = 10_000_000 }
+					if iv < 1000 {
+						iv = 1000
+					}
+					if iv > 10_000_000 {
+						iv = 10_000_000
+					}
 					state.slaSpeedThresholdKbps = iv
 				}
 				if iv, err := strconv.Atoi(strings.TrimSpace(ttfbEntry.Text)); err == nil {
-					if iv < 50 { iv = 50 }
-					if iv > 10000 { iv = 10000 }
+					if iv < 50 {
+						iv = 50
+					}
+					if iv > 10000 {
+						iv = 10000
+					}
 					state.slaTTFBThresholdMs = iv
 				}
 				savePrefs(state)
@@ -1983,41 +2053,61 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	openLowSpeedDialog := func() {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Low-Speed Threshold (kbps)")
-		if state.lowSpeedThresholdKbps <= 0 { state.lowSpeedThresholdKbps = 1000 }
+		if state.lowSpeedThresholdKbps <= 0 {
+			state.lowSpeedThresholdKbps = 1000
+		}
 		entry.SetText(strconv.Itoa(state.lowSpeedThresholdKbps))
 		form := &widget.Form{Items: []*widget.FormItem{{Text: "Low-Speed Threshold (kbps)", Widget: entry}}, OnSubmit: func() {
 			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
-				if iv < 100 { iv = 100 }
-				if iv > 100_000_000 { iv = 100_000_000 }
+				if iv < 100 {
+					iv = 100
+				}
+				if iv > 100_000_000 {
+					iv = 100_000_000
+				}
 				state.lowSpeedThresholdKbps = iv
 				savePrefs(state)
 				loadAll(state, fileLabel) // re-analyze summaries
 			}
-		}} 
-		d := dialog.NewCustomConfirm("Low-Speed Threshold", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		}}
+		d := dialog.NewCustomConfirm("Low-Speed Threshold", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
 		d.Resize(fyne.NewSize(380, 160))
 		d.Show()
 	}
 	openRollingDialog := func() {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Rolling Window (N)")
-		if state.rollingWindow <= 0 { state.rollingWindow = 7 }
+		if state.rollingWindow <= 0 {
+			state.rollingWindow = 7
+		}
 		entry.SetText(strconv.Itoa(state.rollingWindow))
 		form := &widget.Form{Items: []*widget.FormItem{{Text: "Rolling Window (N)", Widget: entry}}, OnSubmit: func() {
 			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
-				if iv < 2 { iv = 2 }
-				if iv > 500 { iv = 500 }
+				if iv < 2 {
+					iv = 2
+				}
+				if iv > 500 {
+					iv = 500
+				}
 				state.rollingWindow = iv
 				savePrefs(state)
 				redrawCharts(state)
 			}
-		}} 
-		d := dialog.NewCustomConfirm("Rolling Window", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		}}
+		d := dialog.NewCustomConfirm("Rolling Window", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
 		d.Resize(fyne.NewSize(360, 160))
 		d.Show()
 	}
 
-    settingsMenu := fyne.NewMenu("Settings",
+	settingsMenu := fyne.NewMenu("Settings",
 		crosshairToggle,
 		hintsToggle,
 		fyne.NewMenuItemSeparator(),
@@ -2655,6 +2745,16 @@ func redrawCharts(state *uiState) {
 				state.protocolErrorRateOverlay.Refresh()
 			}
 		}
+		ppImg := renderPartialBodyRateByHTTPProtocolChart(state)
+		if ppImg != nil {
+			state.protocolPartialRateImgCanvas.Image = ppImg
+			_, chh := chartSize(state)
+			state.protocolPartialRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.protocolPartialRateImgCanvas.Refresh()
+			if state.protocolPartialRateOverlay != nil {
+				state.protocolPartialRateOverlay.Refresh()
+			}
+		}
 		tlsMixImg := renderTLSVersionMixChart(state)
 		if tlsMixImg != nil {
 			state.tlsVersionMixImgCanvas.Image = tlsMixImg
@@ -2760,6 +2860,44 @@ func redrawCharts(state *uiState) {
 				state.stallRateOverlay.Refresh()
 			}
 		}
+		// Pre‑TTFB Stall Rate chart
+		pretffbImg := renderPreTTFBStallRateChart(state)
+		if pretffbImg != nil {
+			if state.pretffbImgCanvas != nil {
+				state.pretffbImgCanvas.Image = pretffbImg
+			}
+			_, chh := chartSize(state)
+			if state.pretffbImgCanvas != nil {
+				state.pretffbImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.pretffbImgCanvas.Refresh()
+			}
+			if state.pretffbOverlay != nil {
+				state.pretffbOverlay.Refresh()
+			}
+			// Determine if metric is all zeros across all visible series to hide the section
+			allZero := true
+			for _, r := range filteredSummaries(state) {
+				if state.showOverall && r.PreTTFBStallRatePct > 0 {
+					allZero = false
+					break
+				}
+				if state.showIPv4 && r.IPv4 != nil && r.IPv4.PreTTFBStallRatePct > 0 {
+					allZero = false
+					break
+				}
+				if state.showIPv6 && r.IPv6 != nil && r.IPv6.PreTTFBStallRatePct > 0 {
+					allZero = false
+					break
+				}
+			}
+			if state.pretffbBlock != nil {
+				if allZero {
+					state.pretffbBlock.Hide()
+				} else {
+					state.pretffbBlock.Show()
+				}
+			}
+		}
 		// Avg Stall Time chart
 		stImg := renderStallTimeChart(state)
 		if stImg != nil {
@@ -2773,6 +2911,21 @@ func redrawCharts(state *uiState) {
 			}
 			if state.stallTimeOverlay != nil {
 				state.stallTimeOverlay.Refresh()
+			}
+		}
+		// Partial Body Rate chart
+		pbrImg := renderPartialBodyRateChart(state)
+		if pbrImg != nil {
+			if state.partialBodyImgCanvas != nil {
+				state.partialBodyImgCanvas.Image = pbrImg
+			}
+			_, chh := chartSize(state)
+			if state.partialBodyImgCanvas != nil {
+				state.partialBodyImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.partialBodyImgCanvas.Refresh()
+			}
+			if state.partialBodyOverlay != nil {
+				state.partialBodyOverlay.Refresh()
 			}
 		}
 		// Stalled Requests Count (interim) chart
@@ -3868,6 +4021,242 @@ func renderStallRateChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: % of requests that experienced any stall.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderPartialBodyRateChart draws Partial Body Rate (%) per batch (overall/IPv4/IPv6).
+func renderPartialBodyRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.PartialBodyRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.PartialBodyRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.PartialBodyRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Partial Body Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: % of requests with incomplete body (CL mismatch or early EOF).")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderPreTTFBStallRateChart draws Pre‑TTFB Stall Rate (%) per batch (overall/IPv4/IPv6).
+func renderPreTTFBStallRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.PreTTFBStallRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.PreTTFBStallRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.PreTTFBStallRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Pre‑TTFB Stall Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: % of requests aborted before first byte due to stall (opt-in feature).")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -6065,6 +6454,89 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: Error percentage per protocol. Spikes may indicate protocol-specific issues.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderPartialBodyRateByHTTPProtocolChart draws percentage of partial body requests by HTTP protocol.
+func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.PartialBodyRateByHTTPProtocolPct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.PartialBodyRateByHTTPProtocolPct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Partial Body Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Percentage of incomplete (partial) responses per protocol.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -8345,6 +8817,41 @@ func exportAllChartsCombined(state *uiState) {
 		labels = append(labels, "TLS Handshake Time (ms)")
 	}
 	// Then averages and the rest
+	// Transport/Protocol block (appears before Speed on-screen)
+	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil {
+		imgs = append(imgs, state.protocolMixImgCanvas.Image)
+		labels = append(labels, "HTTP Protocol Mix (%)")
+	}
+	if state.protocolAvgSpeedImgCanvas != nil && state.protocolAvgSpeedImgCanvas.Image != nil {
+		imgs = append(imgs, state.protocolAvgSpeedImgCanvas.Image)
+		labels = append(labels, "Avg Speed by HTTP Protocol")
+	}
+	if state.protocolStallRateImgCanvas != nil && state.protocolStallRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.protocolStallRateImgCanvas.Image)
+		labels = append(labels, "Stall Rate by HTTP Protocol (%)")
+	}
+	if state.protocolPartialRateImgCanvas != nil && state.protocolPartialRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.protocolPartialRateImgCanvas.Image)
+		labels = append(labels, "Partial Body Rate by HTTP Protocol (%)")
+	}
+	if state.protocolErrorRateImgCanvas != nil && state.protocolErrorRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.protocolErrorRateImgCanvas.Image)
+		labels = append(labels, "Error Rate by HTTP Protocol (%)")
+	}
+	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil {
+		imgs = append(imgs, state.tlsVersionMixImgCanvas.Image)
+		labels = append(labels, "TLS Version Mix (%)")
+	}
+	if state.alpnMixImgCanvas != nil && state.alpnMixImgCanvas.Image != nil {
+		imgs = append(imgs, state.alpnMixImgCanvas.Image)
+		labels = append(labels, "ALPN Mix (%)")
+	}
+	if state.chunkedRateImgCanvas != nil && state.chunkedRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.chunkedRateImgCanvas.Image)
+		labels = append(labels, "Chunked Transfer Rate (%)")
+	}
+
+	// Averages and remaining charts
 	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
 		imgs = append(imgs, state.speedImgCanvas.Image)
 		labels = append(labels, "Speed")
@@ -8452,13 +8959,21 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.stallRateImgCanvas.Image)
 		labels = append(labels, "Stall Rate")
 	}
-	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
-		imgs = append(imgs, state.stallTimeImgCanvas.Image)
-		labels = append(labels, "Avg Stall Time")
+	if state.pretffbBlock != nil && state.pretffbBlock.Visible() && state.pretffbImgCanvas != nil && state.pretffbImgCanvas.Image != nil {
+		imgs = append(imgs, state.pretffbImgCanvas.Image)
+		labels = append(labels, "Pre‑TTFB Stall Rate")
+	}
+	if state.partialBodyImgCanvas != nil && state.partialBodyImgCanvas.Image != nil {
+		imgs = append(imgs, state.partialBodyImgCanvas.Image)
+		labels = append(labels, "Partial Body Rate")
 	}
 	if state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil {
 		imgs = append(imgs, state.stallCountImgCanvas.Image)
 		labels = append(labels, "Stalled Requests Count")
+	}
+	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
+		imgs = append(imgs, state.stallTimeImgCanvas.Image)
+		labels = append(labels, "Avg Stall Time")
 	}
 	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
 		imgs = append(imgs, state.cacheImgCanvas.Image)
@@ -8884,6 +9399,8 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.lowSpeedImgCanvas
 		case "stall_rate":
 			imgCanvas = r.c.state.stallRateImgCanvas
+		case "pretffb_stall_rate":
+			imgCanvas = r.c.state.pretffbImgCanvas
 		case "stall_time":
 			imgCanvas = r.c.state.stallTimeImgCanvas
 		case "stall_count":

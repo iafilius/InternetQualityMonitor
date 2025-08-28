@@ -89,6 +89,7 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"low_speed_share.png", renderLowSpeedShareChart},
 		{"stall_rate.png", renderStallRateChart},
 		{"stall_time.png", renderStallTimeChart},
+		{"partial_body_rate.png", renderPartialBodyRateChart},
 		{"stall_count.png", renderStallCountChart},
 		{"jitter.png", renderJitterChart},
 		{"cov.png", renderCoVChart},

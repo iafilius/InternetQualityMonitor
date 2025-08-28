@@ -315,6 +315,12 @@ var (
 	maxIPsPerSite     int               // if >0 limit IPs processed per site (e.g. first v4 + first v6)
 )
 
+// preTTFBStallEnabled reports whether pre-first-byte stall cancellation is enabled.
+// Controlled by environment variable IQM_PRE_TTFB_STALL ("1" to enable). Default: disabled.
+func preTTFBStallEnabled() bool {
+	return os.Getenv("IQM_PRE_TTFB_STALL") == "1"
+}
+
 // SetHTTPTimeout configures the per-request total timeout (HEAD, GET, range & warm HEAD individually).
 func SetHTTPTimeout(d time.Duration) {
 	if d > 0 {
@@ -816,12 +822,48 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	Debugf("[%s %s] GET %s", site.Name, ipStr, site.URL)
 	doGET := func() (*http.Response, error) {
 		dnsStartT, dnsDoneT, connStartT, connDoneT, tlsStartT, tlsDoneT, gotConnT, gotFirstByteT = time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}
-		req, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
+		// If pre-TTFB stall cancellation is enabled, use a child context to allow targeted cancel.
+		reqBaseCtx := ctx
+		var reqCancel context.CancelFunc
+		if preTTFBStallEnabled() {
+			reqBaseCtx, reqCancel = context.WithCancel(ctx)
+			defer reqCancel()
+		}
+		req, _ := http.NewRequestWithContext(reqBaseCtx, "GET", site.URL, nil)
 		req.Header.Set("X-Probe", probeVal)
 		trace := &httptrace.ClientTrace{DNSStart: func(info httptrace.DNSStartInfo) { dnsStartT = time.Now() }, DNSDone: func(info httptrace.DNSDoneInfo) { dnsDoneT = time.Now() }, ConnectStart: func(network, addr string) { connStartT = time.Now() }, ConnectDone: func(network, addr string, err error) { connDoneT = time.Now() }, TLSHandshakeStart: func() { tlsStartT = time.Now() }, TLSHandshakeDone: func(cs tls.ConnectionState, err error) { tlsDoneT = time.Now() }, GotConn: func(info httptrace.GotConnInfo) { gotConnT = time.Now() }, GotFirstResponseByte: func() { gotFirstByteT = time.Now() }}
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 		start = time.Now()
+		// Optional pre-TTFB watchdog
+		var stopWatch chan struct{}
+		if preTTFBStallEnabled() && stallTimeout > 0 {
+			stopWatch = make(chan struct{})
+			go func(name, ip string) {
+				t := time.NewTicker(200 * time.Millisecond)
+				defer t.Stop()
+				for {
+					select {
+					case <-stopWatch:
+						return
+					case <-t.C:
+						if gotFirstByteT.IsZero() && time.Since(start) > stallTimeout {
+							Warnf("[%s %s] pre-TTFB stall for %s, aborting", name, ip, time.Since(start))
+							if sr.HTTPError == "" {
+								sr.HTTPError = "stall_pre_ttfb"
+							}
+							if reqCancel != nil {
+								reqCancel()
+							}
+							return
+						}
+					}
+				}
+			}(site.Name, ipStr)
+		}
 		r, e := client.Do(req)
+		if stopWatch != nil {
+			close(stopWatch)
+		}
 		httpConnectTime := time.Since(start)
 		sr.HTTPConnectTimeMs = httpConnectTime.Milliseconds()
 		if !dnsStartT.IsZero() && !dnsDoneT.IsZero() {
@@ -858,7 +900,9 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 	if gerr != nil {
-		sr.HTTPError = gerr.Error()
+		if sr.HTTPError == "" {
+			sr.HTTPError = gerr.Error()
+		}
 		if errors.Is(gerr, context.DeadlineExceeded) || strings.Contains(strings.ToLower(gerr.Error()), "context deadline exceeded") {
 			Warnf("[%s %s] GET timeout (context deadline exceeded)", site.Name, ipStr)
 		} else {
@@ -867,10 +911,6 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		writeResult(wrapRoot(sr))
 		return
 	}
-
-	clHeader := resp.Header.Get("Content-Length")
-	// Populate protocol/TLS/encoding telemetry early
-	fillProtocolTLSAndEncoding(sr, resp)
 	// content length header handled later into sr.ContentLengthHeader
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
@@ -1070,6 +1110,7 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	lastProgressLog := time.Now()
 	lastProgress := time.Now()
 	// If Content-Length header is present, pre-parse expected total bytes for richer progress logs
+	clHeader := resp.Header.Get("Content-Length")
 	var expectedBytes int64
 	if clHeader != "" {
 		if v, e := strconv.ParseInt(clHeader, 10, 64); e == nil && v > 0 {
@@ -1218,12 +1259,46 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	}
 
 	// Secondary Range GET (with one-shot transient retry)
+	var rangeProgressCh chan struct{}
 	doSecondGET := func() (*http.Response, time.Duration, error) {
 		st := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
+		// Child context to allow mid-body stall cancellation
+		rCtx, rCancel := context.WithCancel(ctx)
+		defer rCancel()
+		req, _ := http.NewRequestWithContext(rCtx, "GET", site.URL, nil)
 		req.Header.Set("X-Probe", probeVal)
 		req.Header.Set("Range", "bytes=0-65535")
+		// Start a watchdog that will cancel if no progress is made beyond stallTimeout once body starts
+		rangeProgressCh = make(chan struct{}, 1)
+		stopWatch := make(chan struct{})
+		if stallTimeout > 0 {
+			go func(name, ip string) {
+				t := time.NewTicker(200 * time.Millisecond)
+				defer t.Stop()
+				startAt := time.Now()
+				for {
+					select {
+					case <-stopWatch:
+						return
+					case <-t.C:
+						// If we haven't seen any progress and we've exceeded stallTimeout since request start, cancel
+						if time.Since(startAt) > stallTimeout {
+							select {
+							case <-rangeProgressCh:
+								// progress observed, reset timer
+								startAt = time.Now()
+							default:
+								Warnf("[%s %s] range pre-body stall for %s, aborting", name, ip, time.Since(startAt))
+								rCancel()
+								return
+							}
+						}
+					}
+				}
+			}(site.Name, ipStr)
+		}
 		r, e := client.Do(req)
+		close(stopWatch)
 		return r, time.Since(st), e
 	}
 	secondResp, secondGetTime, secondErr := doSecondGET()
@@ -1272,10 +1347,21 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 		buf2 := make([]byte, 32*1024)
 		var rangeBytes int64
+		lastRangeProgress := time.Now()
 		lastRangeProgressLog := time.Now()
 		for {
 			n, er := secondResp.Body.Read(buf2)
 			rangeBytes += int64(n)
+			if n > 0 {
+				lastRangeProgress = time.Now()
+				// signal progress to watchdog if waiting
+				if rangeProgressCh != nil {
+					select {
+					case rangeProgressCh <- struct{}{}:
+					default:
+					}
+				}
+			}
 			progressInterval := 3 * time.Second
 			if getLevel() == LevelInfo {
 				progressInterval = 10 * time.Second
@@ -1297,6 +1383,19 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 					}
 				}
 				lastRangeProgressLog = time.Now()
+			}
+			// Stall detection for Range GET body read
+			if stallTimeout > 0 && time.Since(lastRangeProgress) > stallTimeout {
+				if expectedRange > 0 {
+					pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+					Warnf("[%s %s] range transfer stalled for %s, aborting (%d/%d bytes, %.1f%%)", site.Name, ipStr, time.Since(lastRangeProgress), rangeBytes, expectedRange, pct)
+				} else {
+					Warnf("[%s %s] range transfer stalled for %s, aborting (%d/unknown bytes)", site.Name, ipStr, time.Since(lastRangeProgress), rangeBytes)
+				}
+				if sr.SecondGetError == "" {
+					sr.SecondGetError = "stall_abort"
+				}
+				break
 			}
 			if er != nil {
 				break

@@ -498,6 +498,9 @@ Flags:
 - `--stall-timeout` (duration, default `20s`): Abort an in-progress body transfer if no additional bytes arrive within this window (marks line with `transfer_stalled`).
 - `--site-timeout` (duration, default `120s`): Overall budget per site (sequential mode) or per (site,IP) task (fanout) including DNS and all probes; aborts remaining steps if exceeded.
 - `--dns-timeout` (duration, default `5s`): Default DNS lookup timeout used when `--site-timeout` is 0. In IP fanout, each pre-resolve uses `min(--site-timeout, --dns-timeout)`.
+
+Environment flags:
+- `IQM_PRE_TTFB_STALL=1`: Enables an optional pre‑TTFB stall watchdog for the primary GET. If no first byte arrives within `--stall-timeout`, the request is canceled early and the line records `http_error = "stall_pre_ttfb"`. Default is disabled to preserve historical behavior.
 - `--max-ips-per-site` (int, default `0` = unlimited): Limit probed IPs per site (first IPv4 + first IPv6 typical when set to 2) to prevent long multi-IP sites monopolizing workers.
 - `--ip-fanout` (bool, default `true`): Pre-resolve all sites, build one task per selected IP, shuffle for fairness, then process concurrently. Disable with `--ip-fanout=false` to use classic per-site sequential IP iteration.
 - Progress logging controls (collection mode):

@@ -57,7 +57,10 @@ type BatchSummary struct {
 	// Stability & quality
 	LowSpeedTimeSharePct float64 `json:"low_speed_time_share_pct,omitempty"` // weighted by transfer time; threshold-controlled
 	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
+	PartialBodyRatePct   float64 `json:"partial_body_rate_pct,omitempty"`
 	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
+	// Optional: rate of requests aborted before the first byte due to pre-TTFB stall watchdog
+	PreTTFBStallRatePct float64 `json:"pretffb_stall_rate_pct,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines
 	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
@@ -84,16 +87,17 @@ type BatchSummary struct {
 	EnvProxyUsageRatePct   float64            `json:"env_proxy_usage_rate_pct,omitempty"`
 	ClassifiedProxyRatePct float64            `json:"classified_proxy_rate_pct,omitempty"`
 	// Protocol/TLS/encoding rollups
-	HTTPProtocolCounts         map[string]int     `json:"http_protocol_counts,omitempty"`
-	HTTPProtocolRatePct        map[string]float64 `json:"http_protocol_rate_pct,omitempty"`
-	AvgSpeedByHTTPProtocolKbps map[string]float64 `json:"avg_speed_by_http_protocol_kbps,omitempty"`
-	StallRateByHTTPProtocolPct map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
-	ErrorRateByHTTPProtocolPct map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
-	TLSVersionCounts           map[string]int     `json:"tls_version_counts,omitempty"`
-	TLSVersionRatePct          map[string]float64 `json:"tls_version_rate_pct,omitempty"`
-	ALPNCounts                 map[string]int     `json:"alpn_counts,omitempty"`
-	ALPNRatePct                map[string]float64 `json:"alpn_rate_pct,omitempty"`
-	ChunkedRatePct             float64            `json:"chunked_rate_pct,omitempty"`
+	HTTPProtocolCounts               map[string]int     `json:"http_protocol_counts,omitempty"`
+	HTTPProtocolRatePct              map[string]float64 `json:"http_protocol_rate_pct,omitempty"`
+	AvgSpeedByHTTPProtocolKbps       map[string]float64 `json:"avg_speed_by_http_protocol_kbps,omitempty"`
+	StallRateByHTTPProtocolPct       map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
+	ErrorRateByHTTPProtocolPct       map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
+	PartialBodyRateByHTTPProtocolPct map[string]float64 `json:"partial_body_rate_by_http_protocol_pct,omitempty"`
+	TLSVersionCounts                 map[string]int     `json:"tls_version_counts,omitempty"`
+	TLSVersionRatePct                map[string]float64 `json:"tls_version_rate_pct,omitempty"`
+	ALPNCounts                       map[string]int     `json:"alpn_counts,omitempty"`
+	ALPNRatePct                      map[string]float64 `json:"alpn_rate_pct,omitempty"`
+	ChunkedRatePct                   float64            `json:"chunked_rate_pct,omitempty"`
 }
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
@@ -133,7 +137,10 @@ type FamilySummary struct {
 	// Stability & quality
 	LowSpeedTimeSharePct float64 `json:"low_speed_time_share_pct,omitempty"`
 	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
+	PartialBodyRatePct   float64 `json:"partial_body_rate_pct,omitempty"`
 	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
+	// Optional: rate of requests aborted before the first byte due to pre-TTFB stall watchdog
+	PreTTFBStallRatePct float64 `json:"pretffb_stall_rate_pct,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines in this family
 	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
@@ -195,6 +202,7 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		connReused         bool
 		plateauStable      bool
 		hasError           bool
+		partialBody        bool
 		// meta
 		localSelfKbps float64
 		// protocol/tls/encoding
@@ -205,6 +213,7 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		// stability
 		stalled        bool
 		stallElapsedMs int64
+		preTTFBStall   bool
 		sampleLowMs    int64
 		sampleTotalMs  int64
 		// connection setup timings (ms)
@@ -280,6 +289,15 @@ readLoop:
 		if bytes.Contains(line, []byte("tcp_error")) || bytes.Contains(line, []byte("http_error")) {
 			bs.hasError = true
 		}
+		// detect partial body/incomplete transfers independent of SpeedAnalysis presence
+		if sr.ContentLengthMismatch {
+			bs.partialBody = true
+		} else if sr.HTTPError != "" {
+			he := strings.ToLower(strings.TrimSpace(sr.HTTPError))
+			if strings.Contains(he, "partial_body") {
+				bs.partialBody = true
+			}
+		}
 		if sa := sr.SpeedAnalysis; sa != nil {
 			bs.p50 = sa.P50Kbps
 			if sa.P99Kbps > 0 {
@@ -297,6 +315,13 @@ readLoop:
 				bs.coefVarPct = sa.CoefVariation * 100
 			}
 			bs.plateauStable = sa.PlateauStable
+		}
+		// detect pre-TTFB stall marker set by monitor when optional env flag is enabled
+		if sr.HTTPError != "" {
+			he := strings.ToLower(strings.TrimSpace(sr.HTTPError))
+			if strings.Contains(he, "stall_pre_ttfb") {
+				bs.preTTFBStall = true
+			}
 		}
 		// trace timings
 		// Setup timings (prefer httptrace-derived fields; fallback to legacy scalars if missing)
@@ -450,6 +475,7 @@ readLoop:
 		protoSpeedCnt := map[string]int{}
 		protoStallCnt := map[string]int{}
 		protoErrorCnt := map[string]int{}
+		protoPartialCnt := map[string]int{}
 		tlsCounts := map[string]int{}
 		alpnCounts := map[string]int{}
 		chunkedTrue := 0
@@ -462,6 +488,8 @@ readLoop:
 			var errorLines int
 			var lowMsSum, totalMsSum int64
 			var stallCnt int
+			var preTTFBCnt int
+			var partialCnt int
 			var stallTimeMsSum int64
 			var minTS, maxTS time.Time
 			for _, r := range recs {
@@ -569,6 +597,12 @@ readLoop:
 						stallTimeMsSum += r.stallElapsedMs
 					}
 				}
+				if r.preTTFBStall {
+					preTTFBCnt++
+				}
+				if r.partialBody {
+					partialCnt++
+				}
 			}
 			// Count lines that passed filter
 			lineCount := 0
@@ -612,6 +646,13 @@ readLoop:
 					}
 					return float64(stallCnt) / float64(lineCount) * 100
 				}(),
+				PreTTFBStallRatePct: func() float64 {
+					if lineCount == 0 {
+						return 0
+					}
+					return float64(preTTFBCnt) / float64(lineCount) * 100
+				}(),
+				PartialBodyRatePct: pct(partialCnt),
 				AvgStallElapsedMs: func() float64 {
 					if stallCnt == 0 {
 						return 0
@@ -633,6 +674,8 @@ readLoop:
 		var errorLines int
 		var lowMsSumAll, totalMsSumAll int64
 		var stallCntAll int
+		var preTTFBCntAll int
+		var partialCntAll int
 		var stallTimeMsSumAll int64
 		var minTS, maxTS time.Time
 		for _, r := range recs {
@@ -650,7 +693,7 @@ readLoop:
 			if r.speed > 0 {
 				speeds = append(speeds, r.speed)
 			}
-			// protocol speed/stall/error aggregations
+			// protocol speed/stall/error/partial aggregations
 			// Count missing protocol explicitly as "(unknown)" so mix charts can account for 100% without a synthetic remainder.
 			{
 				key := r.httpProto
@@ -667,6 +710,9 @@ readLoop:
 				}
 				if r.hasError {
 					protoErrorCnt[key]++
+				}
+				if r.partialBody {
+					protoPartialCnt[key]++
 				}
 			}
 			if r.tlsVer != "" {
@@ -775,6 +821,12 @@ readLoop:
 					stallTimeMsSumAll += r.stallElapsedMs
 				}
 			}
+			if r.preTTFBStall {
+				preTTFBCntAll++
+			}
+			if r.partialBody {
+				partialCntAll++
+			}
 		}
 		recCount := len(recs)
 		den := float64(recCount)
@@ -823,6 +875,18 @@ readLoop:
 				}
 				return float64(stallTimeMsSumAll) / float64(stallCntAll)
 			}(),
+			PartialBodyRatePct: func() float64 {
+				if recCount == 0 {
+					return 0
+				}
+				return float64(partialCntAll) / float64(recCount) * 100
+			}(),
+			PreTTFBStallRatePct: func() float64 {
+				if recCount == 0 {
+					return 0
+				}
+				return float64(preTTFBCntAll) / float64(recCount) * 100
+			}(),
 		}
 		// Set LocalSelfTestKbps from the most recent non-zero value in this batch
 		for i := len(recs) - 1; i >= 0; i-- {
@@ -839,6 +903,7 @@ readLoop:
 				summary.AvgSpeedByHTTPProtocolKbps = map[string]float64{}
 				summary.StallRateByHTTPProtocolPct = map[string]float64{}
 				summary.ErrorRateByHTTPProtocolPct = map[string]float64{}
+				summary.PartialBodyRateByHTTPProtocolPct = map[string]float64{}
 				for k, c := range protoCounts {
 					summary.HTTPProtocolRatePct[k] = float64(c) / den * 100
 					if n := protoSpeedCnt[k]; n > 0 {
@@ -847,6 +912,7 @@ readLoop:
 					if c > 0 {
 						summary.StallRateByHTTPProtocolPct[k] = float64(protoStallCnt[k]) / float64(c) * 100
 						summary.ErrorRateByHTTPProtocolPct[k] = float64(protoErrorCnt[k]) / float64(c) * 100
+						summary.PartialBodyRateByHTTPProtocolPct[k] = float64(protoPartialCnt[k]) / float64(c) * 100
 					}
 				}
 			}

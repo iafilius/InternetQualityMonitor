@@ -53,6 +53,8 @@ Headless equivalents:
 
 - Low‑Speed Time Share (%): Share of total transfer time spent below the Low‑Speed Threshold. Highlights choppiness even when averages look OK. Plotted for Overall, IPv4, and IPv6.
 - Stall Rate (%): Percent of requests that experienced any stall (transfer paused). Useful to spot buffering/outage symptoms.
+- Pre‑TTFB Stall Rate (%): Percent of requests aborted before the first byte due to a pre‑TTFB stall. Hidden when the metric is zero across all batches. Requires running the monitor with `IQM_PRE_TTFB_STALL=1` to record this signal.
+- Partial Body Rate (%): Percent of requests that returned an incomplete body (Content‑Length mismatch or early EOF). Plotted for Overall, IPv4, and IPv6. Full‑width, crosshair‑enabled, and exportable; included in headless screenshots as `partial_body_rate.png`.
 - Avg Stall Time (ms): Average total stalled time per stalled request. Higher means longer buffering events.
 - Stalled Requests Count: Derived as round(Lines × Stall Rate%). Quick absolute sense of how many requests stalled in a batch.
 

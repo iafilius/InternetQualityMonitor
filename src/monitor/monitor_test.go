@@ -339,6 +339,10 @@ func TestStallTimeoutAbort(t *testing.T) {
 	}
 }
 
+// Note: Range-read stall abort is not asserted here because http.Client.Body.Read blocks until
+// progress resumes or the server closes. We log watchdog warnings, but do not force-abort mid-read
+// to avoid invasive transport wrappers. See TestStallTimeoutAbort for overall stall surface.
+
 func TestHeadTransientRetrySetsFlag(t *testing.T) {
 	var headCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
