@@ -146,6 +146,7 @@ func main() {
 	if *selfTest {
 		if kbps, err := monitor.LocalMaxSpeedProbe(*selfTestDur); err == nil {
 			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps/1000.0, kbps)
+			monitor.SetLocalSelfTestKbps(kbps)
 		} else {
 			fmt.Printf("[selftest] local throughput probe error: %v\n", err)
 		}

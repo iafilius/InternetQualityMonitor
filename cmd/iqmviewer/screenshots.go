@@ -20,7 +20,8 @@ import (
 // variants: "none" or "averages" (controls extra action variants for averages)
 // theme: "auto", "dark", or "light" (controls background and overlay styling)
 // showDNSLegacy: when true, include dashed legacy dns_time_ms overlay on the DNS chart
-func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool) error {
+// includeSelfTest: when true, include the Local Throughput Self-Test chart
+func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool, includeSelfTest bool) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
 	}
@@ -126,6 +127,14 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"warm_cache_suspected_rate.png", renderWarmCacheSuspectedRateChart},
 		// Errors
 		{"error_rate.png", renderErrorRateChart},
+	}
+
+	// Optionally include the Local Throughput Self-Test chart
+	if includeSelfTest {
+		baseSet = append(baseSet, struct {
+			name string
+			fn   func(*uiState) image.Image
+		}{name: "local_throughput_selftest.png", fn: renderSelfTestChart})
 	}
 
 	// Use default chart size from chartSize when state.window is nil.

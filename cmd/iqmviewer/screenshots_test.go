@@ -60,7 +60,7 @@ func TestScreenshotWidths_BaseSet(t *testing.T) {
 	outDir := t.TempDir()
 
 	// Render screenshots headlessly using the base set only (variants = "none").
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestScreenshotWidths_AllowsShrink(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 

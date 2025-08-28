@@ -63,6 +63,8 @@ type BatchSummary struct {
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
 	AvgP95TTFBMs float64 `json:"avg_ttfb_p95_ms,omitempty"`
 	AvgP99TTFBMs float64 `json:"avg_ttfb_p99_ms,omitempty"`
+	// Local environment baseline (from meta; reflects latest seen in the batch)
+	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
 	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
 	CacheHitLines           int `json:"-"`
 	ProxySuspectedLines     int `json:"-"`
@@ -193,6 +195,8 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		connReused         bool
 		plateauStable      bool
 		hasError           bool
+		// meta
+		localSelfKbps float64
 		// protocol/tls/encoding
 		httpProto string
 		tlsVer    string
@@ -268,6 +272,10 @@ readLoop:
 			}
 		}
 		bs := rec{runTag: env.Meta.RunTag, situation: env.Meta.Situation, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
+		// capture meta self-test baseline if present
+		if env.Meta.LocalSelfTestKbps > 0 {
+			bs.localSelfKbps = env.Meta.LocalSelfTestKbps
+		}
 		// Track error presence without storing the raw line to reduce memory usage.
 		if bytes.Contains(line, []byte("tcp_error")) || bytes.Contains(line, []byte("http_error")) {
 			bs.hasError = true
@@ -815,6 +823,13 @@ readLoop:
 				}
 				return float64(stallTimeMsSumAll) / float64(stallCntAll)
 			}(),
+		}
+		// Set LocalSelfTestKbps from the most recent non-zero value in this batch
+		for i := len(recs) - 1; i >= 0; i-- {
+			if recs[i].localSelfKbps > 0 {
+				summary.LocalSelfTestKbps = recs[i].localSelfKbps
+				break
+			}
 		}
 		// Protocol/TLS/ALPN/chunked rollups
 		if recCount > 0 {

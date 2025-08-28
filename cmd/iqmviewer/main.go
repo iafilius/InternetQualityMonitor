@@ -148,6 +148,9 @@ type uiState struct {
 	alpnMixImgCanvas           *canvas.Image // ALPN mix (%)
 	chunkedRateImgCanvas       *canvas.Image // Chunked transfer rate (%)
 
+	// Local throughput self-test chart
+	selfTestImgCanvas *canvas.Image // Local loopback throughput baseline (kbps -> chosen unit)
+
 	// internal guards
 	initializing bool
 
@@ -211,6 +214,9 @@ type uiState struct {
 	slaTTFBDeltaOverlay  *crosshairOverlay
 	// extra overlay
 	tpctlP95GapOverlay *crosshairOverlay
+
+	// self-test overlay
+	selfTestOverlay *crosshairOverlay
 
 	// stability overlays
 	lowSpeedOverlay   *crosshairOverlay
@@ -428,6 +434,7 @@ func main() {
 	var shotsTheme string
 	var shotsVariants string
 	var shotsDNSLegacy bool
+	var shotsSelfTest bool
 	var selfTest bool
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
@@ -440,6 +447,7 @@ func main() {
 	flag.StringVar(&shotsTheme, "screenshot-theme", "auto", "Screenshot theme: 'auto', 'dark', or 'light'")
 	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.BoolVar(&shotsDNSLegacy, "screenshot-dns-legacy", false, "If true, overlay legacy dns_time_ms as dashed line on DNS chart in screenshots")
+	flag.BoolVar(&shotsSelfTest, "screenshot-selftest", true, "Include the Local Throughput Self-Test chart in screenshots")
 	flag.BoolVar(&selfTest, "selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
 	flag.Parse()
 
@@ -450,12 +458,13 @@ func main() {
 		} else {
 			_, factor := speedUnitNameAndFactor("Mbps")
 			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps*factor, kbps)
+			monitor.SetLocalSelfTestKbps(kbps)
 		}
 	}
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
-		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy); err != nil {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy, shotsSelfTest); err != nil {
 			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
 			os.Exit(1)
 		}
@@ -964,6 +973,12 @@ func main() {
 	state.alpnMixOverlay = newCrosshairOverlay(state, "alpn_mix")
 	state.chunkedRateOverlay = newCrosshairOverlay(state, "chunked_rate")
 
+	// Self-test chart placeholder
+	state.selfTestImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.selfTestImgCanvas.FillMode = canvas.ImageFillStretch
+	state.selfTestImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.selfTestOverlay = newCrosshairOverlay(state, "selftest_speed")
+
 	// new charts: tail heaviness (P99/P50), IPv6-IPv4 deltas, SLA compliance
 	state.tailRatioImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.tailRatioImgCanvas.FillMode = canvas.ImageFillStretch
@@ -1178,6 +1193,8 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding."+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Local Throughput Self-Test", "Local loopback throughput measured on startup. Useful as a device + OS baseline to compare against network speeds."+axesTip, container.NewStack(state.selfTestImgCanvas, state.selfTestOverlay)),
 		widget.NewSeparator(),
 		// Place Speed Percentiles directly under Avg Speed
 		makeChartSection(state, "Speed Percentiles", helpSpeedPct, speedPctlGrid),
@@ -1742,6 +1759,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
+	// Self-test export
+	exportSelfTest := fyne.NewMenuItem("Export Local Throughput Self-Test…", func() { exportChartPNG(state, state.selfTestImgCanvas, "local_throughput_selftest_chart.png") })
 	// Connection setup breakdown exports
 	exportDNS := fyne.NewMenuItem("Export DNS Lookup Time Chart…", func() { exportChartPNG(state, state.setupDNSImgCanvas, "dns_lookup_time_chart.png") })
 	exportConn := fyne.NewMenuItem("Export TCP Connect Time Chart…", func() { exportChartPNG(state, state.setupConnImgCanvas, "tcp_connect_time_chart.png") })
@@ -1829,6 +1848,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportTailRatio,
 		exportTTFBTailRatio,
 		exportTTFBGap,
+		exportSelfTest,
 	)
 	diagSubItem := fyne.NewMenuItem("Diagnostics", nil)
 	diagSubItem.ChildMenu = diagSub
@@ -2217,6 +2237,20 @@ func redrawCharts(state *uiState) {
 		}
 	}
 	// Percentiles chart(s) stacked: Overall, IPv4, IPv6; visibility via checkboxes
+	// Local self-test chart (single series)
+	stImg := renderSelfTestChart(state)
+	if stImg != nil {
+		if state.selfTestImgCanvas != nil {
+			state.selfTestImgCanvas.Image = stImg
+			_, chh := chartSize(state)
+			state.selfTestImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.selfTestImgCanvas.Refresh()
+		}
+		if state.selfTestOverlay != nil {
+			state.selfTestOverlay.Refresh()
+		}
+	}
+
 	if state.pctlOverallImg != nil {
 		if state.showOverall {
 			img := renderPercentilesChartWithFamily(state, "overall")
@@ -4270,6 +4304,112 @@ func renderSpeedChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: Speed trends. Drops may indicate congestion, Wi‑Fi issues, or ISP problems.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderSelfTestChart plots the local loopback throughput baseline (from meta) per batch.
+func renderSelfTestChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+
+	ys := make([]float64, len(rows))
+	minY := math.MaxFloat64
+	maxY := -math.MaxFloat64
+	valid := 0
+	for i, r := range rows {
+		v := r.LocalSelfTestKbps * factor
+		if v <= 0 || math.IsNaN(v) {
+			ys[i] = math.NaN()
+			continue
+		}
+		ys[i] = v
+		if v < minY {
+			minY = v
+		}
+		if v > maxY {
+			maxY = v
+		}
+		valid++
+	}
+	st := pointStyle(chart.ColorAlternateGray)
+	if valid == 1 {
+		st.DotWidth = 6
+	}
+	var series chart.Series
+	if timeMode {
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.TimeSeries{Name: "Baseline", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st}
+		} else {
+			series = chart.TimeSeries{Name: "Baseline", XValues: times, YValues: ys, Style: st}
+		}
+	} else {
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ys = append([]float64{ys[0]}, ys[0])
+			series = chart.ContinuousSeries{Name: "Baseline", XValues: []float64{xs[0], x2}, YValues: ys, Style: st}
+		} else {
+			series = chart.ContinuousSeries{Name: "Baseline", XValues: xs, YValues: ys, Style: st}
+		}
+	}
+
+	// Y axis
+	var yAxisRange chart.Range = &chart.ContinuousRange{Min: 0, Max: 1}
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+		yTicks = nil
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{
+		Title:      fmt.Sprintf("Local Throughput Self-Test (%s)", unitName),
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      xAxis,
+		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
+		Series:     []chart.Series{series},
+	}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Local loopback throughput baseline. If this is low, your device/OS may be the bottleneck.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -8167,6 +8307,11 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.speedImgCanvas.Image)
 		labels = append(labels, "Speed")
 	}
+	// Self-test baseline
+	if state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil {
+		imgs = append(imgs, state.selfTestImgCanvas.Image)
+		labels = append(labels, "Local Throughput Self-Test")
+	}
 	// Speed percentiles panels
 	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil {
 		imgs = append(imgs, state.pctlOverallImg.Image)
@@ -8763,6 +8908,8 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.alpnMixImgCanvas
 		case "chunked_rate":
 			imgCanvas = r.c.state.chunkedRateImgCanvas
+		case "selftest_speed":
+			imgCanvas = r.c.state.selfTestImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -9313,6 +9460,13 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			}
 		case "chunked_rate":
 			lines = append(lines, fmt.Sprintf("Chunked: %.1f%%", bs.ChunkedRatePct))
+		case "selftest_speed":
+			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
+			if bs.LocalSelfTestKbps > 0 {
+				lines = append(lines, fmt.Sprintf("Baseline: %.1f %s", bs.LocalSelfTestKbps*factor, unit))
+			} else {
+				lines = append(lines, "Baseline: n/a")
+			}
 		}
 		r.label.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: strings.Join(lines, "\n")}}
 	} else {

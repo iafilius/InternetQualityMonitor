@@ -290,7 +290,9 @@ type Meta struct {
 	ConnectionType       string   `json:"connection_type,omitempty"`
 	Containerized        bool     `json:"containerized"`
 	HomeOfficeEstimate   string   `json:"home_office_estimate,omitempty"`
-	SchemaVersion        int      `json:"schema_version"`
+	// LocalSelfTestKbps captures the local loopback throughput self-test result (kbps) if measured this run.
+	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
+	SchemaVersion     int     `json:"schema_version"`
 }
 
 type ResultEnvelope struct {
@@ -1657,6 +1659,21 @@ var baseMetaOnce sync.Once
 var cachedBaseMeta *Meta
 var processStart = time.Now()
 
+// localSelfTestKbps holds the most recent self-test result set by the host process.
+var localSelfTestKbps float64
+
+// SetLocalSelfTestKbps records the local throughput self-test (kbps) to be embedded in meta for each line.
+func SetLocalSelfTestKbps(kbps float64) {
+	if kbps <= 0 {
+		return
+	}
+	localSelfTestKbps = kbps
+	// If base meta has been initialized, update it so subsequent copies inherit the value.
+	if cachedBaseMeta != nil {
+		cachedBaseMeta.LocalSelfTestKbps = kbps
+	}
+}
+
 // wrapRoot can accept either a typed *SiteResult plus supplemental map fields, or a legacy map.
 func wrapRoot(sr *SiteResult) *ResultEnvelope {
 	meta := gatherBaseMeta()
@@ -1743,11 +1760,18 @@ func gatherBaseMeta() *Meta {
 		m.Containerized = detectContainer()
 		m.SchemaVersion = SchemaVersion
 		m.Situation = currentSituation
+		if localSelfTestKbps > 0 {
+			m.LocalSelfTestKbps = localSelfTestKbps
+		}
 		cachedBaseMeta = m
 	})
 	// Shallow copy with updated timestamp
 	cp := *cachedBaseMeta
 	cp.TimestampUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	// Ensure the latest self-test value is reflected even if set after base init.
+	if localSelfTestKbps > 0 {
+		cp.LocalSelfTestKbps = localSelfTestKbps
+	}
 	return &cp
 }
 func readLoadAvg() (float64, float64, float64, error) {
