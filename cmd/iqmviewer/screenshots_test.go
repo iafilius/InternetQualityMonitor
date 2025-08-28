@@ -193,10 +193,14 @@ func TestScreenshots_IncludesErrorShare(t *testing.T) {
 func TestScreenshots_IncludesStallAndPartialShares(t *testing.T) {
 	screenshotWidthOverride = 800
 	tmpResults, err := os.CreateTemp(t.TempDir(), "results-*.jsonl")
-	if err != nil { t.Fatalf("create temp results: %v", err) }
+	if err != nil {
+		t.Fatalf("create temp results: %v", err)
+	}
 	writeResultLine(t, tmpResults, "20250101_000000", 1200, 80)
 	writeResultLine(t, tmpResults, "20250102_000000", 900, 90)
-	if err := tmpResults.Close(); err != nil { t.Fatalf("close results: %v", err) }
+	if err := tmpResults.Close(); err != nil {
+		t.Fatalf("close results: %v", err)
+	}
 	outDir := t.TempDir()
 	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)

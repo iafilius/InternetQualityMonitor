@@ -93,9 +93,9 @@ type BatchSummary struct {
 	StallRateByHTTPProtocolPct map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
 	ErrorRateByHTTPProtocolPct map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
 	// Share of all errors attributed to each HTTP protocol (sums to ~100% when there are errors)
-	ErrorShareByHTTPProtocolPct      map[string]float64 `json:"error_share_by_http_protocol_pct,omitempty"`
+	ErrorShareByHTTPProtocolPct map[string]float64 `json:"error_share_by_http_protocol_pct,omitempty"`
 	// Share of all stalls attributed to each HTTP protocol (sums to ~100% when there are stalls)
-	StallShareByHTTPProtocolPct      map[string]float64 `json:"stall_share_by_http_protocol_pct,omitempty"`
+	StallShareByHTTPProtocolPct map[string]float64 `json:"stall_share_by_http_protocol_pct,omitempty"`
 	// Share of all partial body results attributed to each HTTP protocol (sums to ~100% when there are partials)
 	PartialShareByHTTPProtocolPct    map[string]float64 `json:"partial_share_by_http_protocol_pct,omitempty"`
 	PartialBodyRateByHTTPProtocolPct map[string]float64 `json:"partial_body_rate_by_http_protocol_pct,omitempty"`

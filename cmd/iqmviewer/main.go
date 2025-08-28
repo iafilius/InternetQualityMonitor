@@ -133,17 +133,17 @@ type uiState struct {
 	warmCacheImgCanvas *canvas.Image
 
 	// transport/protocol charts
-	protocolMixImgCanvas         *canvas.Image // HTTP protocol mix (%)
-	protocolAvgSpeedImgCanvas    *canvas.Image // Avg speed by HTTP protocol
-	protocolStallRateImgCanvas   *canvas.Image // Stall rate by HTTP protocol (%)
-	protocolErrorRateImgCanvas   *canvas.Image // Error rate by HTTP protocol (%)
-	protocolErrorShareImgCanvas  *canvas.Image // Error share by HTTP protocol (%) – sums to ~100%
-	protocolStallShareImgCanvas  *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
-	protocolPartialRateImgCanvas *canvas.Image // Partial body rate by HTTP protocol (%)
+	protocolMixImgCanvas          *canvas.Image // HTTP protocol mix (%)
+	protocolAvgSpeedImgCanvas     *canvas.Image // Avg speed by HTTP protocol
+	protocolStallRateImgCanvas    *canvas.Image // Stall rate by HTTP protocol (%)
+	protocolErrorRateImgCanvas    *canvas.Image // Error rate by HTTP protocol (%)
+	protocolErrorShareImgCanvas   *canvas.Image // Error share by HTTP protocol (%) – sums to ~100%
+	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
+	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
-	tlsVersionMixImgCanvas       *canvas.Image // TLS version mix (%)
-	alpnMixImgCanvas             *canvas.Image // ALPN mix (%)
-	chunkedRateImgCanvas         *canvas.Image // Chunked transfer rate (%)
+	tlsVersionMixImgCanvas        *canvas.Image // TLS version mix (%)
+	alpnMixImgCanvas              *canvas.Image // ALPN mix (%)
+	chunkedRateImgCanvas          *canvas.Image // Chunked transfer rate (%)
 
 	// Local throughput self-test chart
 	selfTestImgCanvas *canvas.Image // Local loopback throughput baseline (kbps -> chosen unit)
@@ -193,17 +193,17 @@ type uiState struct {
 	proxyOverlay     *crosshairOverlay
 	warmCacheOverlay *crosshairOverlay
 	// overlays for transport/protocol charts
-	protocolMixOverlay         *crosshairOverlay
-	protocolAvgSpeedOverlay    *crosshairOverlay
-	protocolStallRateOverlay   *crosshairOverlay
-	protocolErrorRateOverlay   *crosshairOverlay
-	protocolErrorShareOverlay  *crosshairOverlay
-	protocolStallShareOverlay  *crosshairOverlay
-	protocolPartialRateOverlay *crosshairOverlay
+	protocolMixOverlay          *crosshairOverlay
+	protocolAvgSpeedOverlay     *crosshairOverlay
+	protocolStallRateOverlay    *crosshairOverlay
+	protocolErrorRateOverlay    *crosshairOverlay
+	protocolErrorShareOverlay   *crosshairOverlay
+	protocolStallShareOverlay   *crosshairOverlay
+	protocolPartialRateOverlay  *crosshairOverlay
 	protocolPartialShareOverlay *crosshairOverlay
-	tlsVersionMixOverlay       *crosshairOverlay
-	alpnMixOverlay             *crosshairOverlay
-	chunkedRateOverlay         *crosshairOverlay
+	tlsVersionMixOverlay        *crosshairOverlay
+	alpnMixOverlay              *crosshairOverlay
+	chunkedRateOverlay          *crosshairOverlay
 	// overlays for new charts
 	tailRatioOverlay     *crosshairOverlay
 	ttfbTailRatioOverlay *crosshairOverlay
@@ -1063,22 +1063,22 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
-	makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
+		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance."+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
 		widget.NewSeparator(),
-	makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
+		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
 		makeChartSection(state, "Stall Share by HTTP Protocol (%)", "Share of total stalled requests by protocol. Bars typically sum to about 100% (across protocols with stalls). Complements ‘Stall Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolStallShareImgCanvas, state.protocolStallShareOverlay)),
 		widget.NewSeparator(),
-	makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
+		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
 		makeChartSection(state, "Partial Share by HTTP Protocol (%)", "Share of all partial (incomplete) responses by protocol. Bars typically sum to about 100% (across protocols with partials). Complements ‘Partial Body Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolPartialShareImgCanvas, state.protocolPartialShareOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Per‑protocol error prevalence: for each HTTP protocol, the fraction of that protocol’s requests that errored.\n\nNote: These values do not add up to 100% because each bar is normalized by its own protocol’s volume, not the total errors across all protocols. Missing percentage is therefore expected. (Unknown protocol is counted as ‘(unknown)’ if present)."+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
 		makeChartSection(state, "Error Share by HTTP Protocol (%)", "Share of total errors attributed to each HTTP protocol. Bars typically sum to about 100% (across protocols with errors). This complements ‘Error Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolErrorShareImgCanvas, state.protocolErrorShareOverlay)),
 		widget.NewSeparator(),
-	makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
+		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
 		widget.NewSeparator(),
-	makeChartSection(state, "ALPN Mix (%)", "Share of requests by negotiated ALPN (e.g., h2, http/1.1). Bars typically sum to about 100% across ALPN values per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.alpnMixImgCanvas, state.alpnMixOverlay)),
+		makeChartSection(state, "ALPN Mix (%)", "Share of requests by negotiated ALPN (e.g., h2, http/1.1). Bars typically sum to about 100% across ALPN values per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.alpnMixImgCanvas, state.alpnMixOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding."+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
 		widget.NewSeparator(),
@@ -6684,7 +6684,9 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
 	}
 	keys := make([]string, 0, len(keySet))
-	for k := range keySet { keys = append(keys, k) }
+	for k := range keySet {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	var series []chart.Series
@@ -6693,7 +6695,9 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 		ys := make([]float64, len(rows))
 		for j, r := range rows {
 			ys[j] = r.StallShareByHTTPProtocolPct[k]
-			if ys[j] < 0 { ys[j] = math.NaN() }
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
 		}
 		st := pointStyle(palette[i%len(palette)])
 		name := k
@@ -6717,10 +6721,14 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	padBottom := 28
 	switch state.xAxisMode {
-	case "run_tag": padBottom = 90
-	case "time": padBottom = 48
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
 	}
-	if state.showHints { padBottom += 18 }
+	if state.showHints {
+		padBottom += 18
+	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	ch := chart.Chart{Title: "Stall Share by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
@@ -6728,10 +6736,16 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Share of total stalled requests per protocol. Typically sums to ~100% across visible protocols.") }
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Share of total stalled requests per protocol. Typically sums to ~100% across visible protocols.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
@@ -6753,7 +6767,9 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
 	}
 	keys := make([]string, 0, len(keySet))
-	for k := range keySet { keys = append(keys, k) }
+	for k := range keySet {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
 	var series []chart.Series
@@ -6762,7 +6778,9 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 		ys := make([]float64, len(rows))
 		for j, r := range rows {
 			ys[j] = r.PartialShareByHTTPProtocolPct[k]
-			if ys[j] < 0 { ys[j] = math.NaN() }
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
 		}
 		st := pointStyle(palette[i%len(palette)])
 		name := k
@@ -6786,10 +6804,14 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	padBottom := 28
 	switch state.xAxisMode {
-	case "run_tag": padBottom = 90
-	case "time": padBottom = 48
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
 	}
-	if state.showHints { padBottom += 18 }
+	if state.showHints {
+		padBottom += 18
+	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	ch := chart.Chart{Title: "Partial Share by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
@@ -6797,10 +6819,16 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	ch.Width, ch.Height = cw, chh
 	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return blank(cw, chh) }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return blank(cw, chh) }
-	if state.showHints { img = drawHint(img, "Hint: Share of total partial responses per protocol. Typically sums to ~100% across visible protocols.") }
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Share of total partial responses per protocol. Typically sums to ~100% across visible protocols.")
+	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
