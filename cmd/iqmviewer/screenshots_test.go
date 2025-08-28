@@ -160,3 +160,31 @@ func TestScreenshotWidths_AllowsShrink(t *testing.T) {
 		t.Fatalf("no PNG screenshots found in %s", outDir)
 	}
 }
+
+// TestScreenshots_IncludesErrorShare ensures the new error share chart is rendered to disk.
+func TestScreenshots_IncludesErrorShare(t *testing.T) {
+	// Use a fixed width for determinism
+	screenshotWidthOverride = 800
+
+	// Prepare minimal synthetic results
+	tmpResults, err := os.CreateTemp(t.TempDir(), "results-*.jsonl")
+	if err != nil {
+		t.Fatalf("create temp results: %v", err)
+	}
+	writeResultLine(t, tmpResults, "20250101_000000", 1200, 80)
+	writeResultLine(t, tmpResults, "20250102_000000", 900, 90)
+	if err := tmpResults.Close(); err != nil {
+		t.Fatalf("close results: %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+		t.Fatalf("RunScreenshotsMode: %v", err)
+	}
+
+	// Verify the specific file exists
+	path := filepath.Join(outDir, "error_share_by_http_protocol.png")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("missing error share screenshot: %v", err)
+	}
+}

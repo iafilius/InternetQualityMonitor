@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,6 +91,18 @@ func TestProtocolTlsAlpnChunkedAggregations(t *testing.T) {
 	}
 	if v := b.ErrorRateByHTTPProtocolPct["HTTP/1.1"]; (v-100) > 0.001 && (100-v) > 0.001 {
 		t.Fatalf("error rate h1 got %.3f want 100", v)
+	}
+
+	// Error share by protocol should sum to ~100% when errors exist
+	if len(b.ErrorShareByHTTPProtocolPct) == 0 {
+		t.Fatalf("expected non-empty error share map")
+	}
+	var sum float64
+	for _, v := range b.ErrorShareByHTTPProtocolPct {
+		sum += v
+	}
+	if diff := math.Abs(sum - 100.0); diff > 1e-6 {
+		t.Fatalf("error share sum got %.6f want 100.000000 (diff=%.6f)", sum, diff)
 	}
 
 	// TLS and ALPN counts

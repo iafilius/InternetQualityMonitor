@@ -87,11 +87,13 @@ type BatchSummary struct {
 	EnvProxyUsageRatePct   float64            `json:"env_proxy_usage_rate_pct,omitempty"`
 	ClassifiedProxyRatePct float64            `json:"classified_proxy_rate_pct,omitempty"`
 	// Protocol/TLS/encoding rollups
-	HTTPProtocolCounts               map[string]int     `json:"http_protocol_counts,omitempty"`
-	HTTPProtocolRatePct              map[string]float64 `json:"http_protocol_rate_pct,omitempty"`
-	AvgSpeedByHTTPProtocolKbps       map[string]float64 `json:"avg_speed_by_http_protocol_kbps,omitempty"`
-	StallRateByHTTPProtocolPct       map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
-	ErrorRateByHTTPProtocolPct       map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
+	HTTPProtocolCounts         map[string]int     `json:"http_protocol_counts,omitempty"`
+	HTTPProtocolRatePct        map[string]float64 `json:"http_protocol_rate_pct,omitempty"`
+	AvgSpeedByHTTPProtocolKbps map[string]float64 `json:"avg_speed_by_http_protocol_kbps,omitempty"`
+	StallRateByHTTPProtocolPct map[string]float64 `json:"stall_rate_by_http_protocol_pct,omitempty"`
+	ErrorRateByHTTPProtocolPct map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
+	// Share of all errors attributed to each HTTP protocol (sums to ~100% when there are errors)
+	ErrorShareByHTTPProtocolPct      map[string]float64 `json:"error_share_by_http_protocol_pct,omitempty"`
 	PartialBodyRateByHTTPProtocolPct map[string]float64 `json:"partial_body_rate_by_http_protocol_pct,omitempty"`
 	TLSVersionCounts                 map[string]int     `json:"tls_version_counts,omitempty"`
 	TLSVersionRatePct                map[string]float64 `json:"tls_version_rate_pct,omitempty"`
@@ -903,6 +905,7 @@ readLoop:
 				summary.AvgSpeedByHTTPProtocolKbps = map[string]float64{}
 				summary.StallRateByHTTPProtocolPct = map[string]float64{}
 				summary.ErrorRateByHTTPProtocolPct = map[string]float64{}
+				summary.ErrorShareByHTTPProtocolPct = map[string]float64{}
 				summary.PartialBodyRateByHTTPProtocolPct = map[string]float64{}
 				for k, c := range protoCounts {
 					summary.HTTPProtocolRatePct[k] = float64(c) / den * 100
@@ -913,6 +916,14 @@ readLoop:
 						summary.StallRateByHTTPProtocolPct[k] = float64(protoStallCnt[k]) / float64(c) * 100
 						summary.ErrorRateByHTTPProtocolPct[k] = float64(protoErrorCnt[k]) / float64(c) * 100
 						summary.PartialBodyRateByHTTPProtocolPct[k] = float64(protoPartialCnt[k]) / float64(c) * 100
+					}
+				}
+				// Compute error shares by protocol so values sum to ~100% across protocols when errors exist
+				if errorLines > 0 {
+					for k, e := range protoErrorCnt {
+						if e > 0 {
+							summary.ErrorShareByHTTPProtocolPct[k] = float64(e) / float64(errorLines) * 100
+						}
 					}
 				}
 			}

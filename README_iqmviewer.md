@@ -158,6 +158,18 @@ Examples:
 
 ![Delta – TTFB (pct)](docs/images/delta_ttfb_pct.png)
 
+## Protocols: mix, rates, and error share
+
+- HTTP Protocol Mix (%): share of request volume by protocol (e.g., HTTP/2 vs HTTP/1.1).
+- Avg Speed by HTTP Protocol: average throughput per protocol.
+- Stall Rate by HTTP Protocol (%): percent of requests that stalled per protocol.
+- Error Rate by HTTP Protocol (%): per-protocol error prevalence (normalized by that protocol’s request count). Note: bars do not sum to 100% by design.
+- Error Share by HTTP Protocol (%): share of total errors attributed to each protocol. Bars typically sum to ~100% (across protocols with errors).
+- Partial Body Rate by HTTP Protocol (%): percent of partial responses by protocol.
+- TLS Version Mix (%) and ALPN Mix (%), plus Chunked Transfer Rate (%).
+
+All are crosshair-enabled, theme-aware, and available in combined exports.
+
 ## Cache / proxy indicators
 
 - Cache Hit Rate, Proxy Suspected Rate, Warm Cache Suspected Rate.
@@ -223,6 +235,9 @@ Generated filenames for setup timing charts:
 - `dns_lookup_time.png`
 - `tcp_connect_time.png`
 - `tls_handshake_time.png`
+
+Additional protocol/error screenshots:
+- `error_share_by_http_protocol.png`
 
 SLA examples:
 

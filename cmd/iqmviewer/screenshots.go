@@ -128,6 +128,7 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"warm_cache_suspected_rate.png", renderWarmCacheSuspectedRateChart},
 		// Errors
 		{"error_rate.png", renderErrorRateChart},
+		{"error_share_by_http_protocol.png", renderErrorShareByHTTPProtocolChart},
 	}
 
 	// Optionally include the Local Throughput Self-Test chart
