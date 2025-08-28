@@ -188,3 +188,23 @@ func TestScreenshots_IncludesErrorShare(t *testing.T) {
 		t.Fatalf("missing error share screenshot: %v", err)
 	}
 }
+
+// TestScreenshots_IncludesStallAndPartialShares ensures the new share charts are rendered to disk.
+func TestScreenshots_IncludesStallAndPartialShares(t *testing.T) {
+	screenshotWidthOverride = 800
+	tmpResults, err := os.CreateTemp(t.TempDir(), "results-*.jsonl")
+	if err != nil { t.Fatalf("create temp results: %v", err) }
+	writeResultLine(t, tmpResults, "20250101_000000", 1200, 80)
+	writeResultLine(t, tmpResults, "20250102_000000", 900, 90)
+	if err := tmpResults.Close(); err != nil { t.Fatalf("close results: %v", err) }
+	outDir := t.TempDir()
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+		t.Fatalf("RunScreenshotsMode: %v", err)
+	}
+	for _, name := range []string{"stall_share_by_http_protocol.png", "partial_share_by_http_protocol.png"} {
+		path := filepath.Join(outDir, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing screenshot %s: %v", name, err)
+		}
+	}
+}

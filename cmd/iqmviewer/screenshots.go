@@ -129,6 +129,8 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		// Errors
 		{"error_rate.png", renderErrorRateChart},
 		{"error_share_by_http_protocol.png", renderErrorShareByHTTPProtocolChart},
+		{"stall_share_by_http_protocol.png", renderStallShareByHTTPProtocolChart},
+		{"partial_share_by_http_protocol.png", renderPartialShareByHTTPProtocolChart},
 	}
 
 	// Optionally include the Local Throughput Self-Test chart

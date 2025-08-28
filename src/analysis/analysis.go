@@ -94,6 +94,10 @@ type BatchSummary struct {
 	ErrorRateByHTTPProtocolPct map[string]float64 `json:"error_rate_by_http_protocol_pct,omitempty"`
 	// Share of all errors attributed to each HTTP protocol (sums to ~100% when there are errors)
 	ErrorShareByHTTPProtocolPct      map[string]float64 `json:"error_share_by_http_protocol_pct,omitempty"`
+	// Share of all stalls attributed to each HTTP protocol (sums to ~100% when there are stalls)
+	StallShareByHTTPProtocolPct      map[string]float64 `json:"stall_share_by_http_protocol_pct,omitempty"`
+	// Share of all partial body results attributed to each HTTP protocol (sums to ~100% when there are partials)
+	PartialShareByHTTPProtocolPct    map[string]float64 `json:"partial_share_by_http_protocol_pct,omitempty"`
 	PartialBodyRateByHTTPProtocolPct map[string]float64 `json:"partial_body_rate_by_http_protocol_pct,omitempty"`
 	TLSVersionCounts                 map[string]int     `json:"tls_version_counts,omitempty"`
 	TLSVersionRatePct                map[string]float64 `json:"tls_version_rate_pct,omitempty"`
@@ -906,6 +910,8 @@ readLoop:
 				summary.StallRateByHTTPProtocolPct = map[string]float64{}
 				summary.ErrorRateByHTTPProtocolPct = map[string]float64{}
 				summary.ErrorShareByHTTPProtocolPct = map[string]float64{}
+				summary.StallShareByHTTPProtocolPct = map[string]float64{}
+				summary.PartialShareByHTTPProtocolPct = map[string]float64{}
 				summary.PartialBodyRateByHTTPProtocolPct = map[string]float64{}
 				for k, c := range protoCounts {
 					summary.HTTPProtocolRatePct[k] = float64(c) / den * 100
@@ -918,11 +924,25 @@ readLoop:
 						summary.PartialBodyRateByHTTPProtocolPct[k] = float64(protoPartialCnt[k]) / float64(c) * 100
 					}
 				}
-				// Compute error shares by protocol so values sum to ~100% across protocols when errors exist
+				// Compute shares so values sum to ~100% across protocols when totals exist
 				if errorLines > 0 {
 					for k, e := range protoErrorCnt {
 						if e > 0 {
 							summary.ErrorShareByHTTPProtocolPct[k] = float64(e) / float64(errorLines) * 100
+						}
+					}
+				}
+				if stallCntAll > 0 {
+					for k, s := range protoStallCnt {
+						if s > 0 {
+							summary.StallShareByHTTPProtocolPct[k] = float64(s) / float64(stallCntAll) * 100
+						}
+					}
+				}
+				if partialCntAll > 0 {
+					for k, p := range protoPartialCnt {
+						if p > 0 {
+							summary.PartialShareByHTTPProtocolPct[k] = float64(p) / float64(partialCntAll) * 100
 						}
 					}
 				}

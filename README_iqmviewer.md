@@ -158,17 +158,28 @@ Examples:
 
 ![Delta – TTFB (pct)](docs/images/delta_ttfb_pct.png)
 
-## Protocols: mix, rates, and error share
+## Protocols: mix, rates, and shares
 
-- HTTP Protocol Mix (%): share of request volume by protocol (e.g., HTTP/2 vs HTTP/1.1).
+- HTTP Protocol Mix (%): share of request volume by protocol (e.g., HTTP/2 vs HTTP/1.1). Sums to ~100% across protocols.
 - Avg Speed by HTTP Protocol: average throughput per protocol.
-- Stall Rate by HTTP Protocol (%): percent of requests that stalled per protocol.
-- Error Rate by HTTP Protocol (%): per-protocol error prevalence (normalized by that protocol’s request count). Note: bars do not sum to 100% by design.
+- Stall Rate by HTTP Protocol (%): percent of requests that stalled per protocol. Does not add to 100% (per‑protocol normalization).
+- Stall Share by HTTP Protocol (%): share of total stalled requests by protocol. Bars typically sum to ~100% (across protocols with stalls).
+- Error Rate by HTTP Protocol (%): per-protocol error prevalence (normalized by that protocol’s request count). Does not add to 100% by design.
 - Error Share by HTTP Protocol (%): share of total errors attributed to each protocol. Bars typically sum to ~100% (across protocols with errors).
-- Partial Body Rate by HTTP Protocol (%): percent of partial responses by protocol.
-- TLS Version Mix (%) and ALPN Mix (%), plus Chunked Transfer Rate (%).
+- Partial Body Rate by HTTP Protocol (%): percent of partial responses by protocol. Does not add to 100% (per‑protocol normalization).
+- Partial Share by HTTP Protocol (%): share of total partial responses by protocol. Bars typically sum to ~100% (across protocols with partials).
+- TLS Version Mix (%): share of requests by negotiated TLS version. Sums to ~100% across versions.
+- ALPN Mix (%): share of requests by negotiated ALPN (e.g., h2, http/1.1). Sums to ~100% across ALPN values.
+- Chunked Transfer Rate (%): percentage of responses using chunked transfer encoding. Does not add to 100% (a rate, not a share).
 
 All are crosshair-enabled, theme-aware, and available in combined exports.
+
+### Rates vs Shares: how to read percent charts
+
+- “Rate by …” charts are normalized within each category (per protocol). They do not add up to 100% across categories. Use them to compare how problematic a protocol is relative to its own volume (e.g., how often HTTP/2 stalls among HTTP/2 requests).
+- “Share by …” and “Mix (%)” charts are normalized across categories and therefore typically sum to about 100% across the shown categories. Use them to understand how the total of an outcome (stalls, errors, partials) is distributed among protocols.
+- When both exist, read them together: the “Rate by …” highlights per‑protocol propensity; the “Share by …” shows contribution to the overall problem.
+- Notes: Unknown values (e.g., protocol ‘(unknown)’) are included when present. Minor rounding can make totals slightly off 100%.
 
 ## Cache / proxy indicators
 
@@ -238,6 +249,8 @@ Generated filenames for setup timing charts:
 
 Additional protocol/error screenshots:
 - `error_share_by_http_protocol.png`
+- `stall_share_by_http_protocol.png`
+- `partial_share_by_http_protocol.png`
 
 SLA examples:
 

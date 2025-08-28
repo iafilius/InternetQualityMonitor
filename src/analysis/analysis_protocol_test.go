@@ -105,6 +105,23 @@ func TestProtocolTlsAlpnChunkedAggregations(t *testing.T) {
 		t.Fatalf("error share sum got %.6f want 100.000000 (diff=%.6f)", sum, diff)
 	}
 
+	// Stall share should also sum to ~100% when any stalls exist
+	if len(b.StallShareByHTTPProtocolPct) == 0 {
+		t.Fatalf("expected non-empty stall share map")
+	}
+	sum = 0
+	for _, v := range b.StallShareByHTTPProtocolPct {
+		sum += v
+	}
+	if diff := math.Abs(sum - 100.0); diff > 1e-6 {
+		t.Fatalf("stall share sum got %.6f want 100.000000 (diff=%.6f)", sum, diff)
+	}
+
+	// No partials were recorded; partial share map may be empty
+	if len(b.PartialShareByHTTPProtocolPct) != 0 {
+		t.Fatalf("expected empty partial share map, got: %#v", b.PartialShareByHTTPProtocolPct)
+	}
+
 	// TLS and ALPN counts
 	if b.TLSVersionCounts["TLS1.3"] != 2 {
 		t.Fatalf("TLS1.3 count=%v", b.TLSVersionCounts["TLS1.3"])
