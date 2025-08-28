@@ -135,6 +135,7 @@ func main() {
 	progressResolveIP := flag.Bool("progress-resolve-ip", true, "Resolve and append first IP(s) for active sites in progress output")
 	ipFanout := flag.Bool("ip-fanout", true, "If true, pre-resolve all site IPs and randomize site/IP tasks to spread load")
 	alertsJSON := flag.String("alerts-json", "", "Path to write structured alert JSON report (optional)")
+	preTTFBStall := flag.Bool("pre-ttfb-stall", false, "Cancel primary GET if no first byte within stall-timeout; marks http_error=stall_pre_ttfb")
 	analyzeOnly := flag.Bool("analyze-only", false, "If true, analyze existing results and exit (no new collection)")
 	analysisBatches := flag.Int("analysis-batches", 10, "Max number of recent batches to analyze when --analyze-only is set")
 	finalAnalysisBatches := flag.Int("final-analysis-batches", 0, "If >0 in collection mode, after all iterations perform a final full analysis over last N batches")
@@ -184,6 +185,8 @@ func main() {
 	monitor.SetDNSTimeout(*dnsTimeout)
 	monitor.SetMaxIPsPerSite(*maxIPsPerSite)
 	monitor.SetSituation(*situation)
+	// Pre‑TTFB stall watchdog toggle
+	monitor.SetPreTTFBStall(*preTTFBStall)
 
 	// Only load sites if we are going to collect (not in analyze-only mode)
 	var sites []types.Site

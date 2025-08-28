@@ -54,36 +54,29 @@ var screenshotWidthOverride = 0
 // resolveTheme maps a user-facing mode to an effective chart theme.
 func resolveTheme(mode string, app fyne.App) string {
 	m := strings.ToLower(strings.TrimSpace(mode))
-	switch m {
-	case "dark":
+	if m == "dark" {
 		return "dark"
-	case "light":
-		return "light"
-	case "auto":
-		if isSystemDark() {
-			return "dark"
-		}
-		return "light"
-	default:
-		if isSystemDark() {
-			return "dark"
-		}
+	}
+	if m == "light" {
 		return "light"
 	}
+	// auto or any other value: follow system preference when available
+	if isSystemDark() {
+		return "dark"
+	}
+	return "light"
 }
 
 // Currently supports macOS via `defaults read -g AppleInterfaceStyle`.
 func isSystemDark() bool {
-	switch runtime.GOOS {
-	case "darwin":
+	if runtime.GOOS == "darwin" {
 		out, err := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle").Output()
 		if err != nil {
 			return false
 		}
 		return strings.Contains(strings.ToLower(string(out)), "dark")
-	default:
-		return false
 	}
+	return false
 }
 
 // pointStyle returns a style that renders points only (no connecting line)
@@ -231,8 +224,10 @@ type uiState struct {
 	partialBodyOverlay *crosshairOverlay
 
 	// section containers for conditional visibility
-	pretffbBlock   *fyne.Container // wraps separator + Pre‑TTFB chart section for hide/show
-	pretffbSection *fyne.Container // inner chart section (header + stack)
+	pretffbBlock    *fyne.Container // wraps separator + Pre‑TTFB chart section for hide/show
+	pretffbSection  *fyne.Container // inner chart section (header + stack)
+	showPreTTFB     bool            // user preference to include Pre‑TTFB chart in UI
+	autoHidePreTTFB bool            // if true, auto-hide Pre‑TTFB when metric is zero across all batches
 
 	// SLA thresholds (configurable via UI)
 	slaSpeedThresholdKbps int // default 10000 (10 Mbps)
@@ -445,7 +440,9 @@ func main() {
 	var shotsVariants string
 	var shotsDNSLegacy bool
 	var shotsSelfTest bool
+	var shotsIncludePreTTFB bool
 	var selfTest bool
+	var showPretffbCLI string
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
 	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
@@ -458,7 +455,9 @@ func main() {
 	flag.StringVar(&shotsVariants, "screenshot-variants", "averages", "Which extra variants to render: 'none' or 'averages'")
 	flag.BoolVar(&shotsDNSLegacy, "screenshot-dns-legacy", false, "If true, overlay legacy dns_time_ms as dashed line on DNS chart in screenshots")
 	flag.BoolVar(&shotsSelfTest, "screenshot-selftest", true, "Include the Local Throughput Self-Test chart in screenshots")
+	flag.BoolVar(&shotsIncludePreTTFB, "screenshot-pretffb", true, "Include Pre‑TTFB Stall Rate chart if data is present")
 	flag.BoolVar(&selfTest, "selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
+	flag.StringVar(&showPretffbCLI, "show-pretffb", "", "Show Pre‑TTFB chart on launch (true|false); persists preference")
 	flag.Parse()
 
 	if selfTest {
@@ -474,7 +473,7 @@ func main() {
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
-		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy, shotsSelfTest); err != nil {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy, shotsSelfTest, shotsIncludePreTTFB); err != nil {
 			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
 			os.Exit(1)
 		}
@@ -517,6 +516,15 @@ func main() {
 		screenshotThemeMode = "auto"
 	}
 	screenshotThemeGlobal = resolveTheme(screenshotThemeMode, a)
+	// Load Pre‑TTFB chart visibility preference (default: true)
+	state.showPreTTFB = a.Preferences().BoolWithFallback("showPreTTFB", true)
+	// Auto-hide Pre‑TTFB when metric is all zero (default: false)
+	state.autoHidePreTTFB = a.Preferences().BoolWithFallback("autoHidePreTTFB", false)
+	// If CLI provided, override and persist
+	if v := strings.ToLower(strings.TrimSpace(showPretffbCLI)); v == "true" || v == "false" {
+		state.showPreTTFB = (v == "true")
+		savePrefs(state)
+	}
 	// (removed: pctlFamily/pctlCompare preferences)
 
 	// top bar controls
@@ -1028,7 +1036,7 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 
 	// charts column (hints are rendered inside chart images when enabled)
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
-	helpPreTTFB := `Pre‑TTFB Stall Rate (%): fraction of requests canceled due to a pre‑TTFB stall (no first byte within stall timeout).\n- Requires monitor runs with IQM_PRE_TTFB_STALL=1.\n- Useful to spot early server/network stalls before any response bytes.` + axesTip
+	helpPreTTFB := `Pre‑TTFB Stall Rate (%): fraction of requests canceled due to a pre‑TTFB stall (no first byte within stall timeout).\n- Requires monitor runs with --pre-ttfb-stall.\n- Useful to spot early server/network stalls before any response bytes.` + axesTip
 	// Build Pre‑TTFB section block separately so we can hide/show it dynamically
 	state.pretffbSection = makeChartSection(state, "Pre‑TTFB Stall Rate", helpPreTTFB, container.NewStack(state.pretffbImgCanvas, state.pretffbOverlay))
 	state.pretffbBlock = container.NewVBox(widget.NewSeparator(), state.pretffbSection)
@@ -1822,6 +1830,49 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
+	// Pre‑TTFB chart toggle
+	pretffbLabel := func() string {
+		if state.showPreTTFB {
+			return "Pre‑TTFB Chart ✓"
+		}
+		return "Pre‑TTFB Chart"
+	}
+	pretffbToggle := fyne.NewMenuItem(pretffbLabel(), func() {
+		state.showPreTTFB = !state.showPreTTFB
+		savePrefs(state)
+		// Apply immediately
+		if state.pretffbBlock != nil {
+			if state.showPreTTFB {
+				state.pretffbBlock.Show()
+			} else {
+				state.pretffbBlock.Hide()
+			}
+			state.pretffbBlock.Refresh()
+		}
+		// Rebuild menus to update checkmark
+		go func() {
+			time.Sleep(40 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	// Pre‑TTFB auto-hide toggle (only hide when metric is all zero)
+	autoHidePretffbLabel := func() string {
+		if state.autoHidePreTTFB {
+			return "Auto‑hide Pre‑TTFB (zero) ✓"
+		}
+		return "Auto‑hide Pre‑TTFB (zero)"
+	}
+	autoHidePretffbToggle := fyne.NewMenuItem(autoHidePretffbLabel(), func() {
+		state.autoHidePreTTFB = !state.autoHidePreTTFB
+		savePrefs(state)
+		// Re-render to apply visibility based on current data
+		redrawCharts(state)
+		// Update menu label
+		go func() {
+			time.Sleep(40 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
 
 	// Hints toggle
 	hintsLabel := func() string {
@@ -2110,6 +2161,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	settingsMenu := fyne.NewMenu("Settings",
 		crosshairToggle,
 		hintsToggle,
+		pretffbToggle,
+		autoHidePretffbToggle,
 		fyne.NewMenuItemSeparator(),
 		rollingToggle,
 		bandToggle,
@@ -2874,7 +2927,7 @@ func redrawCharts(state *uiState) {
 			if state.pretffbOverlay != nil {
 				state.pretffbOverlay.Refresh()
 			}
-			// Determine if metric is all zeros across all visible series to hide the section
+			// Determine if metric is all zeros across all visible series
 			allZero := true
 			for _, r := range filteredSummaries(state) {
 				if state.showOverall && r.PreTTFBStallRatePct > 0 {
@@ -2891,7 +2944,8 @@ func redrawCharts(state *uiState) {
 				}
 			}
 			if state.pretffbBlock != nil {
-				if allZero {
+				// Hide only if user enabled auto-hide and metric is all zero, or if user disabled showing the chart entirely
+				if (!state.showPreTTFB) || (state.autoHidePreTTFB && allZero) {
 					state.pretffbBlock.Hide()
 				} else {
 					state.pretffbBlock.Show()
@@ -9119,6 +9173,10 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("crosshair", state.crosshairEnabled)
 	prefs.SetBool("showHints", state.showHints)
 	prefs.SetBool("showDNSLegacy", state.showDNSLegacy)
+	// Pre‑TTFB chart visibility
+	prefs.SetBool("showPreTTFB", state.showPreTTFB)
+	// Pre‑TTFB auto-hide when all-zero
+	prefs.SetBool("autoHidePreTTFB", state.autoHidePreTTFB)
 	// SLA thresholds
 	prefs.SetInt("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps)
 	prefs.SetInt("slaTTFBThresholdMs", state.slaTTFBThresholdMs)
@@ -9151,6 +9209,8 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showOverall = prefs.BoolWithFallback("showOverall", state.showOverall)
 	state.showIPv4 = prefs.BoolWithFallback("showIPv4", state.showIPv4)
 	state.showIPv6 = prefs.BoolWithFallback("showIPv6", state.showIPv6)
+	state.showPreTTFB = prefs.BoolWithFallback("showPreTTFB", state.showPreTTFB)
+	state.autoHidePreTTFB = prefs.BoolWithFallback("autoHidePreTTFB", state.autoHidePreTTFB)
 	if avg != nil {
 		avg.SetChecked(state.showOverall)
 	}

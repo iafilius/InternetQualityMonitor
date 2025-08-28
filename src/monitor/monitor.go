@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iafilius/InternetQualityMonitor/src/types"
@@ -315,10 +316,18 @@ var (
 	maxIPsPerSite     int               // if >0 limit IPs processed per site (e.g. first v4 + first v6)
 )
 
+// preTTFBStall holds whether pre-first-byte stall cancellation is enabled.
+// Configure via SetPreTTFBStall from callers (e.g., main). Default: disabled.
+var preTTFBStall atomic.Bool
+
+// SetPreTTFBStall enables/disables pre-first-byte stall cancellation for primary GETs.
+func SetPreTTFBStall(enabled bool) {
+	preTTFBStall.Store(enabled)
+}
+
 // preTTFBStallEnabled reports whether pre-first-byte stall cancellation is enabled.
-// Controlled by environment variable IQM_PRE_TTFB_STALL ("1" to enable). Default: disabled.
 func preTTFBStallEnabled() bool {
-	return os.Getenv("IQM_PRE_TTFB_STALL") == "1"
+	return preTTFBStall.Load()
 }
 
 // SetHTTPTimeout configures the per-request total timeout (HEAD, GET, range & warm HEAD individually).

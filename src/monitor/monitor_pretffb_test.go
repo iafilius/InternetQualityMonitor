@@ -42,16 +42,9 @@ func TestPreTTFBStallCancellation(t *testing.T) {
 	SetSiteTimeout(3 * time.Second)
 	SetStallTimeout(200 * time.Millisecond)
 	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
-	// Enable the feature flag
-	prev := os.Getenv("IQM_PRE_TTFB_STALL")
-	os.Setenv("IQM_PRE_TTFB_STALL", "1")
-	defer func() {
-		if prev == "" {
-			os.Unsetenv("IQM_PRE_TTFB_STALL")
-		} else {
-			os.Setenv("IQM_PRE_TTFB_STALL", prev)
-		}
-	}()
+	// Enable the feature via package-level setter
+	SetPreTTFBStall(true)
+	defer SetPreTTFBStall(false)
 	// Fallback writer
 	tmp := t.TempDir() + "/res.jsonl"
 	resultChan = nil

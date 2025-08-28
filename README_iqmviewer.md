@@ -15,6 +15,8 @@ go build ./cmd/iqmviewer
 
 You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O).
 
+Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true|false` (the choice is saved to preferences).
+
 ## Features at a glance
 - Load `monitor_results.jsonl` and display the latest N batches (grouped by `run_tag`).
 - Situation filter with "All" option (default). The active Situation appears as a subtle on-image watermark and is embedded into exports.
@@ -29,6 +31,8 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 ### Settings menu
 - Crosshair, Hints, Rolling Mean overlay, and ±1σ Band toggles
 - Overlay legacy DNS (dns_time_ms) toggle for the DNS chart
+- Pre‑TTFB Chart: show/hide the Pre‑TTFB Stall Rate section
+- Auto‑hide Pre‑TTFB (zero): when enabled, hides the Pre‑TTFB section if the metric is zero across all visible series/batches
 - X-Axis: Batch, RunTag, Time
 - Y-Scale: Absolute, Relative
 - Batches…: set recent N batches
@@ -48,12 +52,13 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 Headless equivalents:
 - `--screenshot-theme` accepts `auto`, `dark`, or `light`.
 - Extra average “action” variants (time-axis and relative-scale) are gated by `--screenshot-variants` (`averages` or `none`).
+- Pre‑TTFB chart include: `--screenshot-pretffb=true|false` (default true) controls including the Pre‑TTFB chart when data is present.
 
 ## Stability & quality charts
 
 - Low‑Speed Time Share (%): Share of total transfer time spent below the Low‑Speed Threshold. Highlights choppiness even when averages look OK. Plotted for Overall, IPv4, and IPv6.
 - Stall Rate (%): Percent of requests that experienced any stall (transfer paused). Useful to spot buffering/outage symptoms.
-- Pre‑TTFB Stall Rate (%): Percent of requests aborted before the first byte due to a pre‑TTFB stall. Hidden when the metric is zero across all batches. Requires running the monitor with `IQM_PRE_TTFB_STALL=1` to record this signal.
+- Pre‑TTFB Stall Rate (%): Percent of requests aborted before the first byte due to a pre‑TTFB stall. Optional auto‑hide when the metric is zero across all batches (Settings → “Auto‑hide Pre‑TTFB (zero)”). Requires running the monitor with `--pre-ttfb-stall` to record this signal. You can show/hide the chart via Settings → “Pre‑TTFB Chart”, or seed it on launch with `--show-pretffb=true|false`.
 - Partial Body Rate (%): Percent of requests that returned an incomplete body (Content‑Length mismatch or early EOF). Plotted for Overall, IPv4, and IPv6. Full‑width, crosshair‑enabled, and exportable; included in headless screenshots as `partial_body_rate.png`.
 - Avg Stall Time (ms): Average total stalled time per stalled request. Higher means longer buffering events.
 - Stalled Requests Count: Derived as round(Lines × Stall Rate%). Quick absolute sense of how many requests stalled in a batch.
@@ -208,7 +213,8 @@ go build ./cmd/iqmviewer
 	--screenshot-variants averages \
 	--screenshot-low-speed-threshold-kbps 1000 \
 	--screenshot-dns-legacy false \
-	--screenshot-selftest true
+	--screenshot-selftest true \
+	--screenshot-pretffb true
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.
@@ -240,7 +246,7 @@ These help emphasize movement over time or relative variation when absolute base
 
 ## Preferences (persisted)
 
-- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, Overlay legacy DNS, and Screenshot Theme mode (Auto/Dark/Light).
+- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, Overlay legacy DNS, Pre‑TTFB visibility and Auto‑hide (zero), and Screenshot Theme mode (Auto/Dark/Light).
 
 ## Design
 - Offscreen rendering via go-chart, displayed as PNG with ImageFillStretch to occupy full width.

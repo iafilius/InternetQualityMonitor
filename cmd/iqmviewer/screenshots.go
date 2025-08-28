@@ -21,7 +21,7 @@ import (
 // theme: "auto", "dark", or "light" (controls background and overlay styling)
 // showDNSLegacy: when true, include dashed legacy dns_time_ms overlay on the DNS chart
 // includeSelfTest: when true, include the Local Throughput Self-Test chart
-func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool, includeSelfTest bool) error {
+func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool, includeSelfTest bool, includePreTTFB bool) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
 	}
@@ -136,6 +136,14 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 			name string
 			fn   func(*uiState) image.Image
 		}{name: "local_throughput_selftest.png", fn: renderSelfTestChart})
+	}
+
+	// Optionally include Pre‑TTFB stall rate if requested
+	if includePreTTFB {
+		baseSet = append(baseSet, struct {
+			name string
+			fn   func(*uiState) image.Image
+		}{name: "pretffb_stall_rate.png", fn: renderPreTTFBStallRateChart})
 	}
 
 	// Use default chart size from chartSize when state.window is nil.
