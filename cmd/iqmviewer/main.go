@@ -499,6 +499,8 @@ func main() {
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
+	// Initialize DNS legacy overlay preference early (used by menus)
+	state.showDNSLegacy = a.Preferences().BoolWithFallback("showDNSLegacy", false)
 	// Initialize theme mode from preferences (default: auto). Resolve effective theme for charts.
 	screenshotThemeMode = strings.ToLower(strings.TrimSpace(a.Preferences().StringWithFallback("screenshotThemeMode", "auto")))
 	if screenshotThemeMode != "auto" && screenshotThemeMode != "light" && screenshotThemeMode != "dark" {
@@ -509,9 +511,7 @@ func main() {
 
 	// top bar controls
 	fileLabel := widget.NewLabel(truncatePath(state.filePath, 60))
-	// Create selects without callbacks first; we'll wire them after canvases exist
-	speedSelect := widget.NewSelect([]string{"kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"}, nil)
-	speedSelect.Selected = state.speedUnit
+	// (Speed Unit selection moved to Settings menu)
 
 	// series toggles (callbacks assigned later, after canvases exist)
 	overallChk := widget.NewCheck("Overall", nil)
@@ -545,15 +545,7 @@ func main() {
 	// hints toggle (callback assigned later, after canvases are created)
 	hintsChk := widget.NewCheck("Hints", nil)
 	hintsChk.SetChecked(state.showHints)
-	// DNS legacy overlay toggle
-	dnsLegacyChk := widget.NewCheck("Show pre-resolve DNS (dns_time_ms)", nil)
-	dnsLegacyChk.SetChecked(state.app.Preferences().BoolWithFallback("showDNSLegacy", false))
-	state.showDNSLegacy = dnsLegacyChk.Checked
-	dnsLegacyChk.OnChanged = func(b bool) {
-		state.showDNSLegacy = b
-		savePrefs(state)
-		redrawCharts(state)
-	}
+	// (DNS legacy overlay toggle moved to Settings menu)
 
 	// SLA threshold inputs (configurable)
 	slaSpeedEntry := widget.NewEntry()
@@ -850,10 +842,8 @@ func main() {
 	top := container.NewHBox(
 		widget.NewButton("Open…", func() { openFileDialog(state, fileLabel) }),
 		widget.NewButton("Reload", func() { loadAll(state, fileLabel) }),
-		widget.NewLabel("Speed Unit:"), speedSelect,
 		widget.NewLabel("X-Axis:"), xAxisSelect,
 		widget.NewLabel("Y-Scale:"), yScaleSelect,
-		dnsLegacyChk,
 		widget.NewLabel("SLA P50 Speed (kbps):"), slaSpeedEntry,
 		widget.NewLabel("SLA P95 TTFB (ms):"), slaTTFBEntry,
 		widget.NewLabel("Low-Speed Threshold (kbps):"), lowSpeedEntry,
@@ -1324,14 +1314,6 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	}
 
 	// Wire select and hints callbacks after canvases exist
-	speedSelect.OnChanged = func(v string) {
-		state.speedUnit = v
-		savePrefs(state)
-		if state.table != nil {
-			state.table.Refresh()
-		}
-		redrawCharts(state)
-	}
 	xAxisSelect.OnChanged = func(v string) {
 		switch strings.ToLower(v) {
 		case "batch":
@@ -1526,7 +1508,7 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 
 	// menus, prefs, initial load
 	buildMenus(state, fileLabel)
-	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, xAxisSelect, yScaleSelect, tabs, speedSelect)
+	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, xAxisSelect, yScaleSelect, tabs, nil)
 	// Pre-populate Situation selector to reflect saved preference immediately (no save on init)
 	if state.situationSelect != nil {
 		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
@@ -1555,8 +1537,7 @@ Thresholds are configurable in the toolbar (defaults: P50 ≥ 10,000 kbps; P95 T
 	ipv4Chk.SetChecked(state.showIPv4)
 	ipv6Chk.SetChecked(state.showIPv6)
 	crosshairChk.SetChecked(state.crosshairEnabled)
-	// reflect DNS legacy overlay persisted preference
-	dnsLegacyChk.SetChecked(state.showDNSLegacy)
+	// (DNS legacy checkbox removed from toolbar)
 	// Ensure overlays reflect current preference immediately
 	if state.speedOverlay != nil {
 		state.speedOverlay.enabled = state.crosshairEnabled
@@ -1777,29 +1758,11 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportTLSMix := fyne.NewMenuItem("Export TLS Version Mix…", func() { exportChartPNG(state, state.tlsVersionMixImgCanvas, "tls_version_mix_chart.png") })
 	exportALPNMix := fyne.NewMenuItem("Export ALPN Mix…", func() { exportChartPNG(state, state.alpnMixImgCanvas, "alpn_mix_chart.png") })
 	exportChunkedRate := fyne.NewMenuItem("Export Chunked Transfer Rate…", func() { exportChartPNG(state, state.chunkedRateImgCanvas, "chunked_transfer_rate_chart.png") })
-	// Setup Timings submenu with overlay toggle
-	setupLabel := func() string {
-		if state.showDNSLegacy {
-			return "Overlay legacy DNS (dns_time_ms) ✓"
-		}
-		return "Overlay legacy DNS (dns_time_ms)"
-	}
-	toggleDNSLegacy := fyne.NewMenuItem(setupLabel(), func() {
-		state.showDNSLegacy = !state.showDNSLegacy
-		savePrefs(state)
-		redrawCharts(state)
-		// rebuild menus to refresh the ✓ label
-		go func() {
-			time.Sleep(30 * time.Millisecond)
-			fyne.Do(func() { buildMenus(state, fileLabel) })
-		}()
-	})
+	// Setup Timings submenu (exports only; DNS legacy overlay toggle moved to Settings)
 	setupSub := fyne.NewMenu("Setup Timings",
 		exportDNS,
 		exportConn,
 		exportTLS,
-		fyne.NewMenuItemSeparator(),
-		toggleDNSLegacy,
 	)
 	setupSubItem := fyne.NewMenuItem("Setup Timings", nil)
 	setupSubItem.ChildMenu = setupSub
@@ -1923,8 +1886,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
-	// View menu: Screenshot Theme (Auto/Dark/Light)
-	labelFor := func(name string) string {
+	// Settings menu: includes Screenshot Theme (Auto/Dark/Light) and other toggles
+	themeLabelFor := func(name string) string {
 		// name is one of Auto/Dark/Light
 		switch name {
 		case "Auto":
@@ -1942,7 +1905,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}
 		return name
 	}
-	autoItem := fyne.NewMenuItem(labelFor("Auto"), func() {
+	autoItem := fyne.NewMenuItem(themeLabelFor("Auto"), func() {
 		if strings.EqualFold(screenshotThemeMode, "auto") {
 			return
 		}
@@ -1959,7 +1922,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
-	darkItem := fyne.NewMenuItem(labelFor("Dark"), func() {
+	darkItem := fyne.NewMenuItem(themeLabelFor("Dark"), func() {
 		if strings.EqualFold(screenshotThemeMode, "dark") {
 			return
 		}
@@ -1977,7 +1940,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
-	lightItem := fyne.NewMenuItem(labelFor("Light"), func() {
+	lightItem := fyne.NewMenuItem(themeLabelFor("Light"), func() {
 		if strings.EqualFold(screenshotThemeMode, "light") {
 			return
 		}
@@ -1993,10 +1956,289 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
-	// Add the three options under View
-	viewMenu := fyne.NewMenu("View", autoItem, darkItem, lightItem)
+	// Crosshair toggle menu item
+	crosshairLabel := func() string {
+		if state.crosshairEnabled {
+			return "Crosshair ✓"
+		}
+		return "Crosshair"
+	}
+	crosshairToggle := fyne.NewMenuItem(crosshairLabel(), func() {
+		b := !state.crosshairEnabled
+		state.crosshairEnabled = b
+		savePrefs(state)
+		// Apply to all overlays
+		if state.speedOverlay != nil {
+			state.speedOverlay.enabled = b
+			state.speedOverlay.Refresh()
+		}
+		if state.ttfbOverlay != nil {
+			state.ttfbOverlay.enabled = b
+			state.ttfbOverlay.Refresh()
+		}
+		if state.pctlOverallOverlay != nil {
+			state.pctlOverallOverlay.enabled = b
+			state.pctlOverallOverlay.Refresh()
+		}
+		if state.pctlIPv4Overlay != nil {
+			state.pctlIPv4Overlay.enabled = b
+			state.pctlIPv4Overlay.Refresh()
+		}
+		if state.pctlIPv6Overlay != nil {
+			state.pctlIPv6Overlay.enabled = b
+			state.pctlIPv6Overlay.Refresh()
+		}
+		if state.errOverlay != nil {
+			state.errOverlay.enabled = b
+			state.errOverlay.Refresh()
+		}
+		if state.jitterOverlay != nil {
+			state.jitterOverlay.enabled = b
+			state.jitterOverlay.Refresh()
+		}
+		if state.covOverlay != nil {
+			state.covOverlay.enabled = b
+			state.covOverlay.Refresh()
+		}
+		if state.tpctlOverallOverlay != nil {
+			state.tpctlOverallOverlay.enabled = b
+			state.tpctlOverallOverlay.Refresh()
+		}
+		if state.tpctlIPv4Overlay != nil {
+			state.tpctlIPv4Overlay.enabled = b
+			state.tpctlIPv4Overlay.Refresh()
+		}
+		if state.tpctlIPv6Overlay != nil {
+			state.tpctlIPv6Overlay.enabled = b
+			state.tpctlIPv6Overlay.Refresh()
+		}
+		if state.plCountOverlay != nil {
+			state.plCountOverlay.enabled = b
+			state.plCountOverlay.Refresh()
+		}
+		if state.plLongestOverlay != nil {
+			state.plLongestOverlay.enabled = b
+			state.plLongestOverlay.Refresh()
+		}
+		if state.plStableOverlay != nil {
+			state.plStableOverlay.enabled = b
+			state.plStableOverlay.Refresh()
+		}
+		if state.cacheOverlay != nil {
+			state.cacheOverlay.enabled = b
+			state.cacheOverlay.Refresh()
+		}
+		if state.proxyOverlay != nil {
+			state.proxyOverlay.enabled = b
+			state.proxyOverlay.Refresh()
+		}
+		if state.warmCacheOverlay != nil {
+			state.warmCacheOverlay.enabled = b
+			state.warmCacheOverlay.Refresh()
+		}
+		if state.protocolMixOverlay != nil {
+			state.protocolMixOverlay.enabled = b
+			state.protocolMixOverlay.Refresh()
+		}
+		if state.protocolAvgSpeedOverlay != nil {
+			state.protocolAvgSpeedOverlay.enabled = b
+			state.protocolAvgSpeedOverlay.Refresh()
+		}
+		if state.protocolStallRateOverlay != nil {
+			state.protocolStallRateOverlay.enabled = b
+			state.protocolStallRateOverlay.Refresh()
+		}
+		if state.protocolErrorRateOverlay != nil {
+			state.protocolErrorRateOverlay.enabled = b
+			state.protocolErrorRateOverlay.Refresh()
+		}
+		if state.tlsVersionMixOverlay != nil {
+			state.tlsVersionMixOverlay.enabled = b
+			state.tlsVersionMixOverlay.Refresh()
+		}
+		if state.alpnMixOverlay != nil {
+			state.alpnMixOverlay.enabled = b
+			state.alpnMixOverlay.Refresh()
+		}
+		if state.chunkedRateOverlay != nil {
+			state.chunkedRateOverlay.enabled = b
+			state.chunkedRateOverlay.Refresh()
+		}
+		if state.setupDNSOverlay != nil {
+			state.setupDNSOverlay.enabled = b
+			state.setupDNSOverlay.Refresh()
+		}
+		if state.setupConnOverlay != nil {
+			state.setupConnOverlay.enabled = b
+			state.setupConnOverlay.Refresh()
+		}
+		if state.setupTLSOverlay != nil {
+			state.setupTLSOverlay.enabled = b
+			state.setupTLSOverlay.Refresh()
+		}
+		if state.tailRatioOverlay != nil {
+			state.tailRatioOverlay.enabled = b
+			state.tailRatioOverlay.Refresh()
+		}
+		if state.speedDeltaOverlay != nil {
+			state.speedDeltaOverlay.enabled = b
+			state.speedDeltaOverlay.Refresh()
+		}
+		if state.ttfbDeltaOverlay != nil {
+			state.ttfbDeltaOverlay.enabled = b
+			state.ttfbDeltaOverlay.Refresh()
+		}
+		if state.slaSpeedOverlay != nil {
+			state.slaSpeedOverlay.enabled = b
+			state.slaSpeedOverlay.Refresh()
+		}
+		if state.slaTTFBOverlay != nil {
+			state.slaTTFBOverlay.enabled = b
+			state.slaTTFBOverlay.Refresh()
+		}
+		if state.lowSpeedOverlay != nil {
+			state.lowSpeedOverlay.enabled = b
+			state.lowSpeedOverlay.Refresh()
+		}
+		if state.stallRateOverlay != nil {
+			state.stallRateOverlay.enabled = b
+			state.stallRateOverlay.Refresh()
+		}
+		if state.stallTimeOverlay != nil {
+			state.stallTimeOverlay.enabled = b
+			state.stallTimeOverlay.Refresh()
+		}
+		if state.stallCountOverlay != nil {
+			state.stallCountOverlay.enabled = b
+			state.stallCountOverlay.Refresh()
+		}
+		// refresh menu label
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
 
-	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, viewMenu)
+	// Hints toggle
+	hintsLabel := func() string {
+		if state.showHints {
+			return "Hints ✓"
+		}
+		return "Hints"
+	}
+	hintsToggle := fyne.NewMenuItem(hintsLabel(), func() {
+		state.showHints = !state.showHints
+		savePrefs(state)
+		redrawCharts(state)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+
+	// Rolling overlays toggles
+	rollingLabel := func() string {
+		if state.showRolling {
+			return "Rolling Overlays ✓"
+		}
+		return "Rolling Overlays"
+	}
+	rollingToggle := fyne.NewMenuItem(rollingLabel(), func() {
+		state.showRolling = !state.showRolling
+		savePrefs(state)
+		redrawCharts(state)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+	bandLabel := func() string {
+		if state.showRollingBand {
+			return "±1σ Band ✓"
+		}
+		return "±1σ Band"
+	}
+	bandToggle := fyne.NewMenuItem(bandLabel(), func() {
+		state.showRollingBand = !state.showRollingBand
+		savePrefs(state)
+		redrawCharts(state)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+
+	// DNS legacy overlay toggle moved here
+	dnsLabel := func() string {
+		if state.showDNSLegacy {
+			return "Overlay legacy DNS (dns_time_ms) ✓"
+		}
+		return "Overlay legacy DNS (dns_time_ms)"
+	}
+	dnsToggle := fyne.NewMenuItem(dnsLabel(), func() {
+		state.showDNSLegacy = !state.showDNSLegacy
+		savePrefs(state)
+		redrawCharts(state)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+
+	// Theme submenu under Settings
+	themeSub := fyne.NewMenu("Screenshot Theme", autoItem, darkItem, lightItem)
+	themeSubItem := fyne.NewMenuItem("Screenshot Theme", nil)
+	themeSubItem.ChildMenu = themeSub
+
+	// Speed Unit submenu under Settings
+	speedUnitLabelFor := func(u string) string {
+		if strings.EqualFold(state.speedUnit, u) {
+			return u + " ✓"
+		}
+		return u
+	}
+	setSpeedUnit := func(u string) {
+		if strings.EqualFold(state.speedUnit, u) {
+			return
+		}
+		state.speedUnit = u
+		savePrefs(state)
+		if state.table != nil {
+			state.table.Refresh()
+		}
+		redrawCharts(state)
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	}
+	suKbps := fyne.NewMenuItem(speedUnitLabelFor("kbps"), func() { setSpeedUnit("kbps") })
+	suKBps := fyne.NewMenuItem(speedUnitLabelFor("kBps"), func() { setSpeedUnit("kBps") })
+	suMbps := fyne.NewMenuItem(speedUnitLabelFor("Mbps"), func() { setSpeedUnit("Mbps") })
+	suMBps := fyne.NewMenuItem(speedUnitLabelFor("MBps"), func() { setSpeedUnit("MBps") })
+	suGbps := fyne.NewMenuItem(speedUnitLabelFor("Gbps"), func() { setSpeedUnit("Gbps") })
+	suGBps := fyne.NewMenuItem(speedUnitLabelFor("GBps"), func() { setSpeedUnit("GBps") })
+	speedUnitSub := fyne.NewMenu("Speed Unit",
+		suKbps, suKBps, suMbps, suMBps, suGbps, suGBps,
+	)
+	speedUnitSubItem := fyne.NewMenuItem("Speed Unit", nil)
+	speedUnitSubItem.ChildMenu = speedUnitSub
+
+	settingsMenu := fyne.NewMenu("Settings",
+		crosshairToggle,
+		hintsToggle,
+		fyne.NewMenuItemSeparator(),
+		rollingToggle,
+		bandToggle,
+		fyne.NewMenuItemSeparator(),
+		dnsToggle,
+		fyne.NewMenuItemSeparator(),
+		speedUnitSubItem,
+		fyne.NewMenuItemSeparator(),
+		themeSubItem,
+	)
+
+	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, settingsMenu)
 	state.window.SetMainMenu(mainMenu)
 
 	canv := state.window.Canvas()

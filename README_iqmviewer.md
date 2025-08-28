@@ -19,12 +19,18 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Load `monitor_results.jsonl` and display the latest N batches (grouped by `run_tag`).
 - Situation filter with "All" option (default). The active Situation appears as a subtle on-image watermark and is embedded into exports.
 - X-axis modes: Batch, RunTag, and Time with rounded ticks. Y-scale: Absolute or Relative.
-- Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps.
+- Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps (select under Settings → Speed Unit).
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
+
+### Settings menu
+- Crosshair, Hints, Rolling Mean overlay, and ±1σ Band toggles
+- Overlay legacy DNS (dns_time_ms) toggle for the DNS chart
+- Speed Unit: kbps, kBps, Mbps, MBps, Gbps, GBps
+- Screenshot Theme: Auto, Dark, Light
 
 ### Layout and sizing
 - Full-width charts: images use a stretch fill to visually occupy the entire available width.
@@ -32,7 +38,7 @@ You can also launch without a flag and open a file via File → Open (Cmd/Ctrl+O
 - Debounced resize: viewer redraws on meaningful width changes only (guarded to prevent jitter-driven redraw loops).
 
 ### Theme selection
-- View → Screenshot Theme: Auto (default), Dark, Light.
+- Settings → Screenshot Theme: Auto (default), Dark, Light.
 - Auto follows the system appearance on macOS; other OSes default to Light unless you pick Dark.
 - All charts and overlays are theme-aware (no stray white fills). Hints and watermarks use high-contrast colors per theme.
 
@@ -65,7 +71,7 @@ Examples:
 
 DNS data sources and overlay
 - Preferred source is httptrace (trace_dns_ms). When unavailable, the legacy dns_time_ms is used.
-- You can also overlay the legacy pre-resolve series: toggle “Show pre-resolve DNS (dns_time_ms)” in the toolbar to add a dashed overlay for comparison (Overall/IPv4/IPv6).
+- You can also overlay the legacy pre-resolve series: Settings → “Overlay legacy DNS (dns_time_ms)” adds a dashed overlay for comparison (Overall/IPv4/IPv6).
 	- Headless: pass --screenshot-dns-legacy=true (or set the 7th arg to true in update_screenshots.sh) to include the dashed overlay in docs screenshots.
 
 Examples:
@@ -98,6 +104,15 @@ Low‑Speed Threshold control
 Example (Avg Speed with Rolling overlays):
 
 ![Avg Speed with Rolling overlays](docs/images/speed_avg.png)
+
+## Local Throughput Self-Test (baseline)
+
+- On startup, the viewer runs a short local loopback throughput self-test by default and records the baseline (kbps).
+- The baseline is visualized in a dedicated “Local Throughput Self-Test” chart and used as context for speed expectations.
+- Exports: The chart has its own export item and can be included in headless screenshot runs.
+- Controls:
+	- Runtime flags: `--selftest-speed=true|false` (default true), `--selftest-duration=300ms`.
+	- Headless screenshots: `--screenshot-selftest=true|false` (default true) to include/exclude this chart.
 
 ## Percentiles (variability)
 
@@ -187,7 +202,8 @@ go build ./cmd/iqmviewer
 	--screenshot-theme auto \
 	--screenshot-variants averages \
 	--screenshot-low-speed-threshold-kbps 1000 \
-	--screenshot-dns-legacy false
+	--screenshot-dns-legacy false \
+	--screenshot-selftest true
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.
@@ -219,7 +235,7 @@ These help emphasize movement over time or relative variation when absolute base
 
 ## Preferences (persisted)
 
-- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, and Screenshot Theme mode (Auto/Dark/Light).
+- Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, Overlay legacy DNS, and Screenshot Theme mode (Auto/Dark/Light).
 
 ## Design
 - Offscreen rendering via go-chart, displayed as PNG with ImageFillStretch to occupy full width.
@@ -247,6 +263,7 @@ Flags:
 - -screenshot-theme: 'auto' | 'dark' | 'light' (default auto)
 - -screenshot-variants: 'none' | 'averages' (default 'averages')
 - -screenshot-dns-legacy: Overlay dashed legacy dns_time_ms on the DNS chart (default false)
+- -screenshot-selftest: Include the Local Throughput Self-Test chart (default true)
 ```
 go test ./cmd/iqmviewer -run TestScreenshotWidths_ -v
 ```
