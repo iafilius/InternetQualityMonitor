@@ -1153,6 +1153,13 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 			firstRTTBytes = bytesRead
 		}
 		if er != nil {
+			// Normal end of stream or early termination
+			if errors.Is(er, io.EOF) {
+				if expectedBytes > 0 && bytesRead < expectedBytes {
+					// Early EOF; the mismatch flag will be set below. Log a concise debug for diagnostics.
+					Debugf("[%s %s] early EOF at %d/%d bytes (%.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, (float64(bytesRead)*100.0)/float64(expectedBytes))
+				}
+			}
 			break
 		}
 		// Stall detection
@@ -1165,6 +1172,10 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 			}
 			sr.TransferStalled = true
 			sr.StallElapsedMs = time.Since(transferStart).Milliseconds()
+			if sr.HTTPError == "" {
+				sr.HTTPError = "stall_abort"
+			}
+			// Break out and force close to stop reads promptly
 			break
 		}
 	}
@@ -1197,6 +1208,12 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		if clVal, e := strconv.ParseInt(clHeader, 10, 64); e == nil {
 			sr.ContentLengthHeader = clVal
 			sr.ContentLengthMismatch = (clVal != bytesRead)
+			// If server closed the connection before delivering the advertised Content-Length,
+			// treat this as an incomplete transfer. Surface it as an HTTPError so analysis counts it.
+			if sr.ContentLengthMismatch && sr.HTTPError == "" {
+				sr.HTTPError = fmt.Sprintf("partial_body: expected=%d read=%d", clVal, bytesRead)
+				Warnf("[%s %s] content-length mismatch: expected=%d read=%d", site.Name, ipStr, clVal, bytesRead)
+			}
 		}
 	}
 
@@ -1577,7 +1594,25 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	if tlsv == "" {
 		tlsv = "(unknown)"
 	}
-	Infof("[%s %s] done head=%d sec_get=%d bytes=%d time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, headStatus, secStatus, transferBytes, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
+	// Final status log: distinguish between success, aborted (stall), and incomplete (partial body)
+	statusLabel := "done"
+	if sr.TransferStalled {
+		statusLabel = "aborted"
+	} else if sr.ContentLengthMismatch {
+		statusLabel = "incomplete"
+	}
+	var extra string
+	if sr.ContentLengthHeader > 0 {
+		pct := (float64(transferBytes) * 100.0) / float64(sr.ContentLengthHeader)
+		extra = fmt.Sprintf(" (%.1f%% of %d)", pct, sr.ContentLengthHeader)
+	}
+	finalLine := fmt.Sprintf("[%s %s] %s head=%d sec_get=%d bytes=%d%s time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, statusLabel, headStatus, secStatus, transferBytes, extra, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
+	if statusLabel == "done" {
+		Infof(finalLine)
+	} else {
+		// escalate visibility for abnormal end states
+		Warnf(finalLine)
+	}
 }
 
 // fillProtocolTLSAndEncoding extracts protocol (HTTP version), TLS (version/cipher/ALPN),
