@@ -8702,6 +8702,271 @@ func formatTick(v float64) string {
 	}
 }
 
+// --- Image analysis helpers for calibration ---
+// nearColor checks if a pixel is close to a target RGBA within tolerance (0..255 channel space)
+func nearColor(c color.Color, target color.RGBA, tol uint8) bool {
+	r, g, b, a := c.RGBA()
+	if a == 0 { // ignore fully transparent
+		return false
+	}
+	R := uint8(r >> 8)
+	G := uint8(g >> 8)
+	B := uint8(b >> 8)
+	dr := int(int(R) - int(target.R))
+	dg := int(int(G) - int(target.G))
+	db := int(int(B) - int(target.B))
+	if dr < 0 {
+		dr = -dr
+	}
+	if dg < 0 {
+		dg = -dg
+	}
+	if db < 0 {
+		db = -db
+	}
+	t := int(tol)
+	return dr <= t && dg <= t && db <= t
+}
+
+// detectXGridlineCenters scans vertical columns and clusters columns that match the major grid color,
+// returning the X centers in image pixel space.
+// It looks for the X-axis major gridlines drawn by go-chart.
+func detectXGridlineCenters(img image.Image, isDark bool) []float32 {
+	if img == nil {
+		return nil
+	}
+	b := img.Bounds()
+	w := b.Dx()
+	h := b.Dy()
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	// Colors from themeChart: light grid = #DDDDDD, dark grid = #333333
+	var grid color.RGBA
+	if isDark {
+		grid = color.RGBA{R: 0x33, G: 0x33, B: 0x33, A: 0xFF}
+	} else {
+		grid = color.RGBA{R: 0xDD, G: 0xDD, B: 0xDD, A: 0xFF}
+	}
+	tol := uint8(18)
+	colCounts := make([]int, w)
+	// scan excluding top title area and bottom labels: focus on middle band
+	y0 := b.Min.Y + h/5
+	y1 := b.Min.Y + (h*4)/5
+	for x := 0; x < w; x++ {
+		cnt := 0
+		for y := y0; y < y1; y++ {
+			if nearColor(img.At(b.Min.X+x, y), grid, tol) {
+				cnt++
+			}
+		}
+		colCounts[x] = cnt
+	}
+	type cluster struct{ start, end int }
+	var clusters []cluster
+	in := false
+	s := 0
+	minRun := (y1 - y0) / 20 // at least 5% of band height to count as a line
+	for x := 0; x < w; x++ {
+		if colCounts[x] >= minRun {
+			if !in {
+				in = true
+				s = x
+			}
+		} else if in {
+			in = false
+			clusters = append(clusters, cluster{start: s, end: x - 1})
+		}
+	}
+	if in {
+		clusters = append(clusters, cluster{start: s, end: w - 1})
+	}
+	centers := make([]float32, 0, len(clusters))
+	for _, c := range clusters {
+		// weighted center
+		sumW := 0
+		sumX := 0
+		for x := c.start; x <= c.end; x++ {
+			sumW += colCounts[x]
+			sumX += x * colCounts[x]
+		}
+		if sumW > 0 {
+			centers = append(centers, float32(b.Min.X+int(float32(sumX)/float32(sumW))))
+		}
+	}
+	sort.Slice(centers, func(i, j int) bool { return centers[i] < centers[j] })
+	return centers
+}
+// --- Crosshair mapping helpers (pure math; used by tests) ---
+// computeContainRect returns the drawn image rect and scale when an image of (imgW,imgH)
+// is rendered into a view of (viewW,viewH) using a contain-fit policy.
+func computeContainRect(imgW, imgH, viewW, viewH float32) (drawX, drawY, drawW, drawH, scale float32) {
+	if imgW <= 0 || imgH <= 0 || viewW <= 0 || viewH <= 0 {
+		return 0, 0, viewW, viewH, 1
+	}
+	sx := viewW / imgW
+	sy := viewH / imgH
+	scale = sx
+	if sy < sx {
+		scale = sy
+	}
+	drawW = imgW * scale
+	drawH = imgH * scale
+	drawX = (viewW - drawW) / 2
+	drawY = (viewH - drawH) / 2
+	return
+}
+
+// Empirical axis gutters (in image pixels before scaling) that go-chart reserves inside background padding.
+// Left accounts for Y-axis ticks/labels; Right adds a small margin.
+const axisLeftGutterPx float32 = 40
+const axisRightGutterPx float32 = 6
+
+// xCentersIndexMode computes the pixel centers for n batches in the overlay/view space
+// given the original image size and the current view size. It mirrors the runtime mapping
+// logic in crosshairRenderer.Layout for index-mode X mapping.
+func xCentersIndexMode(n int, imgW, imgH, viewW, viewH float32) []float32 {
+	if n <= 0 {
+		return nil
+	}
+	drawX, _, _, _, scale := computeContainRect(imgW, imgH, viewW, viewH)
+	// Match chart Background.Padding plus empirical axis gutters
+	leftPadImg := float32(16) + axisLeftGutterPx
+	rightPadImg := float32(12) + axisRightGutterPx
+	plotWImg := imgW - leftPadImg - rightPadImg
+	if plotWImg < 1 {
+		plotWImg = imgW
+	}
+	px := make([]float32, n)
+	for i := 0; i < n; i++ {
+		pxImg := leftPadImg + plotWImg*(float32(i)+0.5)/float32(n)
+		px[i] = drawX + pxImg*scale
+	}
+	return px
+}
+
+// indexFromMouseIndexMode returns the nearest batch index for a given mouseX in view space.
+func indexFromMouseIndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) int {
+	if n <= 0 {
+		return 0
+	}
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, cx := range centers {
+		d := float32(math.Abs(float64(cx - mouseX)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best
+}
+
+// xCentersTimeMode computes the pixel centers for given timestamps in the overlay/view space
+// using the same interpolation as the renderer: linear between min and max time.
+func xCentersTimeMode(times []time.Time, imgW, imgH, viewW, viewH float32) []float32 {
+	if len(times) == 0 {
+		return nil
+	}
+	drawX, _, _, _, scale := computeContainRect(imgW, imgH, viewW, viewH)
+	// Match chart Background.Padding plus empirical axis gutters
+	leftPadImg := float32(16) + axisLeftGutterPx
+	rightPadImg := float32(12) + axisRightGutterPx
+	plotWImg := imgW - leftPadImg - rightPadImg
+	if plotWImg < 1 {
+		plotWImg = imgW
+	}
+	minT := times[0]
+	maxT := times[0]
+	for _, t := range times[1:] {
+		if t.Before(minT) {
+			minT = t
+		}
+		if t.After(maxT) {
+			maxT = t
+		}
+	}
+	span := maxT.Sub(minT)
+	px := make([]float32, len(times))
+	for i, t := range times {
+		var fx float64
+		if span > 0 {
+			fx = float64(t.Sub(minT)) / float64(span)
+		} else {
+			fx = 0
+		}
+		pxImg := leftPadImg + float32(fx)*plotWImg
+		px[i] = drawX + pxImg*scale
+	}
+	return px
+}
+
+// snappedIndexAndLineX_IndexMode returns the selected index and snapped line X position (view space).
+func snappedIndexAndLineX_IndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	idx := indexFromMouseIndexMode(n, imgW, imgH, viewW, viewH, mouseX)
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	var lineX float32
+	if idx >= 0 && idx < len(centers) {
+		lineX = centers[idx]
+	}
+	return idx, lineX
+}
+
+// snappedIndexAndLineX_TimeMode returns the selected index and snapped line X position for time mode.
+func snappedIndexAndLineX_TimeMode(times []time.Time, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	centers := xCentersTimeMode(times, imgW, imgH, viewW, viewH)
+	if len(centers) == 0 {
+		return -1, 0
+	}
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, cx := range centers {
+		d := float32(math.Abs(float64(cx - mouseX)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best, centers[best]
+}
+
+// nearestIndexAndLineXFromCenters picks the nearest center to mouseX and returns its index and X.
+func nearestIndexAndLineXFromCenters(centers []float32, mouseX float32) (int, float32) {
+	if len(centers) == 0 {
+		return -1, 0
+	}
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, cx := range centers {
+		d := float32(math.Abs(float64(cx - mouseX)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best, centers[best]
+}
+
+// labelForIndex returns the X label used by the crosshair for a given index.
+func labelForIndex(rows []analysis.BatchSummary, xAxisMode string, idx int) string {
+	if idx < 0 || idx >= len(rows) {
+		return ""
+	}
+	switch xAxisMode {
+	case "run_tag":
+		return rows[idx].RunTag
+	case "time":
+		t := parseRunTagTime(rows[idx].RunTag)
+		if !t.IsZero() {
+			return t.Format("01-02 15:04:05")
+		}
+		return rows[idx].RunTag
+	default:
+		return fmt.Sprintf("Batch %d", idx+1)
+	}
+}
+
 // drawHint draws a small hint string onto the provided image near the bottom-left.
 func drawHint(img image.Image, text string) image.Image {
 	if img == nil || strings.TrimSpace(text) == "" {
@@ -9712,6 +9977,8 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 	if r.c == nil {
 		return
 	}
+	// TODO(iqmviewer-crosshair): Crosshair X calibration in index-mode is not fully reliable across sizes/themes.
+	// Track and fix: see BUG_CROSSHAIR_ALIGNMENT.md for details and acceptance criteria.
 	if r.bg != nil {
 		r.bg.Resize(size)
 		r.bg.Move(fyne.NewPos(0, 0))
@@ -9851,19 +10118,8 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 	if imgW <= 0 || imgH <= 0 {
 		imgW, imgH = float32(size.Width), float32(size.Height)
 	}
-	// Compute contain scaling
-	if imgW > 0 && imgH > 0 {
-		sx := float32(size.Width) / imgW
-		sy := float32(size.Height) / imgH
-		scale = sx
-		if sy < sx {
-			scale = sy
-		}
-		drawW = imgW * scale
-		drawH = imgH * scale
-		drawX = (float32(size.Width) - drawW) / 2
-		drawY = (float32(size.Height) - drawH) / 2
-	}
+	// Compute contain scaling (centralized helper)
+	drawX, drawY, drawW, drawH, scale = computeContainRect(imgW, imgH, float32(size.Width), float32(size.Height))
 	// Hide crosshair when cursor is outside drawn image rect (contain-fit area)
 	if !(float32(x) >= drawX && float32(x) <= drawX+drawW && float32(y) >= drawY && float32(y) <= drawY+drawH) {
 		r.lineV.Position1 = fyne.NewPos(-10, -10)
@@ -9879,18 +10135,121 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 		return
 	}
 	// chart paddings used when rendering the image (in image pixel space)
-	leftPadImg, rightPadImg := float32(16), float32(12)
+	// Match chart Background.Padding plus empirical axis gutters
+	leftPadImg := float32(16) + axisLeftGutterPx
+	rightPadImg := float32(12) + axisRightGutterPx
 	plotWImg := imgW - leftPadImg - rightPadImg
 	if plotWImg < 1 {
 		plotWImg = imgW
 	}
-	// Build X positions per point in image pixel space, then map to overlay space
-	idx := 0
-	// cx removed, we follow mouse for vertical line
+	// Build X positions per point in overlay space and pick nearest index
+	idx := -1
 	if n > 0 && plotWImg > 0 {
-		pxView := make([]float32, n)
 		timeMode, times, _, _ := buildXAxis(rows, r.c.state.xAxisMode)
+		// Optional calibration vector in view space
+		var pxView []float32
+		if !timeMode {
+			// Try to detect gridline centers from the rendered image (image pixel space)
+			isDark := !strings.EqualFold(screenshotThemeGlobal, "light")
+			// find attached image again
+			var imgCanvas *canvas.Image
+			switch r.c.mode {
+			case "speed":
+				imgCanvas = r.c.state.speedImgCanvas
+			case "ttfb":
+				imgCanvas = r.c.state.ttfbImgCanvas
+			case "pctl_overall":
+				imgCanvas = r.c.state.pctlOverallImg
+			case "pctl_ipv4":
+				imgCanvas = r.c.state.pctlIPv4Img
+			case "pctl_ipv6":
+				imgCanvas = r.c.state.pctlIPv6Img
+			case "tpctl_overall":
+				imgCanvas = r.c.state.tpctlOverallImg
+			case "tpctl_ipv4":
+				imgCanvas = r.c.state.tpctlIPv4Img
+			case "tpctl_ipv6":
+				imgCanvas = r.c.state.tpctlIPv6Img
+			case "error":
+				imgCanvas = r.c.state.errImgCanvas
+			case "jitter":
+				imgCanvas = r.c.state.jitterImgCanvas
+			case "cov":
+				imgCanvas = r.c.state.covImgCanvas
+			case "plateau_count":
+				imgCanvas = r.c.state.plCountImgCanvas
+			case "plateau_longest":
+				imgCanvas = r.c.state.plLongestImgCanvas
+			case "plateau_stable":
+				imgCanvas = r.c.state.plStableImgCanvas
+			case "cache_hit":
+				imgCanvas = r.c.state.cacheImgCanvas
+			case "proxy_suspected":
+				imgCanvas = r.c.state.proxyImgCanvas
+			case "warm_cache":
+				imgCanvas = r.c.state.warmCacheImgCanvas
+			case "low_speed_share":
+				imgCanvas = r.c.state.lowSpeedImgCanvas
+			case "stall_rate":
+				imgCanvas = r.c.state.stallRateImgCanvas
+			case "pretffb_stall_rate":
+				imgCanvas = r.c.state.pretffbImgCanvas
+			case "stall_time":
+				imgCanvas = r.c.state.stallTimeImgCanvas
+			case "stall_count":
+				imgCanvas = r.c.state.stallCountImgCanvas
+			case "tail_ratio":
+				imgCanvas = r.c.state.tailRatioImgCanvas
+			case "ttfb_tail_ratio":
+				imgCanvas = r.c.state.ttfbTailRatioImgCanvas
+			case "speed_delta_pct":
+				imgCanvas = r.c.state.speedDeltaPctImgCanvas
+			case "ttfb_delta_pct":
+				imgCanvas = r.c.state.ttfbDeltaPctImgCanvas
+			case "sla_speed_delta":
+				imgCanvas = r.c.state.slaSpeedDeltaImgCanvas
+			case "sla_ttfb_delta":
+				imgCanvas = r.c.state.slaTTFBDeltaImgCanvas
+			case "speed_delta":
+				imgCanvas = r.c.state.speedDeltaImgCanvas
+			case "ttfb_delta":
+				imgCanvas = r.c.state.ttfbDeltaImgCanvas
+			case "sla_speed":
+				imgCanvas = r.c.state.slaSpeedImgCanvas
+			case "sla_ttfb":
+				imgCanvas = r.c.state.slaTTFBImgCanvas
+			case "ttfb_p95_gap":
+				imgCanvas = r.c.state.tpctlP95GapImgCanvas
+			case "selftest_speed":
+				imgCanvas = r.c.state.selfTestImgCanvas
+			case "protocol_mix":
+				imgCanvas = r.c.state.protocolMixImgCanvas
+			case "protocol_avg_speed":
+				imgCanvas = r.c.state.protocolAvgSpeedImgCanvas
+			case "protocol_stall_rate":
+				imgCanvas = r.c.state.protocolStallRateImgCanvas
+			case "protocol_error_rate":
+				imgCanvas = r.c.state.protocolErrorRateImgCanvas
+			case "tls_version_mix":
+				imgCanvas = r.c.state.tlsVersionMixImgCanvas
+			case "alpn_mix":
+				imgCanvas = r.c.state.alpnMixImgCanvas
+			case "chunked_rate":
+				imgCanvas = r.c.state.chunkedRateImgCanvas
+			}
+			if imgCanvas != nil && imgCanvas.Image != nil {
+				centersImg := detectXGridlineCenters(imgCanvas.Image, isDark)
+				if len(centersImg) >= n {
+					pxView = make([]float32, n)
+					for i := 0; i < n; i++ {
+						pxView[i] = drawX + centersImg[i]*scale
+					}
+				}
+			}
+		}
 		if timeMode {
+			// Compute pxView for time mode inline
+			pxView = make([]float32, n)
 			minT := times[0]
 			maxT := times[0]
 			for _, t := range times[1:] {
@@ -9912,37 +10271,168 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				pxImg := leftPadImg + float32(fx)*plotWImg
 				pxView[i] = drawX + pxImg*scale
 			}
-		} else {
-			for i := 0; i < n; i++ {
-				pxImg := leftPadImg + plotWImg*(float32(i)+0.5)/float32(n)
-				pxView[i] = drawX + pxImg*scale
-			}
+		} else if pxView == nil {
+			// Fallback: compute centers via math helper
+			pxView = xCentersIndexMode(n, imgW, imgH, float32(size.Width), float32(size.Height))
 		}
 		// Nearest by pixel distance in overlay coords
-		bestD := float32(math.MaxFloat32)
-		mx := float32(x)
-		for i := 0; i < n; i++ {
-			d := float32(math.Abs(float64(pxView[i] - mx)))
-			if d < bestD {
-				bestD = d
-				idx = i
-				// keep idx only; vertical line follows mouse
+		if len(pxView) > 0 {
+			bestD := float32(math.MaxFloat32)
+			mx := float32(x)
+			for i := 0; i < n; i++ {
+				d := float32(math.Abs(float64(pxView[i] - mx)))
+				if d < bestD {
+					bestD = d
+					idx = i
+				}
 			}
 		}
 	}
-	// vertical line follows mouse to avoid false precision when scaling is applied
-	r.lineV.Position1 = fyne.NewPos(float32(x), 0)
-	r.lineV.Position2 = fyne.NewPos(float32(x), size.Height)
+	// Snap the vertical line to the nearest data X for precise alignment with ticks
+	var lineX float32 = float32(x)
+	if n > 0 && idx >= 0 {
+		rows := filteredSummaries(r.c.state)
+		timeMode, times, _, _ := buildXAxis(rows, r.c.state.xAxisMode)
+		if timeMode {
+			if len(times) > 0 {
+				minT := times[0]
+				maxT := times[0]
+				for _, t := range times[1:] {
+					if t.Before(minT) {
+						minT = t
+					}
+					if t.After(maxT) {
+						maxT = t
+					}
+				}
+				span := maxT.Sub(minT)
+				var fx float64
+				if span > 0 {
+					fx = float64(times[idx].Sub(minT)) / float64(span)
+				} else {
+					fx = 0
+				}
+				pxImg := leftPadImg + float32(fx)*plotWImg
+				lineX = drawX + pxImg*scale
+			}
+		} else {
+			// Prefer calibrated centers if available
+			isDark := !strings.EqualFold(screenshotThemeGlobal, "light")
+			var imgCanvas *canvas.Image
+			switch r.c.mode {
+			case "speed":
+				imgCanvas = r.c.state.speedImgCanvas
+			case "ttfb":
+				imgCanvas = r.c.state.ttfbImgCanvas
+			case "pctl_overall":
+				imgCanvas = r.c.state.pctlOverallImg
+			case "pctl_ipv4":
+				imgCanvas = r.c.state.pctlIPv4Img
+			case "pctl_ipv6":
+				imgCanvas = r.c.state.pctlIPv6Img
+			case "tpctl_overall":
+				imgCanvas = r.c.state.tpctlOverallImg
+			case "tpctl_ipv4":
+				imgCanvas = r.c.state.tpctlIPv4Img
+			case "tpctl_ipv6":
+				imgCanvas = r.c.state.tpctlIPv6Img
+			case "error":
+				imgCanvas = r.c.state.errImgCanvas
+			case "jitter":
+				imgCanvas = r.c.state.jitterImgCanvas
+			case "cov":
+				imgCanvas = r.c.state.covImgCanvas
+			case "plateau_count":
+				imgCanvas = r.c.state.plCountImgCanvas
+			case "plateau_longest":
+				imgCanvas = r.c.state.plLongestImgCanvas
+			case "plateau_stable":
+				imgCanvas = r.c.state.plStableImgCanvas
+			case "cache_hit":
+				imgCanvas = r.c.state.cacheImgCanvas
+			case "proxy_suspected":
+				imgCanvas = r.c.state.proxyImgCanvas
+			case "warm_cache":
+				imgCanvas = r.c.state.warmCacheImgCanvas
+			case "low_speed_share":
+				imgCanvas = r.c.state.lowSpeedImgCanvas
+			case "stall_rate":
+				imgCanvas = r.c.state.stallRateImgCanvas
+			case "pretffb_stall_rate":
+				imgCanvas = r.c.state.pretffbImgCanvas
+			case "stall_time":
+				imgCanvas = r.c.state.stallTimeImgCanvas
+			case "stall_count":
+				imgCanvas = r.c.state.stallCountImgCanvas
+			case "tail_ratio":
+				imgCanvas = r.c.state.tailRatioImgCanvas
+			case "ttfb_tail_ratio":
+				imgCanvas = r.c.state.ttfbTailRatioImgCanvas
+			case "speed_delta_pct":
+				imgCanvas = r.c.state.speedDeltaPctImgCanvas
+			case "ttfb_delta_pct":
+				imgCanvas = r.c.state.ttfbDeltaPctImgCanvas
+			case "sla_speed_delta":
+				imgCanvas = r.c.state.slaSpeedDeltaImgCanvas
+			case "sla_ttfb_delta":
+				imgCanvas = r.c.state.slaTTFBDeltaImgCanvas
+			case "speed_delta":
+				imgCanvas = r.c.state.speedDeltaImgCanvas
+			case "ttfb_delta":
+				imgCanvas = r.c.state.ttfbDeltaImgCanvas
+			case "sla_speed":
+				imgCanvas = r.c.state.slaSpeedImgCanvas
+			case "sla_ttfb":
+				imgCanvas = r.c.state.slaTTFBImgCanvas
+			case "ttfb_p95_gap":
+				imgCanvas = r.c.state.tpctlP95GapImgCanvas
+			case "selftest_speed":
+				imgCanvas = r.c.state.selfTestImgCanvas
+			case "protocol_mix":
+				imgCanvas = r.c.state.protocolMixImgCanvas
+			case "protocol_avg_speed":
+				imgCanvas = r.c.state.protocolAvgSpeedImgCanvas
+			case "protocol_stall_rate":
+				imgCanvas = r.c.state.protocolStallRateImgCanvas
+			case "protocol_error_rate":
+				imgCanvas = r.c.state.protocolErrorRateImgCanvas
+			case "tls_version_mix":
+				imgCanvas = r.c.state.tlsVersionMixImgCanvas
+			case "alpn_mix":
+				imgCanvas = r.c.state.alpnMixImgCanvas
+			case "chunked_rate":
+				imgCanvas = r.c.state.chunkedRateImgCanvas
+			}
+			if imgCanvas != nil && imgCanvas.Image != nil {
+				centersImg := detectXGridlineCenters(imgCanvas.Image, isDark)
+				if len(centersImg) > idx {
+					lineX = drawX + centersImg[idx]*scale
+				} else {
+					centers := xCentersIndexMode(n, imgW, imgH, float32(size.Width), float32(size.Height))
+					if idx >= 0 && idx < len(centers) {
+						lineX = centers[idx]
+					}
+				}
+			} else {
+				centers := xCentersIndexMode(n, imgW, imgH, float32(size.Width), float32(size.Height))
+				if idx >= 0 && idx < len(centers) {
+					lineX = centers[idx]
+				}
+			}
+		}
+	}
+	r.lineV.Position1 = fyne.NewPos(lineX, 0)
+	r.lineV.Position2 = fyne.NewPos(lineX, size.Height)
 	// horizontal line follows mouse Y
 	r.lineH.Position1 = fyne.NewPos(0, y)
 	r.lineH.Position2 = fyne.NewPos(size.Width, y)
-	// dot at intersection
+	// dot at intersection (snap X to lineX)
 	r.dot.Resize(fyne.NewSize(6, 6))
-	r.dot.Move(fyne.NewPos(x-3, y-3))
+	r.dot.Move(fyne.NewPos(lineX-3, y-3))
 	// Draw a short underline marker at the bottom axis to indicate the active tick
 	// no axis underline marker
 	// Determine nearest data index and show values
-	if n > 0 && size.Width > 0 {
+	if n > 0 && size.Width > 0 && idx >= 0 {
 		bs := rows[idx]
 		// X label by mode
 		var xLabel string

@@ -1,12 +1,12 @@
 package monitor
 
 import (
-	"fmt"
-	"log"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -163,20 +163,20 @@ func TestFormatPercentOf_SnippetAndIncompleteLog(t *testing.T) {
 	defer func() { baseLogger = saved }()
 
 	sr := &SiteResult{
-		Name:                 "TestSite",
-		IP:                   "::1",
-		HeadStatus:           200,
-		SecondGetStatus:      206,
-		TransferSizeBytes:    104857600,
-		TransferTimeMs:       1234,
-		TransferSpeedKbps:    12345.6,
-		TraceTTFBMs:          100,
-		TCPTimeMs:            0,
-		SSLHandshakeTimeMs:   50,
-		DNSTimeMs:            35,
-		HTTPProtocol:         "HTTP/1.1",
-		TLSVersion:           "TLS1.3",
-		ContentLengthHeader:  104857600,
+		Name:                  "TestSite",
+		IP:                    "::1",
+		HeadStatus:            200,
+		SecondGetStatus:       206,
+		TransferSizeBytes:     104857600,
+		TransferTimeMs:        1234,
+		TransferSpeedKbps:     12345.6,
+		TraceTTFBMs:           100,
+		TCPTimeMs:             0,
+		SSLHandshakeTimeMs:    50,
+		DNSTimeMs:             35,
+		HTTPProtocol:          "HTTP/1.1",
+		TLSVersion:            "TLS1.3",
+		ContentLengthHeader:   104857600,
 		ContentLengthMismatch: true,
 	}
 

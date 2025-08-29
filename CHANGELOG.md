@@ -21,6 +21,7 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
  - Viewer: New setup timing charts — DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms); included in UI, individual exports, combined export, and headless screenshots (`dns_lookup_time.png`, `tcp_connect_time.png`, `tls_handshake_time.png`).
  - Scripts: `update_screenshots.sh` updated to accept THEME/VARIANTS/BATCHES/LOW_SPEED_KBPS and pass through to the viewer.
  - Docs: `README.md` and `README_iqmviewer.md` updated with theme selection, headless flags, examples, and defaults.
+ - Viewer (Crosshair): Fixed X‑axis drift and ensured the crosshair snaps to the nearest data point in both index/time modes. Implemented image‑based calibration (gridline detection) to align overlay with the actual go‑chart plot geometry; falls back to math mapping if calibration isn’t available. Added robust image‑based tests that assert snapping and tooltip content always reflect the snapped X.
 
 ## [3.0.0] – 2025‑08‑18
 - Major analysis pipeline refactor into `analysis.AnalyzeRecentResultsFull*`.
