@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"fmt"
+	"log"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,6 +144,76 @@ func TestSmallHTTPTimeoutTriggersDeadline(t *testing.T) {
 	ge := strings.ToLower(env.SiteResult.HTTPError)
 	if !strings.Contains(he, "context deadline exceeded") && !strings.Contains(ge, "context deadline exceeded") {
 		t.Fatalf("expected context deadline exceeded in head or get error, got head=%q get=%q", env.SiteResult.HeadError, env.SiteResult.HTTPError)
+	}
+}
+
+func TestFormatPercentOf_SnippetAndIncompleteLog(t *testing.T) {
+	// Verify helper formatting
+	if got := formatPercentOf(104857600, 104857600); got != " (100.0% of 104857600)" {
+		t.Fatalf("formatPercentOf 100%% got %q", got)
+	}
+	if got := formatPercentOf(0, 0); got != "" {
+		t.Fatalf("formatPercentOf zero total should be empty, got %q", got)
+	}
+
+	// Build a synthetic SiteResult and log line, ensuring no fmt artifacts
+	var buf strings.Builder
+	saved := baseLogger
+	baseLogger = log.New(&buf, "", 0)
+	defer func() { baseLogger = saved }()
+
+	sr := &SiteResult{
+		Name:                 "TestSite",
+		IP:                   "::1",
+		HeadStatus:           200,
+		SecondGetStatus:      206,
+		TransferSizeBytes:    104857600,
+		TransferTimeMs:       1234,
+		TransferSpeedKbps:    12345.6,
+		TraceTTFBMs:          100,
+		TCPTimeMs:            0,
+		SSLHandshakeTimeMs:   50,
+		DNSTimeMs:            35,
+		HTTPProtocol:         "HTTP/1.1",
+		TLSVersion:           "TLS1.3",
+		ContentLengthHeader:  104857600,
+		ContentLengthMismatch: true,
+	}
+
+	// Compose the final log as production code does
+	ipStr := sr.IP
+	if ipStr == "" {
+		ipStr = "(unknown)"
+	}
+	proto := sr.HTTPProtocol
+	if proto == "" {
+		proto = "(unknown)"
+	}
+	alpn := sr.ALPN
+	if alpn == "" {
+		alpn = "(unknown)"
+	}
+	tlsv := sr.TLSVersion
+	if tlsv == "" {
+		tlsv = "(unknown)"
+	}
+	statusLabel := "done"
+	if sr.TransferStalled {
+		statusLabel = "aborted"
+	} else if sr.ContentLengthMismatch {
+		statusLabel = "incomplete"
+	}
+	extra := formatPercentOf(sr.TransferSizeBytes, sr.ContentLengthHeader)
+	line := fmt.Sprintf("[%s %s] %s head=%d sec_get=%d bytes=%d%s time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s",
+		sr.Name, ipStr, statusLabel, sr.HeadStatus, sr.SecondGetStatus, sr.TransferSizeBytes, extra, sr.TransferTimeMs, sr.TransferSpeedKbps, sr.DNSTimeMs, sr.TCPTimeMs, sr.SSLHandshakeTimeMs, sr.TraceTTFBMs, proto, alpn, tlsv,
+	)
+	Warnf(line)
+	out := buf.String()
+	if !strings.Contains(out, "(100.0% of 104857600)") {
+		t.Fatalf("expected percent-of snippet in log, got: %s", out)
+	}
+	if strings.Contains(out, "%!o(MISSING)") || strings.Contains(out, "%!f(MISSING)") {
+		t.Fatalf("unexpected fmt artifact in log: %s", out)
 	}
 }
 

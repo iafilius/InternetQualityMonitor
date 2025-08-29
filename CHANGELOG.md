@@ -10,6 +10,9 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
 - Viewer: Preferences persist Situation, axis modes, speed unit, crosshair, SLA thresholds, Low‑Speed Threshold, Rolling Window, overlays toggles.
 - Analysis: Added jitter, coefficient of variation, plateau metrics (count/longest/stability), tail heaviness, TTFB P95−P50 gap, IPv6↔IPv4 deltas (abs/%), SLA compliance and deltas, proxy/cache/warm‑cache indicators.
 - Analysis: Safer rendering ranges and single‑point padding to avoid panics/blank charts.
+ - Viewer (Protocols): Added companion “Share by HTTP Protocol (%)” charts for Errors, Stalls, and Partials alongside the existing per‑protocol “Rate …” charts; inline help clarified “Rates vs Shares”; README updated and headless screenshots regenerated (error/stall/partial share images).
+ - Monitor (Logging): Fixed printf artifact that rendered “%!o(MISSING)” when logging preformatted lines with literal percent signs; logger now avoids double‑formatting when no args are provided.
+ - Docs: `README_iqmreader.md` now includes a brief “Log lines explained” section covering status labels (done/aborted/incomplete) and the “(x% of y)” snippet when Content‑Length is known.
  - Viewer (Theme): Centralized chart theming and full theme support — View → Screenshot Theme now offers Auto (default), Dark, Light; selection is persisted. Auto follows system theme on macOS.
  - Viewer (Theme): Fixed charts that didn’t switch fully; rolling μ±1σ band cut‑outs and stitched exports are now theme‑aware; hints and watermark contrast improved for both themes.
  - Viewer (Theme): Safer UI updates during theme change — redraws and menu rebuilds scheduled asynchronously to avoid re‑entrancy issues.

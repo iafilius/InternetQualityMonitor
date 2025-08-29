@@ -78,3 +78,13 @@ func TimeTrack(start time.Time, label string) {
 	dur := time.Since(start)
 	Debugf("%s took %s", label, dur)
 }
+
+// formatPercentOf returns a snippet like " (100.0% of 104857600)" when total > 0,
+// otherwise returns an empty string. Keep here (package monitor) for reuse in status logs.
+func formatPercentOf(received, total int64) string {
+	if total <= 0 {
+		return ""
+	}
+	pct := (float64(received) * 100.0) / float64(total)
+	return fmt.Sprintf(" (%.1f%% of %d)", pct, total)
+}

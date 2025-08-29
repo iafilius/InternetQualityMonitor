@@ -1710,10 +1710,7 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		statusLabel = "incomplete"
 	}
 	var extra string
-	if sr.ContentLengthHeader > 0 {
-		pct := (float64(transferBytes) * 100.0) / float64(sr.ContentLengthHeader)
-		extra = fmt.Sprintf(" (%.1f%% of %d)", pct, sr.ContentLengthHeader)
-	}
+	extra = formatPercentOf(transferBytes, sr.ContentLengthHeader)
 	finalLine := fmt.Sprintf("[%s %s] %s head=%d sec_get=%d bytes=%d%s time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, statusLabel, headStatus, secStatus, transferBytes, extra, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
 	if statusLabel == "done" {
 		Infof(finalLine)
