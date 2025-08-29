@@ -41,6 +41,7 @@ func SetLogLevel(s string) {
 }
 
 func getLevel() LogLevel { return LogLevel(atomic.LoadInt32(&currentLevel)) }
+
 // GetLogLevel returns current global log level (exported for conditional debug logic outside package).
 func GetLogLevel() LogLevel { return getLevel() }
 
@@ -56,6 +57,12 @@ func logf(l LogLevel, format string, args ...interface{}) {
 		prefix = "WARN"
 	case LevelError:
 		prefix = "ERROR"
+	}
+	// Only format when there are args; otherwise treat the input as a plain message to avoid
+	// fmt parsing literal % characters in already formatted strings (which would yield %!x(MISSING)).
+	if len(args) == 0 {
+		baseLogger.Printf("[%s] %s", prefix, format)
+		return
 	}
 	baseLogger.Printf("[%s] %s", prefix, fmt.Sprintf(format, args...))
 }
