@@ -62,6 +62,9 @@ Headless equivalents:
 - Partial Body Rate (%): Percent of requests that returned an incomplete body (Content‑Length mismatch or early EOF). Plotted for Overall, IPv4, and IPv6. Full‑width, crosshair‑enabled, and exportable; included in headless screenshots as `partial_body_rate.png`.
 - Avg Stall Time (ms): Average total stalled time per stalled request. Higher means longer buffering events.
 - Stalled Requests Count: Derived as round(Lines × Stall Rate%). Quick absolute sense of how many requests stalled in a batch.
+ - Transient Stall Rate (%): Share of requests that had one or more short stalls where transfer resumed (aka micro‑stalls). Separate from Stall Rate (which includes hard stalls/aborts). Default micro‑stall gap threshold is ≥500 ms. Exportable and included in screenshots as `transient_stall_rate.png`.
+ - Avg Transient Stall Time (ms): Average total duration of micro‑stalls per affected request. Exportable and included in screenshots as `transient_stall_time.png`.
+ - Avg Transient Stall Count: Average number of micro‑stall events per request (among lines with any micro‑stall). Exportable and included in screenshots as `transient_stall_count.png`.
 
 Examples:
 
@@ -72,6 +75,14 @@ Examples:
 ![Avg Stall Time](docs/images/stall_time.png)
 
 ![Stalled Requests Count](docs/images/stall_count.png)
+
+Transient/micro‑stalls:
+
+![Transient Stall Rate](docs/images/transient_stall_rate.png)
+
+![Avg Transient Stall Time](docs/images/transient_stall_time.png)
+
+![Avg Transient Stall Count](docs/images/transient_stall_count.png)
 
 ## Setup timing charts (connection setup)
 
@@ -210,6 +221,7 @@ Examples:
 - Each exported image embeds the Situation watermark for context preservation.
 - A dedicated export exists for the Stalled Requests Count chart.
  - Setup timing charts (DNS/TCP/TLS) are included in both individual and combined exports.
+ - Transient/micro‑stall charts (Rate, Avg Time, Avg Count) have dedicated export items and are included in the combined export.
 
 ### Updating the screenshots
 
@@ -271,6 +283,10 @@ For more dynamic visuals, the generator also creates:
 - Relative-scale variants of averages: `speed_avg_relative.png`, `ttfb_avg_relative.png`.
 
 These help emphasize movement over time or relative variation when absolute baselines differ.
+
+Notes on micro‑stall defaults
+
+- Micro‑stall detection uses a default minimum gap of 500 ms between speed samples (in analysis). This is applied in both UI and headless screenshot generation.
 
 ## Preferences (persisted)
 

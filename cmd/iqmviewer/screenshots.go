@@ -47,7 +47,7 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 	if lowSpeedThresholdKbps <= 0 {
 		lowSpeedThresholdKbps = 1000
 	}
-	sums, err := analysis.AnalyzeRecentResultsFullWithOptions(filePath, monitor.SchemaVersion, batches, analysis.AnalyzeOptions{SituationFilter: sitFilter, LowSpeedThresholdKbps: float64(lowSpeedThresholdKbps)})
+	sums, err := analysis.AnalyzeRecentResultsFullWithOptions(filePath, monitor.SchemaVersion, batches, analysis.AnalyzeOptions{SituationFilter: sitFilter, LowSpeedThresholdKbps: float64(lowSpeedThresholdKbps), MicroStallMinGapMs: 500})
 	if err != nil {
 		return err
 	}
@@ -91,6 +91,9 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"stall_time.png", renderStallTimeChart},
 		{"partial_body_rate.png", renderPartialBodyRateChart},
 		{"stall_count.png", renderStallCountChart},
+		{"transient_stall_rate.png", renderMicroStallRateChart},
+		{"transient_stall_time.png", renderMicroStallTimeChart},
+		{"transient_stall_count.png", renderMicroStallCountChart},
 		{"jitter.png", renderJitterChart},
 		{"cov.png", renderCoVChart},
 		{"plateau_count.png", renderPlateauCountChart},

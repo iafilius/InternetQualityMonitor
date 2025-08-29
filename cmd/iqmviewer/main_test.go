@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	chart "github.com/wcharczuk/go-chart/v2"
 	"github.com/iafilius/InternetQualityMonitor/src/analysis"
+	chart "github.com/wcharczuk/go-chart/v2"
 )
 
 // Test crosshair index-mode center positions and nearest-index selection across sizes
@@ -197,15 +197,21 @@ func renderIndexModeDotsImage(n, w, h int) (image.Image, []string, error) {
 	xs := make([]float64, n)
 	ys := make([]float64, n)
 	runTags := make([]string, n)
-	for i := 0; i < n; i++ { xs[i] = float64(i+1); ys[i] = 50; runTags[i] = fmt.Sprintf("run_%02d", i+1) }
+	for i := 0; i < n; i++ {
+		xs[i] = float64(i + 1)
+		ys[i] = 50
+		runTags[i] = fmt.Sprintf("run_%02d", i+1)
+	}
 	ticks := make([]chart.Tick, 0, n)
-	for i := 0; i < n; i++ { ticks = append(ticks, chart.Tick{Value: xs[i], Label: runTags[i]}) }
+	for i := 0; i < n; i++ {
+		ticks = append(ticks, chart.Tick{Value: xs[i], Label: runTags[i]})
+	}
 	ch := chart.Chart{
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: 48}},
-		Width:  w,
-		Height: h,
-		XAxis: chart.XAxis{Range: &chart.ContinuousRange{Min: 0.5, Max: float64(n)+0.5}, Ticks: ticks},
-		YAxis: chart.YAxis{Range: &chart.ContinuousRange{Min: 0, Max: 100}},
+		Width:      w,
+		Height:     h,
+		XAxis:      chart.XAxis{Range: &chart.ContinuousRange{Min: 0.5, Max: float64(n) + 0.5}, Ticks: ticks},
+		YAxis:      chart.YAxis{Range: &chart.ContinuousRange{Min: 0, Max: 100}},
 		Series: []chart.Series{
 			chart.ContinuousSeries{
 				XValues: xs,
@@ -220,23 +226,33 @@ func renderIndexModeDotsImage(n, w, h int) (image.Image, []string, error) {
 		},
 	}
 	var buf bytes.Buffer
-	if err := ch.Render(chart.PNG, &buf); err != nil { return nil, nil, err }
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return nil, nil, err
+	}
 	img, err := png.Decode(&buf)
-	if err != nil { return nil, nil, err }
+	if err != nil {
+		return nil, nil, err
+	}
 	return img, runTags, nil
 }
 
 func nearRed(c color.Color) bool {
 	r, g, b, a := c.RGBA()
-	if a < 0x4000 { return false }
+	if a < 0x4000 {
+		return false
+	}
 	// Normalize to 0..255
 	R := float64(r >> 8)
 	G := float64(g >> 8)
 	B := float64(b >> 8)
 	// Heuristic: red dominance and not dark blue/green
-	if R > 180 && R > G+20 && R > B+20 { return true }
+	if R > 180 && R > G+20 && R > B+20 {
+		return true
+	}
 	// Also accept strong orange hues
-	if R > 170 && G > 40 && B < 80 { return true }
+	if R > 170 && G > 40 && B < 80 {
+		return true
+	}
 	return false
 }
 
@@ -260,20 +276,30 @@ func findDotCentersX(img image.Image) []float64 {
 	s := 0
 	for x := 0; x < w; x++ {
 		if colCounts[x] > 0 {
-			if !in { in = true; s = x }
+			if !in {
+				in = true
+				s = x
+			}
 		} else if in {
 			in = false
 			clusters = append(clusters, cluster{start: s, end: x - 1})
 		}
 	}
-	if in { clusters = append(clusters, cluster{start: s, end: w - 1}) }
+	if in {
+		clusters = append(clusters, cluster{start: s, end: w - 1})
+	}
 	// Compute weighted centers using counts as weights
 	centers := make([]float64, 0, len(clusters))
 	for _, c := range clusters {
 		sumW := 0
 		sumX := 0.0
-		for x := c.start; x <= c.end; x++ { sumW += colCounts[x]; sumX += float64(x*colCounts[x]) }
-		if sumW > 0 { centers = append(centers, sumX/float64(sumW)) }
+		for x := c.start; x <= c.end; x++ {
+			sumW += colCounts[x]
+			sumX += float64(x * colCounts[x])
+		}
+		if sumW > 0 {
+			centers = append(centers, sumX/float64(sumW))
+		}
 	}
 	sort.Float64s(centers)
 	return centers
@@ -282,29 +308,49 @@ func findDotCentersX(img image.Image) []float64 {
 func TestCrosshair_RenderedChartAlignment_IndexMode(t *testing.T) {
 	n, w, h := 8, 1000, 500
 	img, runTags, err := renderIndexModeDotsImage(n, w, h)
-	if err != nil { t.Fatalf("render failed: %v", err) }
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
 	centersImg := findDotCentersX(img)
-	if len(centersImg) != n { t.Fatalf("expected %d detected centers, got %d", n, len(centersImg)) }
+	if len(centersImg) != n {
+		t.Fatalf("expected %d detected centers, got %d", n, len(centersImg))
+	}
 	// Check snapping and labels at midpoints
 	rows := make([]analysis.BatchSummary, n)
-	for i := 0; i < n; i++ { rows[i].RunTag = runTags[i] }
+	for i := 0; i < n; i++ {
+		rows[i].RunTag = runTags[i]
+	}
 	for i := 0; i+1 < n; i++ {
 		mid := float32((centersImg[i] + centersImg[i+1]) / 2)
 		// Build expected centers array in view space from detected image pixels
 		centersView := make([]float32, n)
-		for k := 0; k < n; k++ { centersView[k] = float32(centersImg[k]) }
+		for k := 0; k < n; k++ {
+			centersView[k] = float32(centersImg[k])
+		}
 		// Slightly left of midpoint selects i
 		idxL, lineXL := nearestIndexAndLineXFromCenters(centersView, mid-0.1)
-		if idxL != i { t.Fatalf("snap idx left of midpoint i=%d got %d", i, idxL) }
-		if math.Abs(float64(lineXL)-centersImg[i]) > 1.0 { t.Fatalf("snap lineX left mismatch i=%d", i) }
+		if idxL != i {
+			t.Fatalf("snap idx left of midpoint i=%d got %d", i, idxL)
+		}
+		if math.Abs(float64(lineXL)-centersImg[i]) > 1.0 {
+			t.Fatalf("snap lineX left mismatch i=%d", i)
+		}
 		lbl := labelForIndex(rows, "run_tag", idxL)
-		if lbl != runTags[i] { t.Fatalf("label left mismatch: got %q want %q", lbl, runTags[i]) }
+		if lbl != runTags[i] {
+			t.Fatalf("label left mismatch: got %q want %q", lbl, runTags[i])
+		}
 		// Slightly right of midpoint selects i+1
 		idxR, lineXR := nearestIndexAndLineXFromCenters(centersView, mid+0.1)
-		if idxR != i+1 { t.Fatalf("snap idx right of midpoint i=%d got %d", i+1, idxR) }
-		if math.Abs(float64(lineXR)-centersImg[i+1]) > 1.0 { t.Fatalf("snap lineX right mismatch i=%d", i+1) }
+		if idxR != i+1 {
+			t.Fatalf("snap idx right of midpoint i=%d got %d", i+1, idxR)
+		}
+		if math.Abs(float64(lineXR)-centersImg[i+1]) > 1.0 {
+			t.Fatalf("snap lineX right mismatch i=%d", i+1)
+		}
 		lblR := labelForIndex(rows, "run_tag", idxR)
-		if lblR != runTags[i+1] { t.Fatalf("label right mismatch: got %q want %q", lblR, runTags[i+1]) }
+		if lblR != runTags[i+1] {
+			t.Fatalf("label right mismatch: got %q want %q", lblR, runTags[i+1])
+		}
 	}
 }
 

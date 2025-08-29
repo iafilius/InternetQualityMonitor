@@ -117,7 +117,7 @@ func main() {
 	sitesPath := flag.String("sites", "./sites.jsonc", "Path to sites JSONC file")
 	iterations := flag.Int("iterations", 1, "Number of passes over the sites list")
 	parallel := flag.Int("parallel", 1, "Maximum concurrent site monitors")
-	outFile := flag.String("out", monitor.DefaultResultsFile, "Output JSONL file")
+	outFile := flag.String("out", monitor.DefaultResultsFile, "Output JSONL file for collection results (ignored in analyze-only; use --input)")
 	logLevel := flag.String("log-level", "info", "Log level (debug|info|warn|error)")
 	httpTimeout := flag.Duration("http-timeout", 120*time.Second, "Per-request total timeout (including body transfer)")
 	stallTimeout := flag.Duration("stall-timeout", 20*time.Second, "Abort transfer if no progress for this long")
@@ -137,6 +137,7 @@ func main() {
 	alertsJSON := flag.String("alerts-json", "", "Path to write structured alert JSON report (optional)")
 	preTTFBStall := flag.Bool("pre-ttfb-stall", false, "Cancel primary GET if no first byte within stall-timeout; marks http_error=stall_pre_ttfb")
 	analyzeOnly := flag.Bool("analyze-only", false, "If true, analyze existing results and exit (no new collection)")
+	inputFile := flag.String("input", monitor.DefaultResultsFile, "Input JSONL file to analyze when --analyze-only is set")
 	analysisBatches := flag.Int("analysis-batches", 10, "Max number of recent batches to analyze when --analyze-only is set")
 	finalAnalysisBatches := flag.Int("final-analysis-batches", 0, "If >0 in collection mode, after all iterations perform a final full analysis over last N batches")
 	// Self-test flags (default-on)
@@ -176,6 +177,15 @@ func main() {
 			*outFile = path
 			fmt.Printf("[init] expanded output path with hostname (orig=%s sanitized=%s): %s\n", orig, sanitized, *outFile)
 		}
+		// Also support hostname expansion for --input, if used
+		if strings.Contains(*inputFile, "{host}") || strings.Contains(*inputFile, "%HOST%") || strings.Contains(*inputFile, "$HOST") {
+			path := *inputFile
+			path = strings.ReplaceAll(path, "{host}", sanitized)
+			path = strings.ReplaceAll(path, "%HOST%", sanitized)
+			path = strings.ReplaceAll(path, "$HOST", sanitized)
+			*inputFile = path
+			fmt.Printf("[init] expanded input path with hostname (orig=%s sanitized=%s): %s\n", orig, sanitized, *inputFile)
+		}
 	}
 
 	monitor.SetLogLevel(*logLevel)
@@ -214,7 +224,9 @@ func main() {
 		if batches < 1 {
 			batches = 1
 		}
-		summaries, err := analysis.AnalyzeRecentResultsFull(*outFile, monitor.SchemaVersion, batches, *situation)
+		inPath := strings.TrimSpace(*inputFile)
+		fmt.Printf("[init] analyze-only: input=%s batches=%d situation=%s\n", inPath, batches, *situation)
+		summaries, err := analysis.AnalyzeRecentResultsFull(inPath, monitor.SchemaVersion, batches, *situation)
 		if err != nil {
 			fmt.Printf("[analysis] %v\n", err)
 			os.Exit(1)
@@ -338,9 +350,6 @@ func main() {
 			return
 		}
 
-		// Init async writer (collection mode only)
-		monitor.InitResultWriter(*outFile)
-		defer monitor.CloseResultWriter()
 		if len(summaries) == 1 {
 			last := summaries[0]
 			fmt.Printf("[batch-compare %s] only one batch available\n", last.RunTag)
@@ -423,6 +432,10 @@ func main() {
 	}
 
 	baseRunTag := time.Now().UTC().Format("20060102_150405")
+
+	// Init async writer for collection mode so results go to the requested --out file
+	monitor.InitResultWriter(*outFile)
+	defer monitor.CloseResultWriter()
 	defaultAlerts := false
 	if *alertsJSON == "" { // user did not supply a path; enable automatic alerts JSON per iteration (repo root preferred)
 		defaultAlerts = true

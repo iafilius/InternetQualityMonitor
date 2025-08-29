@@ -559,6 +559,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		Errorf("parse url %s: %v", site.URL, err)
 		return
 	}
+	// Info-level per-IP start marker so sessions show a clear begin line even without debug logging.
+	Infof("[%s %s] start", site.Name, ipStr)
 	// Determine environment proxy (standard library resolution) for transparency
 	var envProxyURL string
 	var envBypass bool
@@ -1118,6 +1120,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	nextSample := transferStart.Add(SpeedSampleInterval)
 	lastProgressLog := time.Now()
 	lastProgress := time.Now()
+	// Make the first visible progress explicit at info level even if Content-Length is unknown
+	firstProgressLogged := false
 	// If Content-Length header is present, pre-parse expected total bytes for richer progress logs
 	clHeader := resp.Header.Get("Content-Length")
 	var expectedBytes int64
@@ -1170,6 +1174,17 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		progressInterval := 3 * time.Second
 		if getLevel() == LevelInfo {
 			progressInterval = 10 * time.Second
+		}
+		if !firstProgressLogged && bytesRead > 0 {
+			// First chunk observed; emit an immediate start-of-transfer marker
+			if expectedBytes > 0 {
+				pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+				Infof("[%s %s] start transfer %d/%d bytes (%.1f MB, %.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, float64(bytesRead)/1024.0/1024.0, pct)
+			} else {
+				Infof("[%s %s] start transfer %d/unknown bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+			}
+			firstProgressLogged = true
+			lastProgressLog = time.Now()
 		}
 		if time.Since(lastProgressLog) >= progressInterval {
 			if getLevel() == LevelDebug {

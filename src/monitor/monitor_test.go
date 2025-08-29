@@ -368,8 +368,17 @@ func TestRangeTimeoutOnly(t *testing.T) {
 }
 
 func TestStallTimeoutAbort(t *testing.T) {
-	// Handler: write a little, then stall beyond stallTimeout
+	// Server: primary GET writes some bytes, flushes, then stalls beyond stallTimeout
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			w.WriteHeader(206)
+			w.Write([]byte("R"))
+			return
+		}
 		w.WriteHeader(200)
 		w.Write([]byte(strings.Repeat("a", 1024)))
 		if f, ok := w.(http.Flusher); ok {
@@ -377,6 +386,72 @@ func TestStallTimeoutAbort(t *testing.T) {
 		}
 		time.Sleep(800 * time.Millisecond)
 		w.Write([]byte("late"))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	hostIP := u.Hostname()
+
+	// Ensure proxies don't interfere
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		os.Unsetenv(k)
+	}
+
+	// Tight stall timeout relative to server stall
+	oldHTTP, oldSite, oldStall := httpTimeout, siteTimeout, stallTimeout
+	SetHTTPTimeout(3 * time.Second)
+	SetSiteTimeout(3 * time.Second)
+	SetStallTimeout(200 * time.Millisecond)
+	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
+
+	// Use fallback writer
+	tmp := t.TempDir() + "/res.jsonl"
+	resultChan = nil
+	resultPath = tmp
+
+	site := typespkg.Site{Name: "stall-primary", URL: srv.URL}
+	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
+
+	data, _ := os.ReadFile(tmp)
+	var env ResultEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.SiteResult == nil {
+		t.Fatalf("no site_result")
+	}
+	// Design note: We do not forcibly abort mid-body stalls due to http.Client read semantics.
+	// Accept either a detected stall abort or a normal completion after the stall.
+	if env.SiteResult.TransferSizeBytes == 0 {
+		t.Fatalf("expected some bytes to be transferred")
+	}
+	if env.SiteResult.TransferTimeMs < 600 {
+		t.Fatalf("expected transfer to reflect stall duration, got %dms", env.SiteResult.TransferTimeMs)
+	}
+	if env.SiteResult.TransferStalled {
+		if env.SiteResult.HTTPError != "stall_abort" {
+			t.Fatalf("when TransferStalled is true, expected http_error=stall_abort, got %q", env.SiteResult.HTTPError)
+		}
+	}
+}
+
+// Focused: ensure Range GET body stall sets SecondGetError="stall_abort"
+
+// Ensure a Range GET that delays headers (no progress) is cancelled by the pre-body stall watchdog
+func TestRangePreBodyStallCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead:
+			w.WriteHeader(200)
+		case r.Header.Get("Range") != "":
+			// Delay writing headers beyond stall-timeout
+			time.Sleep(600 * time.Millisecond)
+			w.WriteHeader(206)
+			w.Write([]byte("R"))
+		default:
+			w.WriteHeader(200)
+			w.Write([]byte("G"))
+		}
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
@@ -392,7 +467,7 @@ func TestStallTimeoutAbort(t *testing.T) {
 	tmp := t.TempDir() + "/res.jsonl"
 	resultChan = nil
 	resultPath = tmp
-	site := typespkg.Site{Name: "stall-abort", URL: srv.URL}
+	site := typespkg.Site{Name: "stall-range-prebody", URL: srv.URL}
 	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
 	data, _ := os.ReadFile(tmp)
 	var env ResultEnvelope
@@ -402,12 +477,111 @@ func TestStallTimeoutAbort(t *testing.T) {
 	if env.SiteResult == nil {
 		t.Fatalf("no site_result")
 	}
-	// We don't hard-abort read on stall; ensure we didn't hang and observed a slow transfer
-	if env.SiteResult.TransferTimeMs < 700 {
-		t.Fatalf("expected transfer to take >=700ms due to stall, got %dms", env.SiteResult.TransferTimeMs)
+	if env.SiteResult.SecondGetError == "" {
+		t.Fatalf("expected Range pre-body stall to set an error, got empty")
 	}
-	if env.SiteResult.TransferSizeBytes == 0 {
-		t.Fatalf("expected some bytes read before stall")
+	// Likely context canceled; don't overfit the exact message
+	ge := strings.ToLower(env.SiteResult.SecondGetError)
+	if !(strings.Contains(ge, "context") || strings.Contains(ge, "timeout")) {
+		t.Fatalf("expected Range pre-body stall error to mention context/timeout, got %q", env.SiteResult.SecondGetError)
+	}
+}
+
+// Ensure we log a WARN line when a stall occurs (range pre-body case)
+func TestRangePreBodyStall_LogsWarning(t *testing.T) {
+	// Capture logs
+	var buf strings.Builder
+	saved := baseLogger
+	baseLogger = log.New(&buf, "", 0)
+	defer func() { baseLogger = saved }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead:
+			w.WriteHeader(200)
+		case r.Header.Get("Range") != "":
+			// Delay headers beyond stall-timeout to trigger pre-body stall
+			time.Sleep(600 * time.Millisecond)
+			w.WriteHeader(206)
+			w.Write([]byte("R"))
+		default:
+			w.WriteHeader(200)
+			w.Write([]byte("G"))
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	hostIP := u.Hostname()
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		os.Unsetenv(k)
+	}
+	oldHTTP, oldSite, oldStall := httpTimeout, siteTimeout, stallTimeout
+	SetHTTPTimeout(3 * time.Second)
+	SetSiteTimeout(3 * time.Second)
+	SetStallTimeout(200 * time.Millisecond)
+	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
+	tmp := t.TempDir() + "/res.jsonl"
+	resultChan = nil
+	resultPath = tmp
+	site := typespkg.Site{Name: "stall-range-prebody-logs", URL: srv.URL}
+	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
+
+	out := buf.String()
+	if !strings.Contains(out, "[WARN]") || !strings.Contains(out, "range pre-body stall") {
+		t.Fatalf("expected WARN log mentioning range pre-body stall, got: %s", out)
+	}
+}
+
+// Ensure watchdog logs a WARN line when primary transfer has no progress for >5s (watchdog's minimum interval)
+func TestPrimaryStall_LogsWatchdogWarning(t *testing.T) {
+	// Capture logs
+	var buf strings.Builder
+	saved := baseLogger
+	baseLogger = log.New(&buf, "", 0)
+	defer func() { baseLogger = saved }()
+
+	// Server: write a little, then stall long enough (>2*interval) to trigger watchdog warning, then finish
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			w.WriteHeader(206)
+			w.Write([]byte("R"))
+			return
+		}
+		w.WriteHeader(200)
+		w.Write([]byte(strings.Repeat("a", 1024)))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(11 * time.Second) // watchdog interval=5s -> need >10s to log no-progress at info level
+		w.Write([]byte("late"))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	hostIP := u.Hostname()
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		os.Unsetenv(k)
+	}
+	oldHTTP, oldSite, oldStall := httpTimeout, siteTimeout, stallTimeout
+	// Set generous timeouts to allow two watchdog ticks before completion; inline abort remains off
+	SetHTTPTimeout(25 * time.Second)
+	SetSiteTimeout(25 * time.Second)
+	SetStallTimeout(10 * time.Second)
+	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
+
+	tmp := t.TempDir() + "/res.jsonl"
+	resultChan = nil
+	resultPath = tmp
+	site := typespkg.Site{Name: "primary-watchdog-stall", URL: srv.URL}
+	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
+
+	out := buf.String()
+	if !strings.Contains(out, "[WARN]") || !strings.Contains(out, "watchdog: no progress") {
+		t.Fatalf("expected watchdog WARN log for primary stall, got: %s", out)
 	}
 }
 

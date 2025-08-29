@@ -59,6 +59,10 @@ type BatchSummary struct {
 	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
 	PartialBodyRatePct   float64 `json:"partial_body_rate_pct,omitempty"`
 	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
+	// Micro-stalls (derived from speed samples)
+	MicroStallRatePct  float64 `json:"micro_stall_rate_pct,omitempty"`  // lines with >=1 micro-stall over all lines
+	AvgMicroStallCount float64 `json:"avg_micro_stall_count,omitempty"` // average count per line among all lines
+	AvgMicroStallMs    float64 `json:"avg_micro_stall_ms,omitempty"`    // average total ms per line among lines with at least one micro-stall
 	// Optional: rate of requests aborted before the first byte due to pre-TTFB stall watchdog
 	PreTTFBStallRatePct float64 `json:"pretffb_stall_rate_pct,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines
@@ -145,6 +149,10 @@ type FamilySummary struct {
 	StallRatePct         float64 `json:"stall_rate_pct,omitempty"`
 	PartialBodyRatePct   float64 `json:"partial_body_rate_pct,omitempty"`
 	AvgStallElapsedMs    float64 `json:"avg_stall_elapsed_ms,omitempty"`
+	// Micro-stalls (derived from speed samples)
+	MicroStallRatePct  float64 `json:"micro_stall_rate_pct,omitempty"`  // lines with >=1 micro-stall over all lines in family
+	AvgMicroStallCount float64 `json:"avg_micro_stall_count,omitempty"` // average count per line among all lines
+	AvgMicroStallMs    float64 `json:"avg_micro_stall_ms,omitempty"`    // average total ms per line among lines with at least one micro-stall
 	// Optional: rate of requests aborted before the first byte due to pre-TTFB stall watchdog
 	PreTTFBStallRatePct float64 `json:"pretffb_stall_rate_pct,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines in this family
@@ -166,6 +174,11 @@ func AnalyzeRecentResults(path string, schemaVersion, MaxBatches int) ([]BatchSu
 type AnalyzeOptions struct {
 	SituationFilter       string
 	LowSpeedThresholdKbps float64 // if >0, compute LowSpeedTimeSharePct using this threshold
+	// If >0, detect short transfer pauses ("micro-stalls") using TransferSpeedSamples.
+	// Micro‑stalls are brief pauses where transfer resumes later (distinct from hard stall timeouts/aborts).
+	// Definition: contiguous gap where cumulative bytes do not increase for at least this many milliseconds.
+	// Recommended default: 500 ms.
+	MicroStallMinGapMs int64
 }
 
 // AnalyzeRecentResultsFullWithOptions parses results and computes extended batch metrics with options.
@@ -222,6 +235,10 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		preTTFBStall   bool
 		sampleLowMs    int64
 		sampleTotalMs  int64
+		// micro-stalls derived from samples
+		microStallCount   int
+		microStallTotalMs int64
+		microStallPresent bool
 		// connection setup timings (ms)
 		dnsMs       float64
 		dnsLegacyMs float64 // raw legacy dns_time_ms if present
@@ -360,13 +377,56 @@ readLoop:
 			bs.stallElapsedMs = sr.StallElapsedMs
 		}
 		// low-speed time share based on samples and configured threshold
-		if opts.LowSpeedThresholdKbps > 0 && len(sr.TransferSpeedSamples) > 0 {
+		if (opts.LowSpeedThresholdKbps > 0 || opts.MicroStallMinGapMs > 0) && len(sr.TransferSpeedSamples) > 0 {
 			// Each sample approximates one interval; use monitor.SpeedSampleInterval
 			intervalMs := int64(monitor.SpeedSampleInterval / time.Millisecond)
 			var lowCount int64
-			for _, s := range sr.TransferSpeedSamples {
-				if s.Speed > 0 && s.Speed < opts.LowSpeedThresholdKbps {
-					lowCount++
+			// For micro-stalls, detect contiguous spans where cumulative bytes do not increase
+			// (i.e., Bytes stays the same) and the span duration >= MicroStallMinGapMs.
+			var microCnt int
+			var microTotal int64
+			if opts.LowSpeedThresholdKbps > 0 {
+				for _, s := range sr.TransferSpeedSamples {
+					if s.Speed > 0 && s.Speed < opts.LowSpeedThresholdKbps {
+						lowCount++
+					}
+				}
+			}
+			if opts.MicroStallMinGapMs > 0 {
+				// Walk samples and accumulate run-length of zero-byte progress.
+				// We rely on cumulative Bytes; treat non-increasing as no progress.
+				var runStartIdx = -1
+				for i := 1; i < len(sr.TransferSpeedSamples); i++ {
+					prev := sr.TransferSpeedSamples[i-1]
+					cur := sr.TransferSpeedSamples[i]
+					noProgress := cur.Bytes <= prev.Bytes
+					if noProgress {
+						if runStartIdx == -1 {
+							runStartIdx = i - 1
+						}
+					}
+					if !noProgress || i == len(sr.TransferSpeedSamples)-1 {
+						if runStartIdx != -1 {
+							// End the run at i-1 if progressed again, or at i if last element also no-progress.
+							endIdx := i - 1
+							if noProgress && i == len(sr.TransferSpeedSamples)-1 {
+								endIdx = i
+							}
+							startMs := sr.TransferSpeedSamples[runStartIdx].TimeMs
+							endMs := sr.TransferSpeedSamples[endIdx].TimeMs
+							dur := endMs - startMs
+							if dur >= opts.MicroStallMinGapMs {
+								microCnt++
+								microTotal += dur
+							}
+							runStartIdx = -1
+						}
+					}
+				}
+				if microCnt > 0 {
+					bs.microStallCount = microCnt
+					bs.microStallTotalMs = microTotal
+					bs.microStallPresent = true
 				}
 			}
 			bs.sampleTotalMs = int64(len(sr.TransferSpeedSamples)) * intervalMs
@@ -497,6 +557,10 @@ readLoop:
 			var preTTFBCnt int
 			var partialCnt int
 			var stallTimeMsSum int64
+			// micro-stalls accumulators
+			var microLinesWith int
+			var microCountSum int
+			var microMsSum int64
 			var minTS, maxTS time.Time
 			for _, r := range recs {
 				if filter != "" && r.ipFamily != filter { // skip if filtering by family
@@ -603,6 +667,13 @@ readLoop:
 						stallTimeMsSum += r.stallElapsedMs
 					}
 				}
+				if r.microStallPresent {
+					microLinesWith++
+					microCountSum += r.microStallCount
+					if r.microStallTotalMs > 0 {
+						microMsSum += r.microStallTotalMs
+					}
+				}
 				if r.preTTFBStall {
 					preTTFBCnt++
 				}
@@ -652,6 +723,12 @@ readLoop:
 					}
 					return float64(stallCnt) / float64(lineCount) * 100
 				}(),
+				MicroStallRatePct: func() float64 {
+					if lineCount == 0 {
+						return 0
+					}
+					return float64(microLinesWith) / float64(lineCount) * 100
+				}(),
 				PreTTFBStallRatePct: func() float64 {
 					if lineCount == 0 {
 						return 0
@@ -664,6 +741,18 @@ readLoop:
 						return 0
 					}
 					return float64(stallTimeMsSum) / float64(stallCnt)
+				}(),
+				AvgMicroStallCount: func() float64 {
+					if lineCount == 0 {
+						return 0
+					}
+					return float64(microCountSum) / float64(lineCount)
+				}(),
+				AvgMicroStallMs: func() float64 {
+					if microLinesWith == 0 {
+						return 0
+					}
+					return float64(microMsSum) / float64(microLinesWith)
 				}(),
 			}
 			// TTFB percentiles per family in ms
@@ -683,6 +772,10 @@ readLoop:
 		var preTTFBCntAll int
 		var partialCntAll int
 		var stallTimeMsSumAll int64
+		// micro-stalls (overall)
+		var microLinesWithAll int
+		var microCountSumAll int
+		var microMsSumAll int64
 		var minTS, maxTS time.Time
 		for _, r := range recs {
 			if batchSituation == "" && r.situation != "" {
@@ -827,6 +920,13 @@ readLoop:
 					stallTimeMsSumAll += r.stallElapsedMs
 				}
 			}
+			if r.microStallPresent {
+				microLinesWithAll++
+				microCountSumAll += r.microStallCount
+				if r.microStallTotalMs > 0 {
+					microMsSumAll += r.microStallTotalMs
+				}
+			}
 			if r.preTTFBStall {
 				preTTFBCntAll++
 			}
@@ -875,11 +975,29 @@ readLoop:
 				}
 				return float64(stallCntAll) / float64(recCount) * 100
 			}(),
+			MicroStallRatePct: func() float64 {
+				if recCount == 0 {
+					return 0
+				}
+				return float64(microLinesWithAll) / float64(recCount) * 100
+			}(),
 			AvgStallElapsedMs: func() float64 {
 				if stallCntAll == 0 {
 					return 0
 				}
 				return float64(stallTimeMsSumAll) / float64(stallCntAll)
+			}(),
+			AvgMicroStallCount: func() float64 {
+				if recCount == 0 {
+					return 0
+				}
+				return float64(microCountSumAll) / float64(recCount)
+			}(),
+			AvgMicroStallMs: func() float64 {
+				if microLinesWithAll == 0 {
+					return 0
+				}
+				return float64(microMsSumAll) / float64(microLinesWithAll)
 			}(),
 			PartialBodyRatePct: func() float64 {
 				if recCount == 0 {
@@ -1034,7 +1152,27 @@ readLoop:
 				alpnKnownPct = float64(alpnKnownCnt) / float64(recCount) * 100
 				tlsKnownPct = float64(tlsKnownCnt) / float64(recCount) * 100
 			}
-			fmt.Printf("[analysis debug] summary %s lines=%d avg_speed=%.1f avg_ttfb=%.0f errors=%d p50=%.1f ratio=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% alpn_known=%.1f%% tls_known=%.1f%%%s\n", summary.RunTag, summary.Lines, summary.AvgSpeed, summary.AvgTTFB, summary.ErrorLines, summary.AvgP50Speed, summary.AvgP99P50Ratio, summary.AvgJitterPct, summary.AvgSlopeKbpsPerSec, summary.AvgCoefVariationPct, summary.CacheHitRatePct, summary.ConnReuseRatePct, alpnKnownPct, tlsKnownPct, mix)
+			fmt.Printf("[analysis debug] summary %s lines=%d avg_speed=%.1f avg_ttfb=%.0f errors=%d p50=%.1f ratio=%.2f jitter=%.1f%% slope=%.2f cov%%=%.1f cache_hit=%.1f%% reuse=%.1f%% stalls=%.1f%% avg_stall=%.0fms micro_stalls=%.1f%% avg_micro_ms=%.0f alpn_known=%.1f%% tls_known=%.1f%%%s\n",
+				summary.RunTag,
+				summary.Lines,
+				summary.AvgSpeed,
+				summary.AvgTTFB,
+				summary.ErrorLines,
+				summary.AvgP50Speed,
+				summary.AvgP99P50Ratio,
+				summary.AvgJitterPct,
+				summary.AvgSlopeKbpsPerSec,
+				summary.AvgCoefVariationPct,
+				summary.CacheHitRatePct,
+				summary.ConnReuseRatePct,
+				summary.StallRatePct,
+				summary.AvgStallElapsedMs,
+				summary.MicroStallRatePct,
+				summary.AvgMicroStallMs,
+				alpnKnownPct,
+				tlsKnownPct,
+				mix,
+			)
 		}
 	}
 	return summaries, nil
@@ -1043,7 +1181,7 @@ readLoop:
 // Backwards-compatible wrapper for callers without options
 func AnalyzeRecentResultsFull(path string, schemaVersion, MaxBatches int, situationFilter string) ([]BatchSummary, error) {
 	// Choose a sensible default threshold for low-speed share (1,000 kbps) without breaking callers.
-	return AnalyzeRecentResultsFullWithOptions(path, schemaVersion, MaxBatches, AnalyzeOptions{SituationFilter: situationFilter, LowSpeedThresholdKbps: 1000})
+	return AnalyzeRecentResultsFullWithOptions(path, schemaVersion, MaxBatches, AnalyzeOptions{SituationFilter: situationFilter, LowSpeedThresholdKbps: 1000, MicroStallMinGapMs: 500})
 }
 
 // CompareLastVsPrevious returns delta percentages for speed and TTFB of last batch vs previous average.

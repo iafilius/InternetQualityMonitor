@@ -172,6 +172,10 @@ type uiState struct {
 	stallTimeImgCanvas   *canvas.Image // Avg Stall Time (ms)
 	stallCountImgCanvas  *canvas.Image // Stalled Requests Count (interim)
 	partialBodyImgCanvas *canvas.Image // Partial Body Rate (%)
+	// micro-stalls (transient stalls) charts
+	microStallRateImgCanvas  *canvas.Image // Transient Stall Rate (%)
+	microStallTimeImgCanvas  *canvas.Image // Avg Transient Stall Time (ms)
+	microStallCountImgCanvas *canvas.Image // Avg Transient Stall Count (per line)
 
 	// connection setup breakdown charts
 	setupDNSImgCanvas  *canvas.Image // Avg DNS time (ms)
@@ -228,6 +232,10 @@ type uiState struct {
 	stallTimeOverlay   *crosshairOverlay
 	stallCountOverlay  *crosshairOverlay
 	partialBodyOverlay *crosshairOverlay
+	// micro-stalls overlays
+	microStallRateOverlay  *crosshairOverlay
+	microStallTimeOverlay  *crosshairOverlay
+	microStallCountOverlay *crosshairOverlay
 
 	// section containers for conditional visibility
 	pretffbBlock    *fyne.Container // wraps separator + Pre‑TTFB chart section for hide/show
@@ -916,6 +924,19 @@ func main() {
 	state.stallRateImgCanvas.FillMode = canvas.ImageFillStretch
 	state.stallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.stallRateOverlay = newCrosshairOverlay(state, "stall_rate")
+	// Transient stalls (micro-stalls)
+	state.microStallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.microStallRateImgCanvas.FillMode = canvas.ImageFillStretch
+	state.microStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.microStallRateOverlay = newCrosshairOverlay(state, "micro_stall_rate")
+	state.microStallTimeImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.microStallTimeImgCanvas.FillMode = canvas.ImageFillStretch
+	state.microStallTimeImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.microStallTimeOverlay = newCrosshairOverlay(state, "micro_stall_time")
+	state.microStallCountImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.microStallCountImgCanvas.FillMode = canvas.ImageFillStretch
+	state.microStallCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.microStallCountOverlay = newCrosshairOverlay(state, "micro_stall_count")
 	// Pre‑TTFB Stall Rate
 	state.pretffbImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.pretffbImgCanvas.FillMode = canvas.ImageFillStretch
@@ -1000,6 +1021,11 @@ Computation: sample-based using intra-transfer speed samples and the selected th
 - Use alongside Stall Rate and Avg Stall Time.` + axesTip
 	helpPartialBody := `Partial Body Rate (%): fraction of requests that finished with an incomplete body (Content-Length mismatch or early EOF).
 - Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip
+	// Micro-stalls help
+	helpMicroStallRate := `Transient Stall Rate (%): share of lines with ≥1 short stall (≥500 ms by default) while transfer continued.
+- Derived offline from intra-transfer speed samples. Not the same as hard stall-timeout aborts.` + axesTip
+	helpMicroStallTime := `Avg Transient Stall Time (ms): average total duration of micro-stalls per line (among lines with any micro-stall).` + axesTip
+	helpMicroStallCount := `Avg Transient Stall Count: average number of micro-stall events per line.` + axesTip
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
@@ -1125,6 +1151,8 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "Low-Speed Time Share", helpLowSpeed, container.NewStack(state.lowSpeedImgCanvas, state.lowSpeedOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Stall Rate", helpStallRate, container.NewStack(state.stallRateImgCanvas, state.stallRateOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Transient Stall Rate", helpMicroStallRate, container.NewStack(state.microStallRateImgCanvas, state.microStallRateOverlay)),
 		// Pre‑TTFB block (may be hidden when metric is all‑zero across all batches)
 		state.pretffbBlock,
 		widget.NewSeparator(),
@@ -1133,6 +1161,10 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "Stalled Requests Count", helpStallCount, container.NewStack(state.stallCountImgCanvas, state.stallCountOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Avg Stall Time", helpStallTime, container.NewStack(state.stallTimeImgCanvas, state.stallTimeOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Avg Transient Stall Count", helpMicroStallCount, container.NewStack(state.microStallCountImgCanvas, state.microStallCountOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Avg Transient Stall Time", helpMicroStallTime, container.NewStack(state.microStallTimeImgCanvas, state.microStallTimeOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
 		widget.NewSeparator(),
@@ -1593,6 +1625,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportPartialBody,
 		exportStallCount,
 		exportStallTime,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Export Transient Stall Rate…", func() { exportChartPNG(state, state.microStallRateImgCanvas, "transient_stall_rate_chart.png") }),
+		fyne.NewMenuItem("Export Avg Transient Stall Time…", func() { exportChartPNG(state, state.microStallTimeImgCanvas, "avg_transient_stall_time_chart.png") }),
+		fyne.NewMenuItem("Export Avg Transient Stall Count…", func() { exportChartPNG(state, state.microStallCountImgCanvas, "avg_transient_stall_count_chart.png") }),
 	)
 	stabilitySubItem := fyne.NewMenuItem("Stability & Quality", nil)
 	stabilitySubItem.ChildMenu = stabilitySub
@@ -1861,6 +1897,18 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		if state.stallCountOverlay != nil {
 			state.stallCountOverlay.enabled = b
 			state.stallCountOverlay.Refresh()
+		}
+		if state.microStallRateOverlay != nil {
+			state.microStallRateOverlay.enabled = b
+			state.microStallRateOverlay.Refresh()
+		}
+		if state.microStallTimeOverlay != nil {
+			state.microStallTimeOverlay.enabled = b
+			state.microStallTimeOverlay.Refresh()
+		}
+		if state.microStallCountOverlay != nil {
+			state.microStallCountOverlay.enabled = b
+			state.microStallCountOverlay.Refresh()
 		}
 		// refresh menu label
 		go func() {
@@ -2275,8 +2323,8 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 			return
 		}
 	}
-	// Use options so low-speed threshold is applied
-	ops := analysis.AnalyzeOptions{SituationFilter: "", LowSpeedThresholdKbps: float64(state.lowSpeedThresholdKbps)}
+	// Use options so low-speed threshold and micro-stall detection are applied
+	ops := analysis.AnalyzeOptions{SituationFilter: "", LowSpeedThresholdKbps: float64(state.lowSpeedThresholdKbps), MicroStallMinGapMs: 500}
 	summaries, err := analysis.AnalyzeRecentResultsFullWithOptions(state.filePath, monitor.SchemaVersion, state.batchesN, ops)
 	if err != nil {
 		dialog.ShowError(err, state.window)
@@ -3066,6 +3114,49 @@ func redrawCharts(state *uiState) {
 			}
 			if state.stallCountOverlay != nil {
 				state.stallCountOverlay.Refresh()
+			}
+		}
+		// Transient/Micro‑Stalls charts
+		msrImg := renderMicroStallRateChart(state)
+		if msrImg != nil {
+			if state.microStallRateImgCanvas != nil {
+				state.microStallRateImgCanvas.Image = msrImg
+			}
+			_, chh := chartSize(state)
+			if state.microStallRateImgCanvas != nil {
+				state.microStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.microStallRateImgCanvas.Refresh()
+			}
+			if state.microStallRateOverlay != nil {
+				state.microStallRateOverlay.Refresh()
+			}
+		}
+		mstImg := renderMicroStallTimeChart(state)
+		if mstImg != nil {
+			if state.microStallTimeImgCanvas != nil {
+				state.microStallTimeImgCanvas.Image = mstImg
+			}
+			_, chh := chartSize(state)
+			if state.microStallTimeImgCanvas != nil {
+				state.microStallTimeImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.microStallTimeImgCanvas.Refresh()
+			}
+			if state.microStallTimeOverlay != nil {
+				state.microStallTimeOverlay.Refresh()
+			}
+		}
+		mscImg := renderMicroStallCountChart(state)
+		if mscImg != nil {
+			if state.microStallCountImgCanvas != nil {
+				state.microStallCountImgCanvas.Image = mscImg
+			}
+			_, chh := chartSize(state)
+			if state.microStallCountImgCanvas != nil {
+				state.microStallCountImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.microStallCountImgCanvas.Refresh()
+			}
+			if state.microStallCountOverlay != nil {
+				state.microStallCountOverlay.Refresh()
 			}
 		}
 		// Plateau Count chart
@@ -4146,6 +4237,357 @@ func renderStallRateChart(state *uiState) image.Image {
 	}
 	if state.showHints {
 		img = drawHint(img, "Hint: % of requests that experienced any stall.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderMicroStallRateChart draws Transient Stall Rate (%) per batch (overall/IPv4/IPv6).
+func renderMicroStallRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.MicroStallRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.MicroStallRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.MicroStallRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		// clamp to [0,100] for percent in absolute mode
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Transient Stall Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: % of lines with ≥1 transient stall (micro‑stall). Threshold=500ms by default.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderMicroStallTimeChart draws Avg Transient Stall Time (ms) per batch.
+func renderMicroStallTimeChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgMicroStallMs }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgMicroStallMs
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgMicroStallMs
+		}, chart.ColorGreen)
+	}
+	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
+	yAxisRange := &chart.ContinuousRange{}
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 0 {
+			maxY = 1
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Avg Transient Stall Time (ms)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average total time of micro‑stalls per line (lines with any).")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderMicroStallCountChart plots Avg Transient Stall Count per batch.
+func renderMicroStallCountChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v < 0 || math.IsNaN(v) {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.AvgMicroStallCount }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.AvgMicroStallCount
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.AvgMicroStallCount
+		}, chart.ColorGreen)
+	}
+	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
+	yAxisRange := &chart.ContinuousRange{}
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY <= 1 {
+			maxY = 2
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Avg Transient Stall Count", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "count", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Average number of micro‑stall events per line.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -8797,6 +9239,7 @@ func detectXGridlineCenters(img image.Image, isDark bool) []float32 {
 	sort.Slice(centers, func(i, j int) bool { return centers[i] < centers[j] })
 	return centers
 }
+
 // --- Crosshair mapping helpers (pure math; used by tests) ---
 // computeContainRect returns the drawn image rect and scale when an image of (imgW,imgH)
 // is rendered into a view of (viewW,viewH) using a contain-fit policy.
@@ -9625,6 +10068,19 @@ func exportAllChartsCombined(state *uiState) {
 	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
 		imgs = append(imgs, state.stallTimeImgCanvas.Image)
 		labels = append(labels, "Avg Stall Time")
+	}
+	// Transient/Micro‑Stalls
+	if state.microStallRateImgCanvas != nil && state.microStallRateImgCanvas.Image != nil {
+		imgs = append(imgs, state.microStallRateImgCanvas.Image)
+		labels = append(labels, "Transient Stall Rate (%)")
+	}
+	if state.microStallTimeImgCanvas != nil && state.microStallTimeImgCanvas.Image != nil {
+		imgs = append(imgs, state.microStallTimeImgCanvas.Image)
+		labels = append(labels, "Avg Transient Stall Time (ms)")
+	}
+	if state.microStallCountImgCanvas != nil && state.microStallCountImgCanvas.Image != nil {
+		imgs = append(imgs, state.microStallCountImgCanvas.Image)
+		labels = append(labels, "Avg Transient Stall Count")
 	}
 	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
 		imgs = append(imgs, state.cacheImgCanvas.Image)

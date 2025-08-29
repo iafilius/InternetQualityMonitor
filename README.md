@@ -370,7 +370,9 @@ Stability & quality (viewer)
 Low‑Speed Threshold control
 - Settings → “Low‑Speed Threshold…” sets the cutoff for Low‑Speed Time Share. Default 1000 kbps; persisted. Changing it re‑analyzes data on the fly. Stall metrics are independent of this threshold.
 
-See also: the dedicated viewer docs in `README_iqmviewer.md` for a compact, feature‑focused overview and troubleshooting notes.
+See also:
+- `README_iqmviewer.md` for a compact, feature‑focused viewer overview and troubleshooting.
+- `README_analysis.md` for analysis thresholds, options, and derived metrics reference.
 
 Quick screenshots (from the viewer):
 
@@ -391,6 +393,18 @@ More visuals available:
 ![DNS Lookup Time](docs/images/dns_lookup_time.png)
 ![TCP Connect Time](docs/images/tcp_connect_time.png)
 ![TLS Handshake Time](docs/images/tls_handshake_time.png)
+
+### Micro‑stalls (transient stalls)
+
+Micro‑stalls are short pauses during transfer where no bytes are received for a brief period, but the request later continues and completes (distinct from hard stalls that hit the stall‑timeout and abort).
+
+- Default threshold: a micro‑stall is detected when the cumulative bytes do not increase for ≥500 ms between speed samples.
+- Metrics produced by analysis:
+   - Transient Stall Rate (%): share of requests with ≥1 micro‑stall.
+   - Avg Transient Stall Time (ms): average total paused time per affected request.
+   - Avg Transient Stall Count: average number of micro‑stall events per affected request.
+
+These metrics surface in the analysis summaries and are visualized in the viewer (with dedicated exports and inclusion in combined/exported screenshots).
 
 ### Updating screenshots (docs/images)
 

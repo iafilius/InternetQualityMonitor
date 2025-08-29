@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
 ## [Unreleased]
 - Viewer: Rolling overlays with independent toggles — Rolling Mean (μ) and translucent ±1σ band; single legend entry “Rolling μ±1σ (N)”; window N persisted (default 7).
 - Viewer: Stability & quality suite — Low‑Speed Time Share (%), Stall Rate (%), Avg Stall Time (ms), and Stalled Requests Count (derived) with dedicated export item.
+- Viewer: Transient/micro‑stalls — new charts for Transient Stall Rate (%), Avg Transient Stall Time (ms), Avg Transient Stall Count; individual exports, included in combined export and headless screenshots; default micro‑stall gap threshold 500 ms.
 - Viewer: Situation watermark embedded in all exports; chart titles kept clean; export order mirrors on‑screen order.
 - Viewer: Percentiles re‑organized — Speed Percentiles under Avg Speed; TTFB Percentiles under Avg TTFB.
 - Viewer: Preferences persist Situation, axis modes, speed unit, crosshair, SLA thresholds, Low‑Speed Threshold, Rolling Window, overlays toggles.
