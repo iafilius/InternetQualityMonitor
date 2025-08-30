@@ -12,7 +12,7 @@ This document describes the system architecture: components, data flows, runtime
 Core components and their responsibilities:
 - Monitor (collector)
   - Actively measures sites via HEAD → GET → Range GET
-  - Records timings, protocol/TLS, throughput samples, stall signals
+  - Records timings (DNS/TCP/TLS handshake, TTFB), protocol/TLS/ALPN, throughput samples, stall signals
   - Writes JSON Lines to monitor_results.jsonl
 - Analysis (library/CLI)
   - Reads recent batches from JSONL; aggregates Overall/IPv4/IPv6
@@ -42,7 +42,7 @@ Details (PlantUML source):
 ## Data model (brief)
 
 - Per line: ResultEnvelope { meta, site_result } (schema_version=3)
-- Key telemetry: DNS/TCP/TLS/TTFB, speeds and samples, stall signals, protocol (HTTPProtocol), TLSVersion, ALPN, headers (Age/X‑Cache/Via), proxy heuristics, IPv4/IPv6 family
+- Key telemetry: DNS/TCP/TLS/TTFB, tls_handshake_ms, speeds and samples, stall signals, protocol (HTTPProtocol), TLSVersion, ALPN, headers (Age/X‑Cache/Via), proxy heuristics, IPv4/IPv6 family
 - Batches keyed by meta.run_tag; summaries computed per batch (Overall/IPv4/IPv6)
 
 See README_analysis.md for the full list of derived metrics.
@@ -66,6 +66,10 @@ Details (PlantUML source):
 Notes:
 - Single transient retry for HEAD/GET/Range on EOF/reset; flags recorded.
 - Protocol/TLS fields are populated from GET; if GET fails, populated from HEAD/Range when available.
+- For HTTPS targets, the monitor records TLS handshake timing (tls_handshake_ms) and captures TLS version and ALPN negotiated during the handshake.
+- In the sequence diagram, yellow notes highlight where timings are taken:
+  - tls_handshake_ms measured during the TLS handshake between client and site
+  - pre_ttfb_ms measured from request until the first response byte
 
 ## Analyze‑only flow
 

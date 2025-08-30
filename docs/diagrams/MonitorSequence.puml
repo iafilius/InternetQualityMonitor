@@ -12,7 +12,16 @@ Monitor -> HC : HEAD (timeout)
 HC --> Monitor : Response (status/headers)
 Monitor -> HC : GET (with httptrace)
 activate HC
+HC -> S : TLS handshake (if HTTPS)
+S --> HC : handshake complete
+note over HC,S #lightyellow
+tls_handshake_ms measured here
+end note
+Monitor -> Monitor : record TLS ver/ALPN + handshake_ms
 HC --> Monitor : Response (status, body stream)
+note over Monitor,HC #lightyellow
+pre_ttfb_ms measured until first response byte
+end note
 Monitor -> Monitor : pre‑TTFB watchdog (optional)
 Monitor -> Monitor : read loop + stall watchdog
 Monitor -> Monitor : sample throughput every 100ms
