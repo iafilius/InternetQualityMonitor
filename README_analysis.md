@@ -71,6 +71,8 @@ Per batch (Overall/IPv4/IPv6 when available):
   - TLS/ALPN mixes (%), Chunked Transfer Rate (%).
   - Cache Hit Rate, Proxy Suspected Rate, Warm Cache Suspected Rate.
 
+Note on sourcing: Protocol/TLS/encoding fields are primarily taken from the primary GET response. If that is unavailable (e.g., timeout or abort), the monitor fills these fields from a successful HEAD or Range response when present, so protocol/TLS mixes remain informative in those edge cases.
+
 - IPv6 vs IPv4 deltas
   - Speed delta (abs, %), TTFB delta (abs, %).
 

@@ -822,6 +822,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	}
 	sr.HeadTimeMs = headTime.Milliseconds()
 	if headErr == nil && headResp != nil {
+		// Capture protocol/TLS/encoding as early as possible (helps when GET later fails)
+		fillProtocolTLSAndEncoding(sr, headResp)
 		headResp.Body.Close()
 		sr.HeadStatus = headResp.StatusCode
 	} else if headErr != nil {
@@ -922,6 +924,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		writeResult(wrapRoot(sr))
 		return
 	}
+	// Populate protocol/TLS/encoding from the response so http_protocol/alpn/tls_ver are not left unknown
+	fillProtocolTLSAndEncoding(sr, resp)
 	// content length header handled later into sr.ContentLengthHeader
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
@@ -1334,6 +1338,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		secondResp, secondGetTime, secondErr = doSecondGET()
 	}
 	if secondErr == nil && secondResp != nil {
+		// Also capture protocol/TLS/encoding from the Range response (usually same connection)
+		fillProtocolTLSAndEncoding(sr, secondResp)
 		sr.SecondGetStatus = secondResp.StatusCode
 		sr.SecondGetTimeMs = secondGetTime.Milliseconds()
 		sr.SecondGetHeaderAge = secondResp.Header.Get("Age")

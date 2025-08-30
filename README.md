@@ -2,6 +2,8 @@
 
 This project monitors various aspects of internet connectivity for a list of HTTP(S) sites hosted in different countries. It supports local monitoring (with Zscaler client) and remote monitoring over SSH (unmodified internet).
 
+See also: Design Criteria and Principles → [DESIGN_CRITERIA.md](./DESIGN_CRITERIA.md), Architecture → [ARCHITECTURE.md](./ARCHITECTURE.md)
+
 ## TL;DR
 Quick network performance + proxy/cache heuristics monitor + batch analyzer.
 
@@ -766,6 +768,11 @@ Protocol/TLS/encoding rollups (to help diagnose proxy/network path issues):
 - chunked_rate_pct: fraction of lines using chunked transfer encoding
 
 These metrics are derived from the primary GET response and can be used to correlate performance or reliability differences between HTTP/1.1 and HTTP/2, TLS versions, or usage of chunked encoding.
+
+Note: When the primary GET is unavailable (e.g., due to a timeout), the monitor now populates protocol/TLS/encoding fields from earlier or subsequent phases when possible:
+- HEAD response: protocol/TLS/ALPN are captured on success and retained if GET later fails.
+- Range (partial) GET response: protocol/TLS/ALPN are also captured here and typically match the primary GET connection.
+This ensures the viewer’s protocol/TLS charts don’t degrade to Unknown solely because the primary GET failed.
 
 ### Example Batch Summary Console Lines
 <details>

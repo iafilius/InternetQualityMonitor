@@ -1,0 +1,25 @@
+@startuml IQMComponents
+scale 1.2
+package "InternetQualityMonitor" {
+  [Monitor\n(src/monitor, src/main.go)] as Monitor
+  [Analysis\n(src/analysis)] as Analysis
+  [Viewer (Desktop)\n(cmd/iqmviewer)] as Viewer
+  [Reader CLIs\n(cmd/iqmreader, cmd/iqminspect)] as Readers
+  [JSONL Results\nmonitor_results.jsonl] as JSONL
+  [Alerts JSON\nalerts_*.json] as Alerts
+  [Screenshots\ndocs/images] as Shots
+}
+
+[Internet Targets] as Targets
+[Corporate/HTTP Proxy] as Proxy
+
+Monitor --> JSONL : append ResultEnvelope (schema v3)
+Analysis --> JSONL : read recent batches
+Viewer --> Analysis : in‑proc API calls
+Readers --> Analysis : in‑proc API calls
+Analysis --> Alerts : write alerts
+Viewer --> Shots : write screenshots
+
+Monitor --> Targets : HEAD/GET/Range (via http.Client)
+Monitor ..> Proxy : optional, env proxy path
+@enduml

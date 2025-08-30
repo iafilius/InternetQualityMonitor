@@ -784,3 +784,119 @@ func TestRangeTransientRetrySetsFlag(t *testing.T) {
 		t.Fatalf("unexpected other retry flags set")
 	}
 }
+
+// Ensure protocol/alpn/tls fields are populated from the GET response (no longer Unknown)
+func TestHTTPProtocolPopulatedFromResponse(t *testing.T) {
+	// Simple HTTP server (no TLS) -> expect HTTP/1.1 and empty ALPN/TLSVersion
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
+		// primary GET
+		w.WriteHeader(200)
+		w.Write([]byte(strings.Repeat("x", 256)))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	hostIP := u.Hostname()
+	// Ensure no proxies interfere
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		os.Unsetenv(k)
+	}
+
+	// Reasonable timeouts
+	oldHTTP, oldSite, oldStall := httpTimeout, siteTimeout, stallTimeout
+	SetHTTPTimeout(2 * time.Second)
+	SetSiteTimeout(3 * time.Second)
+	SetStallTimeout(1 * time.Second)
+	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
+
+	// Fallback writer to a temp file
+	tmp := t.TempDir() + "/res.jsonl"
+	resultChan = nil
+	resultPath = tmp
+
+	site := typespkg.Site{Name: "proto-populated", URL: srv.URL}
+	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
+
+	data, rerr := os.ReadFile(tmp)
+	if rerr != nil {
+		t.Fatalf("read results: %v", rerr)
+	}
+	var env ResultEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.SiteResult == nil {
+		t.Fatalf("no site_result")
+	}
+	if env.SiteResult.HTTPError != "" {
+		t.Fatalf("unexpected HTTPError: %q", env.SiteResult.HTTPError)
+	}
+	if env.SiteResult.HTTPProtocol != "HTTP/1.1" {
+		t.Fatalf("expected HTTPProtocol HTTP/1.1, got %q", env.SiteResult.HTTPProtocol)
+	}
+	if env.SiteResult.ALPN != "" {
+		t.Fatalf("expected empty ALPN for non-TLS http, got %q", env.SiteResult.ALPN)
+	}
+	if env.SiteResult.TLSVersion != "" {
+		t.Fatalf("expected empty TLSVersion for non-TLS http, got %q", env.SiteResult.TLSVersion)
+	}
+}
+
+// If GET fails after a successful HEAD, protocol should still be set (sourced from HEAD)
+func TestProtocolFromHeadWhenGetFails(t *testing.T) {
+	// Server: HEAD 200, primary GET times out to simulate failure
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
+		if r.Method == http.MethodGet && r.Header.Get("Range") == "" {
+			time.Sleep(2 * time.Second)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	hostIP := u.Hostname()
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		os.Unsetenv(k)
+	}
+
+	oldHTTP, oldSite, oldStall := httpTimeout, siteTimeout, stallTimeout
+	SetHTTPTimeout(300 * time.Millisecond) // force GET to timeout
+	SetSiteTimeout(1 * time.Second)
+	SetStallTimeout(200 * time.Millisecond)
+	defer func() { SetHTTPTimeout(oldHTTP); SetSiteTimeout(oldSite); SetStallTimeout(oldStall) }()
+
+	tmp := t.TempDir() + "/res.jsonl"
+	resultChan = nil
+	resultPath = tmp
+
+	site := typespkg.Site{Name: "proto-from-head", URL: srv.URL}
+	MonitorSiteIP(site, hostIP, []string{hostIP}, 0)
+
+	data, _ := os.ReadFile(tmp)
+	var env ResultEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.SiteResult == nil {
+		t.Fatalf("no site_result")
+	}
+	if env.SiteResult.HeadStatus != 200 {
+		t.Fatalf("expected HEAD 200")
+	}
+	if env.SiteResult.HTTPError == "" {
+		t.Fatalf("expected GET to fail from timeout to exercise head-sourced protocol")
+	}
+	if env.SiteResult.HTTPProtocol != "HTTP/1.1" {
+		t.Fatalf("expected HTTP/1.1 populated from HEAD, got %q", env.SiteResult.HTTPProtocol)
+	}
+}

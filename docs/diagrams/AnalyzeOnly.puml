@@ -1,0 +1,9 @@
+@startuml AnalyzeOnly
+participant Analysis
+database JSONL as J
+collections "Summaries" as S
+
+Analysis -> J : scan recent N batches
+Analysis -> Analysis : group by run_tag, compute metrics
+Analysis --> S : Overall/IPv4/IPv6 summaries
+@enduml
