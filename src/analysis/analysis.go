@@ -37,12 +37,19 @@ func isEnterpriseProxy(name string) bool {
 
 // BatchSummary captures aggregate metrics for one run_tag batch.
 type BatchSummary struct {
-	RunTag             string  `json:"run_tag"`
-	Situation          string  `json:"situation,omitempty"`
-	Lines              int     `json:"lines"`
-	AvgSpeed           float64 `json:"avg_speed_kbps"`
-	MedianSpeed        float64 `json:"median_speed_kbps"`
-	AvgTTFB            float64 `json:"avg_ttfb_ms"`
+	RunTag      string  `json:"run_tag"`
+	Situation   string  `json:"situation,omitempty"`
+	Lines       int     `json:"lines"`
+	AvgSpeed    float64 `json:"avg_speed_kbps"`
+	MedianSpeed float64 `json:"median_speed_kbps"`
+	MinSpeed    float64 `json:"min_speed_kbps,omitempty"`
+	MaxSpeed    float64 `json:"max_speed_kbps,omitempty"`
+	AvgTTFB     float64 `json:"avg_ttfb_ms"`
+	// Cross-line TTFB percentiles
+	AvgP25TTFBMs       float64 `json:"avg_ttfb_p25_ms,omitempty"`
+	AvgP75TTFBMs       float64 `json:"avg_ttfb_p75_ms,omitempty"`
+	MinTTFBMs          float64 `json:"min_ttfb_ms,omitempty"`
+	MaxTTFBMs          float64 `json:"max_ttfb_ms,omitempty"`
 	AvgBytes           float64 `json:"avg_bytes"`
 	ErrorLines         int     `json:"error_lines"`
 	AvgFirstRTTGoodput float64 `json:"avg_first_rtt_goodput_kbps"`
@@ -60,9 +67,12 @@ type BatchSummary struct {
 	// For DNS, this captures the legacy pre-resolve field dns_time_ms when present
 	AvgDNSLegacyMs float64 `json:"avg_dns_legacy_ms,omitempty"`
 	// Extended aggregated metrics (averages or rates over successful lines)
-	AvgP90Speed           float64 `json:"avg_p90_kbps,omitempty"`
-	AvgP95Speed           float64 `json:"avg_p95_kbps,omitempty"`
-	AvgP99Speed           float64 `json:"avg_p99_kbps,omitempty"`
+	AvgP90Speed float64 `json:"avg_p90_kbps,omitempty"`
+	AvgP95Speed float64 `json:"avg_p95_kbps,omitempty"`
+	AvgP99Speed float64 `json:"avg_p99_kbps,omitempty"`
+	// Cross-line Speed percentiles
+	AvgP25Speed           float64 `json:"avg_p25_kbps,omitempty"`
+	AvgP75Speed           float64 `json:"avg_p75_kbps,omitempty"`
 	AvgSlopeKbpsPerSec    float64 `json:"avg_slope_kbps_per_sec,omitempty"`
 	AvgCoefVariationPct   float64 `json:"avg_coef_variation_pct,omitempty"`
 	CacheHitRatePct       float64 `json:"cache_hit_rate_pct,omitempty"`
@@ -143,10 +153,17 @@ type BatchSummary struct {
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
 type FamilySummary struct {
-	Lines              int     `json:"lines"`
-	AvgSpeed           float64 `json:"avg_speed_kbps"`
-	MedianSpeed        float64 `json:"median_speed_kbps"`
-	AvgTTFB            float64 `json:"avg_ttfb_ms"`
+	Lines       int     `json:"lines"`
+	AvgSpeed    float64 `json:"avg_speed_kbps"`
+	MedianSpeed float64 `json:"median_speed_kbps"`
+	MinSpeed    float64 `json:"min_speed_kbps,omitempty"`
+	MaxSpeed    float64 `json:"max_speed_kbps,omitempty"`
+	AvgTTFB     float64 `json:"avg_ttfb_ms"`
+	// Cross-line TTFB percentiles
+	AvgP25TTFBMs       float64 `json:"avg_ttfb_p25_ms,omitempty"`
+	AvgP75TTFBMs       float64 `json:"avg_ttfb_p75_ms,omitempty"`
+	MinTTFBMs          float64 `json:"min_ttfb_ms,omitempty"`
+	MaxTTFBMs          float64 `json:"max_ttfb_ms,omitempty"`
 	AvgBytes           float64 `json:"avg_bytes"`
 	ErrorLines         int     `json:"error_lines"`
 	AvgFirstRTTGoodput float64 `json:"avg_first_rtt_goodput_kbps"`
@@ -161,10 +178,13 @@ type FamilySummary struct {
 	AvgConnectMs    float64 `json:"avg_connect_ms,omitempty"`
 	AvgTLSHandshake float64 `json:"avg_tls_handshake_ms,omitempty"`
 	// Legacy-only averages to enable comparison overlays in the UI
-	AvgDNSLegacyMs        float64 `json:"avg_dns_legacy_ms,omitempty"`
-	AvgP90Speed           float64 `json:"avg_p90_kbps,omitempty"`
-	AvgP95Speed           float64 `json:"avg_p95_kbps,omitempty"`
-	AvgP99Speed           float64 `json:"avg_p99_kbps,omitempty"`
+	AvgDNSLegacyMs float64 `json:"avg_dns_legacy_ms,omitempty"`
+	AvgP90Speed    float64 `json:"avg_p90_kbps,omitempty"`
+	AvgP95Speed    float64 `json:"avg_p95_kbps,omitempty"`
+	AvgP99Speed    float64 `json:"avg_p99_kbps,omitempty"`
+	// Cross-line Speed percentiles
+	AvgP25Speed           float64 `json:"avg_p25_kbps,omitempty"`
+	AvgP75Speed           float64 `json:"avg_p75_kbps,omitempty"`
 	AvgSlopeKbpsPerSec    float64 `json:"avg_slope_kbps_per_sec,omitempty"`
 	AvgCoefVariationPct   float64 `json:"avg_coef_variation_pct,omitempty"`
 	CacheHitRatePct       float64 `json:"cache_hit_rate_pct,omitempty"`
@@ -548,6 +568,30 @@ readLoop:
 		}
 		return s / float64(len(a))
 	}
+	minVal := func(a []float64) float64 {
+		if len(a) == 0 {
+			return 0
+		}
+		m := a[0]
+		for _, v := range a[1:] {
+			if v < m {
+				m = v
+			}
+		}
+		return m
+	}
+	maxVal := func(a []float64) float64 {
+		if len(a) == 0 {
+			return 0
+		}
+		m := a[0]
+		for _, v := range a[1:] {
+			if v > m {
+				m = v
+			}
+		}
+		return m
+	}
 	median := func(a []float64) float64 {
 		if len(a) == 0 {
 			return 0
@@ -770,6 +814,8 @@ readLoop:
 				AvgDNSLegacyMs:  avg(dnsLegacyTimes),
 				AvgConnectMs:    avg(connTimes),
 				AvgTLSHandshake: avg(tlsTimes),
+				MinSpeed:        minVal(speeds),
+				MaxSpeed:        maxVal(speeds),
 				// stability & quality
 				LowSpeedTimeSharePct: func() float64 {
 					if totalMsSum <= 0 {
@@ -824,6 +870,14 @@ readLoop:
 			fs.AvgP90TTFBMs = percentile(ttfbs, 90)
 			fs.AvgP95TTFBMs = percentile(ttfbs, 95)
 			fs.AvgP99TTFBMs = percentile(ttfbs, 99)
+			fs.AvgP25TTFBMs = percentile(ttfbs, 25)
+			fs.AvgP75TTFBMs = percentile(ttfbs, 75)
+			// Speed percentiles per family
+			fs.AvgP25Speed = percentile(speeds, 25)
+			fs.AvgP75Speed = percentile(speeds, 75)
+			// Min/Max TTFB
+			fs.MinTTFBMs = minVal(ttfbs)
+			fs.MaxTTFBMs = maxVal(ttfbs)
 			return fs
 		}
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
@@ -1050,7 +1104,7 @@ readLoop:
 		}
 		summary := BatchSummary{
 			RunTag: tag, Lines: recCount,
-			AvgSpeed: avg(speeds), MedianSpeed: median(speeds), AvgTTFB: avg(ttfbs), AvgBytes: avg(bytesVals), ErrorLines: errorLines,
+			AvgSpeed: avg(speeds), MedianSpeed: median(speeds), MinSpeed: minVal(speeds), MaxSpeed: maxVal(speeds), AvgTTFB: avg(ttfbs), MinTTFBMs: minVal(ttfbs), MaxTTFBMs: maxVal(ttfbs), AvgBytes: avg(bytesVals), ErrorLines: errorLines,
 			AvgFirstRTTGoodput: avg(firsts), AvgP50Speed: avg(p50s), AvgP99P50Ratio: avg(ratios), AvgPlateauCount: avg(plateauCounts), AvgLongestPlateau: avg(longest), AvgJitterPct: avg(jitters),
 			AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
 			CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
@@ -1194,6 +1248,11 @@ readLoop:
 		summary.AvgP90TTFBMs = percentile(ttfbs, 90)
 		summary.AvgP95TTFBMs = percentile(ttfbs, 95)
 		summary.AvgP99TTFBMs = percentile(ttfbs, 99)
+		summary.AvgP25TTFBMs = percentile(ttfbs, 25)
+		summary.AvgP75TTFBMs = percentile(ttfbs, 75)
+		// Speed percentiles overall
+		summary.AvgP25Speed = percentile(speeds, 25)
+		summary.AvgP75Speed = percentile(speeds, 75)
 		// Set split proxy rates
 		if recCount > 0 {
 			summary.EnterpriseProxyRatePct = float64(entProxyCntAll) / float64(recCount) * 100

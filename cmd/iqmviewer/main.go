@@ -487,9 +487,14 @@ type uiState struct {
 	// (removed: one-shot export scoping)
 
 	// situation selector (populated after data load)
-	situationSelect          *widget.Select
-	speedImgCanvas           *canvas.Image
-	ttfbImgCanvas            *canvas.Image
+	situationSelect *widget.Select
+	// Speed/TTFB split charts
+	speedImgCanvas           *canvas.Image // Speed – Average
+	speedMedianImgCanvas     *canvas.Image // Speed – Median
+	speedMinMaxImgCanvas     *canvas.Image // Speed – Min/Max
+	ttfbImgCanvas            *canvas.Image // TTFB – Average
+	ttfbMedianImgCanvas      *canvas.Image // TTFB – Median
+	ttfbMinMaxImgCanvas      *canvas.Image // TTFB – Min/Max
 	pctlOverallImg           *canvas.Image
 	pctlIPv4Img              *canvas.Image
 	pctlIPv6Img              *canvas.Image
@@ -631,8 +636,12 @@ type uiState struct {
 
 	// crosshair
 	crosshairEnabled    bool
-	speedOverlay        *crosshairOverlay
-	ttfbOverlay         *crosshairOverlay
+	speedOverlay        *crosshairOverlay // for Speed – Average
+	speedMedianOverlay  *crosshairOverlay // for Speed – Median
+	speedMinMaxOverlay  *crosshairOverlay // for Speed – Min/Max
+	ttfbOverlay         *crosshairOverlay // for TTFB – Average
+	ttfbMedianOverlay   *crosshairOverlay // for TTFB – Median
+	ttfbMinMaxOverlay   *crosshairOverlay // for TTFB – Min/Max
 	pctlOverallOverlay  *crosshairOverlay
 	pctlIPv4Overlay     *crosshairOverlay
 	pctlIPv6Overlay     *crosshairOverlay
@@ -653,6 +662,13 @@ type uiState struct {
 	showRolling     bool // show rolling mean line on Speed/TTFB
 	showRollingBand bool // show translucent ±1σ band around rolling mean
 	rollingWindow   int  // default 7
+
+	// metric visibility toggles for Speed/TTFB charts
+	showAvg    bool // default true
+	showMedian bool // default true
+	showMin    bool // default false
+	showMax    bool // default false
+	showIQR    bool // default false (P25–P75 band)
 
 	// charts registry and search
 	chartsScroll *container.Scroll
@@ -922,6 +938,12 @@ func main() {
 	var shotsDNSLegacy bool
 	var shotsSelfTest bool
 	var shotsIncludePreTTFB bool
+	// Metric visibility for headless screenshots
+	var shotsShowAvg bool
+	var shotsShowMedian bool
+	var shotsShowMin bool
+	var shotsShowMax bool
+	var shotsShowIQR bool
 	var selfTest bool
 	var showPretffbCLI string
 	flag.StringVar(&fileFlag, "file", "", "Path to monitor results JSONL file")
@@ -937,6 +959,12 @@ func main() {
 	flag.BoolVar(&shotsDNSLegacy, "screenshot-dns-legacy", false, "If true, overlay legacy dns_time_ms as dashed line on DNS chart in screenshots")
 	flag.BoolVar(&shotsSelfTest, "screenshot-selftest", true, "Include the Local Throughput Self-Test chart in screenshots")
 	flag.BoolVar(&shotsIncludePreTTFB, "screenshot-pretffb", true, "Include Pre‑TTFB Stall Rate chart if data is present")
+	// Defaults align with interactive UI: Avg+Median on; Min/Max/IQR off
+	flag.BoolVar(&shotsShowAvg, "screenshot-show-avg", true, "Show Average series on averages charts in screenshots")
+	flag.BoolVar(&shotsShowMedian, "screenshot-show-median", true, "Show Median series on averages charts in screenshots")
+	flag.BoolVar(&shotsShowMin, "screenshot-show-min", false, "Show Min series on averages charts in screenshots")
+	flag.BoolVar(&shotsShowMax, "screenshot-show-max", false, "Show Max series on averages charts in screenshots")
+	flag.BoolVar(&shotsShowIQR, "screenshot-show-iqr", false, "Show IQR band (P25–P75) on averages charts in screenshots")
 	flag.BoolVar(&selfTest, "selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
 	flag.StringVar(&showPretffbCLI, "show-pretffb", "", "Show Pre‑TTFB chart on launch (true|false); persists preference")
 	flag.Parse()
@@ -954,7 +982,7 @@ func main() {
 
 	// Headless screenshots mode: no UI, just render and write images.
 	if shots {
-		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy, shotsSelfTest, shotsIncludePreTTFB); err != nil {
+		if err := RunScreenshotsMode(fileFlag, shotsOut, shotsSituation, shotsRollingWindow, shotsBand, shotsBatches, shotsLowSpeedThreshKbps, shotsVariants, shotsTheme, shotsDNSLegacy, shotsSelfTest, shotsIncludePreTTFB, shotsShowAvg, shotsShowMedian, shotsShowMin, shotsShowMax, shotsShowIQR); err != nil {
 			fmt.Fprintf(os.Stderr, "screenshot mode error: %v\n", err)
 			os.Exit(1)
 		}
@@ -981,6 +1009,11 @@ func main() {
 		showRolling:     true,
 		showRollingBand: true,
 		rollingWindow:   7,
+		showAvg:         true,
+		showMedian:      true,
+		showMin:         false,
+		showMax:         false,
+		showIQR:         false,
 	}
 	// Sensible corporate defaults for SLA thresholds
 	state.slaSpeedThresholdKbps = 10000 // 10 Mbps P50 speed target
@@ -1175,9 +1208,21 @@ func main() {
 	state.speedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.speedImgCanvas.FillMode = canvas.ImageFillStretch
 	state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.speedMedianImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.speedMedianImgCanvas.FillMode = canvas.ImageFillStretch
+	state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.speedMinMaxImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.speedMinMaxImgCanvas.FillMode = canvas.ImageFillStretch
+	state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.ttfbImgCanvas.FillMode = canvas.ImageFillStretch
 	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.ttfbMedianImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.ttfbMedianImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.ttfbMinMaxImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.ttfbMinMaxImgCanvas.FillMode = canvas.ImageFillStretch
+	state.ttfbMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 
 	// layout
 	// top bar
@@ -1218,10 +1263,18 @@ func main() {
 	// ensure reasonable minimum heights for readability
 	// Use full chart width instead of hardcoded sizes so all graphs are 100% width
 	state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.ttfbMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	// overlays for crosshair
 	state.speedOverlay = newCrosshairOverlay(state, "speed")
+	state.speedMedianOverlay = newCrosshairOverlay(state, "speed")
+	state.speedMinMaxOverlay = newCrosshairOverlay(state, "speed")
 	state.ttfbOverlay = newCrosshairOverlay(state, "ttfb")
+	state.ttfbMedianOverlay = newCrosshairOverlay(state, "ttfb")
+	state.ttfbMinMaxOverlay = newCrosshairOverlay(state, "ttfb")
 	// new percentiles + error charts placeholders (stacked view only)
 	// compare view canvases (vertical stack: Overall, IPv4, IPv6)
 	state.pctlOverallImg = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -1618,14 +1671,18 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
+		makeChartSection(state, "Speed – Average", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
+		makeChartSection(state, "Speed – Median", "Median throughput per batch (Overall/IPv4/IPv6). Pair with IQR band to gauge variability."+axesTip, container.NewStack(state.speedMedianImgCanvas, state.speedMedianOverlay)),
+		makeChartSection(state, "Speed – Min/Max", "Batch minima and maxima for throughput. Useful for spotting outliers; typically noisier."+axesTip, container.NewStack(state.speedMinMaxImgCanvas, state.speedMinMaxOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Local Throughput Self-Test", "Local loopback throughput measured on startup. Useful as a device + OS baseline to compare against network speeds."+axesTip, container.NewStack(state.selfTestImgCanvas, state.selfTestOverlay)),
 		widget.NewSeparator(),
 		// Place Speed Percentiles directly under Avg Speed
 		makeChartSection(state, "Speed Percentiles", helpSpeedPct, speedPctlGrid),
 		widget.NewSeparator(),
-		makeChartSection(state, "TTFB (Avg)", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
+		makeChartSection(state, "TTFB – Average", helpTTFB, container.NewStack(state.ttfbImgCanvas, state.ttfbOverlay)),
+		makeChartSection(state, "TTFB – Median", "Median TTFB per batch (ms). Pair with IQR band to gauge variability."+axesTip, container.NewStack(state.ttfbMedianImgCanvas, state.ttfbMedianOverlay)),
+		makeChartSection(state, "TTFB – Min/Max", "Batch minima and maxima for TTFB (ms). Highlights extremes/outliers."+axesTip, container.NewStack(state.ttfbMinMaxImgCanvas, state.ttfbMinMaxOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "TTFB Percentiles", helpTTFBPct, ttfbPctlGrid),
 		widget.NewSeparator(),
@@ -1983,8 +2040,13 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	}
 	clearRecent := fyne.NewMenuItem("Clear Recent", func() { clearRecentFiles(state); buildMenus(state, fileLabel) })
 	recentMenu := fyne.NewMenu("Open Recent", append(items, clearRecent)...)
-	exportSpeed := fyne.NewMenuItem("Export Speed Chart…", func() { exportChartPNG(state, state.speedImgCanvas, "speed_chart.png") })
-	exportTTFB := fyne.NewMenuItem("Export TTFB Chart…", func() { exportChartPNG(state, state.ttfbImgCanvas, "ttfb_chart.png") })
+	// Split chart exports (Speed/TTFB: Average, Median, Min/Max)
+	exportSpeedAvg := fyne.NewMenuItem("Export Speed – Average…", func() { exportChartPNG(state, state.speedImgCanvas, "speed_average_chart.png") })
+	exportSpeedMedian := fyne.NewMenuItem("Export Speed – Median…", func() { exportChartPNG(state, state.speedMedianImgCanvas, "speed_median_chart.png") })
+	exportSpeedMinMax := fyne.NewMenuItem("Export Speed – Min/Max…", func() { exportChartPNG(state, state.speedMinMaxImgCanvas, "speed_minmax_chart.png") })
+	exportTTFBAvg := fyne.NewMenuItem("Export TTFB – Average…", func() { exportChartPNG(state, state.ttfbImgCanvas, "ttfb_average_chart.png") })
+	exportTTFBMedian := fyne.NewMenuItem("Export TTFB – Median…", func() { exportChartPNG(state, state.ttfbMedianImgCanvas, "ttfb_median_chart.png") })
+	exportTTFBMinMax := fyne.NewMenuItem("Export TTFB – Min/Max…", func() { exportChartPNG(state, state.ttfbMinMaxImgCanvas, "ttfb_minmax_chart.png") })
 	exportPctlOverall := fyne.NewMenuItem("Export Speed Percentiles – Overall…", func() { exportChartPNG(state, state.pctlOverallImg, "percentiles_overall.png") })
 	exportPctlIPv4 := fyne.NewMenuItem("Export Speed Percentiles – IPv4…", func() { exportChartPNG(state, state.pctlIPv4Img, "percentiles_ipv4.png") })
 	exportPctlIPv6 := fyne.NewMenuItem("Export Speed Percentiles – IPv6…", func() { exportChartPNG(state, state.pctlIPv6Img, "percentiles_ipv6.png") })
@@ -2080,12 +2142,16 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
 	// Create logical submenus to reduce clutter
 	avgSub := fyne.NewMenu("Averages & Percentiles",
-		exportSpeed,
+		exportSpeedAvg,
+		exportSpeedMedian,
+		exportSpeedMinMax,
 		exportPctlOverall,
 		exportPctlIPv4,
 		exportPctlIPv6,
 		fyne.NewMenuItemSeparator(),
-		exportTTFB,
+		exportTTFBAvg,
+		exportTTFBMedian,
+		exportTTFBMinMax,
 		exportTPctlOverall,
 		exportTPctlIPv4,
 		exportTPctlIPv6,
@@ -2523,6 +2589,68 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}()
 	})
 
+	// Metric visibility toggles (Avg/Median/Min/Max/IQR)
+	avgLabel := func() string {
+		if state.showAvg {
+			return "Show Average ✓"
+		}
+		return "Show Average"
+	}
+	medLabel := func() string {
+		if state.showMedian {
+			return "Show Median ✓"
+		}
+		return "Show Median"
+	}
+	minLabel := func() string {
+		if state.showMin {
+			return "Show Min ✓"
+		}
+		return "Show Min"
+	}
+	maxLabel := func() string {
+		if state.showMax {
+			return "Show Max ✓"
+		}
+		return "Show Max"
+	}
+	iqrLabel := func() string {
+		if state.showIQR {
+			return "Show IQR Band (P25–P75) ✓"
+		}
+		return "Show IQR Band (P25–P75)"
+	}
+	avgToggle := fyne.NewMenuItem(avgLabel(), func() {
+		state.showAvg = !state.showAvg
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+	medToggle := fyne.NewMenuItem(medLabel(), func() {
+		state.showMedian = !state.showMedian
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+	minToggle := fyne.NewMenuItem(minLabel(), func() {
+		state.showMin = !state.showMin
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+	maxToggle := fyne.NewMenuItem(maxLabel(), func() {
+		state.showMax = !state.showMax
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+	iqrToggle := fyne.NewMenuItem(iqrLabel(), func() {
+		state.showIQR = !state.showIQR
+		savePrefs(state)
+		redrawCharts(state)
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+
 	// DNS legacy overlay toggle moved here
 	dnsLabel := func() string {
 		if state.showDNSLegacy {
@@ -2763,6 +2891,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		hintsToggle,
 		pretffbToggle,
 		autoHidePretffbToggle,
+		fyne.NewMenuItemSeparator(),
+		avgToggle, medToggle, minToggle, maxToggle, iqrToggle,
 		fyne.NewMenuItemSeparator(),
 		rollingToggle,
 		bandToggle,
@@ -3013,36 +3143,103 @@ func filteredSummaries(state *uiState) []analysis.BatchSummary {
 // (removed: batch filter label/update controls)
 
 func redrawCharts(state *uiState) {
-	// Speed chart
-	spImg := renderSpeedChart(state)
-	if spImg != nil {
-		if state.speedImgCanvas != nil {
-			state.speedImgCanvas.Image = spImg
-		}
-		// ensure the image reserves enough width/height to show the rendered chart
-		_, chh := chartSize(state)
-		if state.speedImgCanvas != nil {
+	// Speed split charts (respect Settings toggles)
+	if state.showAvg {
+		if img := renderSpeedChartVariant(state, "avg"); img != nil && state.speedImgCanvas != nil {
+			state.speedImgCanvas.Image = img
+			_, chh := chartSize(state)
 			state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.speedImgCanvas.Refresh()
+			if state.speedOverlay != nil {
+				state.speedOverlay.Refresh()
+			}
 		}
-		// also refresh overlay so crosshair rebinds to new image rects
-		if state.speedOverlay != nil {
-			state.speedOverlay.Refresh()
-		}
+	} else if state.speedImgCanvas != nil {
+		// Clear image to a blank placeholder to reduce visual clutter when hidden
+		w, h := chartSize(state)
+		state.speedImgCanvas.Image = blank(w, h)
+		state.speedImgCanvas.Refresh()
 	}
-	ttImg := renderTTFBChart(state)
-	if ttImg != nil {
-		if state.ttfbImgCanvas != nil {
-			state.ttfbImgCanvas.Image = ttImg
+	if state.showMedian {
+		if img := renderSpeedChartVariant(state, "median"); img != nil && state.speedMedianImgCanvas != nil {
+			state.speedMedianImgCanvas.Image = img
+			_, chh := chartSize(state)
+			state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.speedMedianImgCanvas.Refresh()
+			if state.speedMedianOverlay != nil {
+				state.speedMedianOverlay.Refresh()
+			}
 		}
-		_, chh := chartSize(state)
-		if state.ttfbImgCanvas != nil {
+	} else if state.speedMedianImgCanvas != nil {
+		w, h := chartSize(state)
+		state.speedMedianImgCanvas.Image = blank(w, h)
+		state.speedMedianImgCanvas.Refresh()
+	}
+	if state.showMin || state.showMax {
+		if img := renderSpeedChartVariant(state, "minmax"); img != nil && state.speedMinMaxImgCanvas != nil {
+			state.speedMinMaxImgCanvas.Image = img
+			_, chh := chartSize(state)
+			state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.speedMinMaxImgCanvas.Refresh()
+			if state.speedMinMaxOverlay != nil {
+				state.speedMinMaxOverlay.Refresh()
+			}
+		}
+	} else if state.speedMinMaxImgCanvas != nil {
+		w, h := chartSize(state)
+		img := blank(w, h)
+		// Draw a small centered hint so it's clear why there's no data when Min/Max are hidden
+		img = drawHint(img, "Min/Max hidden. Enable in Settings → Averages visibility.")
+		state.speedMinMaxImgCanvas.Image = img
+		state.speedMinMaxImgCanvas.Refresh()
+	}
+	// TTFB split charts
+	if state.showAvg {
+		if img := renderTTFBChartVariant(state, "avg"); img != nil && state.ttfbImgCanvas != nil {
+			state.ttfbImgCanvas.Image = img
+			_, chh := chartSize(state)
 			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.ttfbImgCanvas.Refresh()
+			if state.ttfbOverlay != nil {
+				state.ttfbOverlay.Refresh()
+			}
 		}
-		if state.ttfbOverlay != nil {
-			state.ttfbOverlay.Refresh()
+	} else if state.ttfbImgCanvas != nil {
+		w, h := chartSize(state)
+		state.ttfbImgCanvas.Image = blank(w, h)
+		state.ttfbImgCanvas.Refresh()
+	}
+	if state.showMedian {
+		if img := renderTTFBChartVariant(state, "median"); img != nil && state.ttfbMedianImgCanvas != nil {
+			state.ttfbMedianImgCanvas.Image = img
+			_, chh := chartSize(state)
+			state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.ttfbMedianImgCanvas.Refresh()
+			if state.ttfbMedianOverlay != nil {
+				state.ttfbMedianOverlay.Refresh()
+			}
 		}
+	} else if state.ttfbMedianImgCanvas != nil {
+		w, h := chartSize(state)
+		state.ttfbMedianImgCanvas.Image = blank(w, h)
+		state.ttfbMedianImgCanvas.Refresh()
+	}
+	if state.showMin || state.showMax {
+		if img := renderTTFBChartVariant(state, "minmax"); img != nil && state.ttfbMinMaxImgCanvas != nil {
+			state.ttfbMinMaxImgCanvas.Image = img
+			_, chh := chartSize(state)
+			state.ttfbMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.ttfbMinMaxImgCanvas.Refresh()
+			if state.ttfbMinMaxOverlay != nil {
+				state.ttfbMinMaxOverlay.Refresh()
+			}
+		}
+	} else if state.ttfbMinMaxImgCanvas != nil {
+		w, h := chartSize(state)
+		img := blank(w, h)
+		img = drawHint(img, "Min/Max hidden. Enable in Settings → Averages visibility.")
+		state.ttfbMinMaxImgCanvas.Image = img
+		state.ttfbMinMaxImgCanvas.Refresh()
 	}
 	// Percentiles chart(s) stacked: Overall, IPv4, IPv6; visibility via checkboxes
 	// Local self-test chart (single series)
@@ -5678,12 +5875,30 @@ func renderSpeedChart(state *uiState) image.Image {
 	minY := math.MaxFloat64
 	maxY := -math.MaxFloat64
 
-	if state.showOverall {
-		ys := make([]float64, len(rows))
-		countValid := 0
-		for i, r := range rows {
-			v := r.AvgSpeed * factor
-			ys[i] = v
+	statStyle := func(base drawing.Color, role string, emphasize bool) chart.Style {
+		// role: avg, median, min, max
+		col := base
+		width := 4
+		switch role {
+		case "avg":
+			if emphasize {
+				width = 6
+			}
+		case "median":
+			col = base.WithAlpha(210)
+			width = 4
+		case "min", "max":
+			col = base.WithAlpha(160)
+			width = 3
+		}
+		return chart.Style{StrokeWidth: 0, DotWidth: float64(width), DotColor: col}
+	}
+	addSeries := func(name string, vals []float64, base drawing.Color, role string, timeMode bool) {
+		// track y bounds and build appropriate series type
+		valid := 0
+		ys := make([]float64, len(vals))
+		copy(ys, vals)
+		for _, v := range ys {
 			if !math.IsNaN(v) {
 				if v < minY {
 					minY = v
@@ -5691,117 +5906,188 @@ func renderSpeedChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
-				countValid++
+				valid++
 			}
 		}
-		st := pointStyle(chart.ColorAlternateGray)
-		if countValid == 1 { // emphasize single-point sets
-			st.DotWidth = 6
-		}
+		st := statStyle(base, role, valid == 1 && role == "avg")
 		if timeMode {
-			// Pad to at least two X values for go-chart
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
 				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "Overall", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
 			} else {
-				series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: st})
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
 			}
 		} else {
 			if len(xs) == 1 {
 				x2 := xs[0] + 1
 				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
 			} else {
-				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: st})
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
 			}
 		}
+	}
+
+	// Hold P25/P75 for optional IQR bands per family
+	var ovP25, ovP75 []float64
+	var v4P25, v4P75 []float64
+	var v6P25, v6P75 []float64
+	if state.showOverall {
+		// Build values for avg/median/min/max (Overall)
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
+		for i, r := range rows {
+			avgVals[i] = r.AvgSpeed * factor
+			medVals[i] = r.MedianSpeed * factor
+			// Include zero values as valid; only drop negative or NaN
+			if !math.IsNaN(r.MinSpeed) && r.MinSpeed >= 0 {
+				minVals[i] = r.MinSpeed * factor
+			} else {
+				minVals[i] = math.NaN()
+			}
+			if !math.IsNaN(r.MaxSpeed) && r.MaxSpeed >= 0 {
+				maxVals[i] = r.MaxSpeed * factor
+			} else {
+				maxVals[i] = math.NaN()
+			}
+			if r.AvgP25Speed > 0 {
+				p25Vals[i] = r.AvgP25Speed * factor
+			} else {
+				p25Vals[i] = math.NaN()
+			}
+			if r.AvgP75Speed > 0 {
+				p75Vals[i] = r.AvgP75Speed * factor
+			} else {
+				p75Vals[i] = math.NaN()
+			}
+		}
+		// Add in order so legend clearly shows which is Avg
+		if state.showAvg {
+			addSeries("Overall Avg", avgVals, chart.ColorAlternateGray, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("Overall Median", medVals, chart.ColorAlternateGray, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("Overall Min", minVals, chart.ColorAlternateGray, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("Overall Max", maxVals, chart.ColorAlternateGray, "max", timeMode)
+		}
+		ovP25, ovP75 = p25Vals, p75Vals
 	}
 	if state.showIPv4 {
-		ys := make([]float64, len(rows))
-		countValid := 0
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
 		for i, r := range rows {
-			var v float64
 			if r.IPv4 != nil {
-				v = r.IPv4.AvgSpeed * factor
-			} else {
-				v = math.NaN()
-			}
-			ys[i] = v
-			if !math.IsNaN(v) {
-				if v < minY {
-					minY = v
+				avgVals[i] = r.IPv4.AvgSpeed * factor
+				medVals[i] = r.IPv4.MedianSpeed * factor
+				if r.IPv4.MinSpeed >= 0 && !math.IsNaN(r.IPv4.MinSpeed) {
+					minVals[i] = r.IPv4.MinSpeed * factor
+				} else {
+					minVals[i] = math.NaN()
 				}
-				if v > maxY {
-					maxY = v
+				if r.IPv4.MaxSpeed >= 0 && !math.IsNaN(r.IPv4.MaxSpeed) {
+					maxVals[i] = r.IPv4.MaxSpeed * factor
+				} else {
+					maxVals[i] = math.NaN()
 				}
-				countValid++
-			}
-		}
-		st := pointStyle(chart.ColorBlue)
-		if countValid == 1 {
-			st.DotWidth = 6
-		}
-		if timeMode {
-			if len(times) == 1 {
-				t2 := times[0].Add(1 * time.Second)
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				if r.IPv4.AvgP25Speed > 0 {
+					p25Vals[i] = r.IPv4.AvgP25Speed * factor
+				} else {
+					p25Vals[i] = math.NaN()
+				}
+				if r.IPv4.AvgP75Speed > 0 {
+					p75Vals[i] = r.IPv4.AvgP75Speed * factor
+				} else {
+					p75Vals[i] = math.NaN()
+				}
 			} else {
-				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: st})
-			}
-		} else {
-			if len(xs) == 1 {
-				x2 := xs[0] + 1
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
-			} else {
-				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: st})
+				avgVals[i] = math.NaN()
+				medVals[i] = math.NaN()
+				minVals[i] = math.NaN()
+				maxVals[i] = math.NaN()
+				p25Vals[i] = math.NaN()
+				p75Vals[i] = math.NaN()
 			}
 		}
+		if state.showAvg {
+			addSeries("IPv4 Avg", avgVals, chart.ColorBlue, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("IPv4 Median", medVals, chart.ColorBlue, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("IPv4 Min", minVals, chart.ColorBlue, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("IPv4 Max", maxVals, chart.ColorBlue, "max", timeMode)
+		}
+		v4P25, v4P75 = p25Vals, p75Vals
 	}
 	if state.showIPv6 {
-		ys := make([]float64, len(rows))
-		countValid := 0
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
 		for i, r := range rows {
-			var v float64
 			if r.IPv6 != nil {
-				v = r.IPv6.AvgSpeed * factor
-			} else {
-				v = math.NaN()
-			}
-			ys[i] = v
-			if !math.IsNaN(v) {
-				if v < minY {
-					minY = v
+				avgVals[i] = r.IPv6.AvgSpeed * factor
+				medVals[i] = r.IPv6.MedianSpeed * factor
+				if r.IPv6.MinSpeed >= 0 && !math.IsNaN(r.IPv6.MinSpeed) {
+					minVals[i] = r.IPv6.MinSpeed * factor
+				} else {
+					minVals[i] = math.NaN()
 				}
-				if v > maxY {
-					maxY = v
+				if r.IPv6.MaxSpeed >= 0 && !math.IsNaN(r.IPv6.MaxSpeed) {
+					maxVals[i] = r.IPv6.MaxSpeed * factor
+				} else {
+					maxVals[i] = math.NaN()
 				}
-				countValid++
-			}
-		}
-		st := pointStyle(chart.ColorGreen)
-		if countValid == 1 {
-			st.DotWidth = 6
-		}
-		if timeMode {
-			if len(times) == 1 {
-				t2 := times[0].Add(1 * time.Second)
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				if r.IPv6.AvgP25Speed > 0 {
+					p25Vals[i] = r.IPv6.AvgP25Speed * factor
+				} else {
+					p25Vals[i] = math.NaN()
+				}
+				if r.IPv6.AvgP75Speed > 0 {
+					p75Vals[i] = r.IPv6.AvgP75Speed * factor
+				} else {
+					p75Vals[i] = math.NaN()
+				}
 			} else {
-				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: st})
-			}
-		} else {
-			if len(xs) == 1 {
-				x2 := xs[0] + 1
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
-			} else {
-				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: st})
+				avgVals[i] = math.NaN()
+				medVals[i] = math.NaN()
+				minVals[i] = math.NaN()
+				maxVals[i] = math.NaN()
+				p25Vals[i] = math.NaN()
+				p75Vals[i] = math.NaN()
 			}
 		}
+		if state.showAvg {
+			addSeries("IPv6 Avg", avgVals, chart.ColorGreen, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("IPv6 Median", medVals, chart.ColorGreen, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("IPv6 Min", minVals, chart.ColorGreen, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("IPv6 Max", maxVals, chart.ColorGreen, "max", timeMode)
+		}
+		v6P25, v6P75 = p25Vals, p75Vals
 	}
 
 	var yAxisRange chart.Range
@@ -5812,16 +6098,39 @@ func renderSpeedChart(state *uiState) image.Image {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		// Add a small margin to avoid dots touching edges
+		pad := (nMax - nMin) * 0.06
+		if pad <= 0 {
+			pad = math.Max(1, nMax*0.05)
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
 		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && haveY {
-		// Absolute mode: baseline at 0 with a nice rounded max
-		// Ensure a minimal positive height when there's a single value
+		// Absolute mode with auto-fit: if data sits high above zero, zoom to data range
 		if maxY <= 0 {
 			maxY = 1
 		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+		// Decide whether to anchor at 0 or zoom to [min,max]
+		anchorZero := true
+		// Be more willing to zoom when the data band is away from zero.
+		// If the minimum is at least 20% of the maximum, prefer zooming to [min,max].
+		if minY > 0 && (minY/maxY) >= 0.2 {
+			anchorZero = false
+		}
+		if anchorZero {
+			_, nMax := niceAxisBounds(0, maxY)
+			yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+			// Provide nice ticks in anchored mode as well for consistency
+			yTicks = niceTicks(0, nMax, 6)
+		} else {
+			nMin, nMax := niceAxisBounds(minY, maxY)
+			pad := (nMax - nMin) * 0.06
+			if pad <= 0 {
+				pad = math.Max(1, nMax*0.05)
+			}
+			yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
+			yTicks = niceTicks(nMin, nMax, 6)
+		}
 	}
 	// More bottom padding when X-axis labels are long
 	padBottom := 28
@@ -5836,13 +6145,45 @@ func renderSpeedChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      fmt.Sprintf("Avg Speed (%s)", unitName),
+		Title:      fmt.Sprintf("Speed (Avg/Median/Min/Max%s) (%s)", ternary(state.showIQR, "+IQR", ""), unitName),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks},
-		Series:     series,
+		// We'll build Series in the desired z-order below (IQR bands -> points -> rolling overlays)
+		Series: nil,
 	}
 	themeChart(&ch)
+	// First: IQR bands (background)
+	if state.showIQR {
+		label := "IQR (P25–P75)"
+		labelUsed := false
+		if state.showOverall && ovP25 != nil && ovP75 != nil {
+			lab := label
+			if labelUsed {
+				lab = ""
+			}
+			addIQRBandSeriesSpeed(&ch, timeMode, times, xs, ovP25, ovP75, chart.ColorAlternateGray, lab)
+			labelUsed = true
+		}
+		if state.showIPv4 && v4P25 != nil && v4P75 != nil {
+			lab := label
+			if labelUsed {
+				lab = ""
+			}
+			addIQRBandSeriesSpeed(&ch, timeMode, times, xs, v4P25, v4P75, chart.ColorBlue, lab)
+			labelUsed = true
+		}
+		if state.showIPv6 && v6P25 != nil && v6P75 != nil {
+			lab := label
+			if labelUsed {
+				lab = ""
+			}
+			addIQRBandSeriesSpeed(&ch, timeMode, times, xs, v6P25, v6P75, chart.ColorGreen, lab)
+			labelUsed = true
+		}
+	}
+	// Second: point series (Avg/Median/Min/Max)
+	ch.Series = append(ch.Series, series...)
 	// Add rolling overlays (mean line and ±1 std band) if enabled and have enough points
 	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
 		bandLabel := ""
@@ -6105,13 +6446,29 @@ func renderTTFBChart(state *uiState) image.Image {
 	series := []chart.Series{}
 	minY := math.MaxFloat64
 	maxY := -math.MaxFloat64
-
-	if state.showOverall {
-		ys := make([]float64, len(rows))
-		countValid := 0
-		for i, r := range rows {
-			v := r.AvgTTFB
-			ys[i] = v
+	// helper similar to speed chart
+	statStyle := func(base drawing.Color, role string, emphasize bool) chart.Style {
+		col := base
+		width := 4
+		switch role {
+		case "avg":
+			if emphasize {
+				width = 6
+			}
+		case "median":
+			col = base.WithAlpha(210)
+			width = 4
+		case "min", "max":
+			col = base.WithAlpha(160)
+			width = 3
+		}
+		return chart.Style{StrokeWidth: 0, DotWidth: float64(width), DotColor: col}
+	}
+	addSeries := func(name string, vals []float64, base drawing.Color, role string, timeMode bool) {
+		valid := 0
+		ys := make([]float64, len(vals))
+		copy(ys, vals)
+		for _, v := range ys {
 			if !math.IsNaN(v) {
 				if v < minY {
 					minY = v
@@ -6119,116 +6476,189 @@ func renderTTFBChart(state *uiState) image.Image {
 				if v > maxY {
 					maxY = v
 				}
-				countValid++
+				valid++
 			}
 		}
-		st := pointStyle(chart.ColorAlternateGray)
-		if countValid == 1 {
-			st.DotWidth = 6
-		}
+		st := statStyle(base, role, valid == 1 && role == "avg")
 		if timeMode {
 			if len(times) == 1 {
 				t2 := times[0].Add(1 * time.Second)
 				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "Overall", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
 			} else {
-				series = append(series, chart.TimeSeries{Name: "Overall", XValues: times, YValues: ys, Style: st})
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
 			}
 		} else {
 			if len(xs) == 1 {
 				x2 := xs[0] + 1
 				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
 			} else {
-				series = append(series, chart.ContinuousSeries{Name: "Overall", XValues: xs, YValues: ys, Style: st})
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
 			}
 		}
+	}
+	var ovP25, ovP75 []float64
+	var v4P25, v4P75 []float64
+	var v6P25, v6P75 []float64
+	if state.showOverall {
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
+		for i, r := range rows {
+			avgVals[i] = r.AvgTTFB
+			medVals[i] = r.AvgP50TTFBMs
+			// Include zero as valid for Min, only drop negative/NaN
+			if !math.IsNaN(r.MinTTFBMs) && r.MinTTFBMs >= 0 {
+				minVals[i] = r.MinTTFBMs
+			} else {
+				minVals[i] = math.NaN()
+			}
+			// Include zero as valid for Max, only drop negative/NaN
+			if !math.IsNaN(r.MaxTTFBMs) && r.MaxTTFBMs >= 0 {
+				maxVals[i] = r.MaxTTFBMs
+			} else {
+				maxVals[i] = math.NaN()
+			}
+			if r.AvgP25TTFBMs > 0 {
+				p25Vals[i] = r.AvgP25TTFBMs
+			} else {
+				p25Vals[i] = math.NaN()
+			}
+			if r.AvgP75TTFBMs > 0 {
+				p75Vals[i] = r.AvgP75TTFBMs
+			} else {
+				p75Vals[i] = math.NaN()
+			}
+		}
+		if state.showAvg {
+			addSeries("Overall Avg", avgVals, chart.ColorAlternateGray, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("Overall Median", medVals, chart.ColorAlternateGray, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("Overall Min", minVals, chart.ColorAlternateGray, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("Overall Max", maxVals, chart.ColorAlternateGray, "max", timeMode)
+		}
+		ovP25, ovP75 = p25Vals, p75Vals
 	}
 	if state.showIPv4 {
-		ys := make([]float64, len(rows))
-		countValid := 0
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
 		for i, r := range rows {
-			var v float64
 			if r.IPv4 != nil {
-				v = r.IPv4.AvgTTFB
-			} else {
-				v = math.NaN()
-			}
-			ys[i] = v
-			if !math.IsNaN(v) {
-				if v < minY {
-					minY = v
+				avgVals[i] = r.IPv4.AvgTTFB
+				medVals[i] = r.IPv4.AvgP50TTFBMs
+				// Include zero as valid for Min, only drop negative/NaN
+				if !math.IsNaN(r.IPv4.MinTTFBMs) && r.IPv4.MinTTFBMs >= 0 {
+					minVals[i] = r.IPv4.MinTTFBMs
+				} else {
+					minVals[i] = math.NaN()
 				}
-				if v > maxY {
-					maxY = v
+				// Include zero as valid for Max, only drop negative/NaN
+				if !math.IsNaN(r.IPv4.MaxTTFBMs) && r.IPv4.MaxTTFBMs >= 0 {
+					maxVals[i] = r.IPv4.MaxTTFBMs
+				} else {
+					maxVals[i] = math.NaN()
 				}
-				countValid++
-			}
-		}
-		st := pointStyle(chart.ColorBlue)
-		if countValid == 1 {
-			st.DotWidth = 6
-		}
-		if timeMode {
-			if len(times) == 1 {
-				t2 := times[0].Add(1 * time.Second)
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				if r.IPv4.AvgP25TTFBMs > 0 {
+					p25Vals[i] = r.IPv4.AvgP25TTFBMs
+				} else {
+					p25Vals[i] = math.NaN()
+				}
+				if r.IPv4.AvgP75TTFBMs > 0 {
+					p75Vals[i] = r.IPv4.AvgP75TTFBMs
+				} else {
+					p75Vals[i] = math.NaN()
+				}
 			} else {
-				series = append(series, chart.TimeSeries{Name: "IPv4", XValues: times, YValues: ys, Style: st})
-			}
-		} else {
-			if len(xs) == 1 {
-				x2 := xs[0] + 1
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
-			} else {
-				series = append(series, chart.ContinuousSeries{Name: "IPv4", XValues: xs, YValues: ys, Style: st})
+				avgVals[i] = math.NaN()
+				medVals[i] = math.NaN()
+				minVals[i] = math.NaN()
+				maxVals[i] = math.NaN()
+				p25Vals[i] = math.NaN()
+				p75Vals[i] = math.NaN()
 			}
 		}
+		if state.showAvg {
+			addSeries("IPv4 Avg", avgVals, chart.ColorBlue, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("IPv4 Median", medVals, chart.ColorBlue, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("IPv4 Min", minVals, chart.ColorBlue, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("IPv4 Max", maxVals, chart.ColorBlue, "max", timeMode)
+		}
+		v4P25, v4P75 = p25Vals, p75Vals
 	}
 	if state.showIPv6 {
-		ys := make([]float64, len(rows))
-		countValid := 0
+		avgVals := make([]float64, len(rows))
+		medVals := make([]float64, len(rows))
+		minVals := make([]float64, len(rows))
+		maxVals := make([]float64, len(rows))
+		p25Vals := make([]float64, len(rows))
+		p75Vals := make([]float64, len(rows))
 		for i, r := range rows {
-			var v float64
 			if r.IPv6 != nil {
-				v = r.IPv6.AvgTTFB
-			} else {
-				v = math.NaN()
-			}
-			ys[i] = v
-			if !math.IsNaN(v) {
-				if v < minY {
-					minY = v
+				avgVals[i] = r.IPv6.AvgTTFB
+				medVals[i] = r.IPv6.AvgP50TTFBMs
+				// Include zero as valid for Min, only drop negative/NaN
+				if !math.IsNaN(r.IPv6.MinTTFBMs) && r.IPv6.MinTTFBMs >= 0 {
+					minVals[i] = r.IPv6.MinTTFBMs
+				} else {
+					minVals[i] = math.NaN()
 				}
-				if v > maxY {
-					maxY = v
+				// Include zero as valid for Max, only drop negative/NaN
+				if !math.IsNaN(r.IPv6.MaxTTFBMs) && r.IPv6.MaxTTFBMs >= 0 {
+					maxVals[i] = r.IPv6.MaxTTFBMs
+				} else {
+					maxVals[i] = math.NaN()
 				}
-				countValid++
-			}
-		}
-		st := pointStyle(chart.ColorGreen)
-		if countValid == 1 {
-			st.DotWidth = 6
-		}
-		if timeMode {
-			if len(times) == 1 {
-				t2 := times[0].Add(1 * time.Second)
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+				if r.IPv6.AvgP25TTFBMs > 0 {
+					p25Vals[i] = r.IPv6.AvgP25TTFBMs
+				} else {
+					p25Vals[i] = math.NaN()
+				}
+				if r.IPv6.AvgP75TTFBMs > 0 {
+					p75Vals[i] = r.IPv6.AvgP75TTFBMs
+				} else {
+					p75Vals[i] = math.NaN()
+				}
 			} else {
-				series = append(series, chart.TimeSeries{Name: "IPv6", XValues: times, YValues: ys, Style: st})
-			}
-		} else {
-			if len(xs) == 1 {
-				x2 := xs[0] + 1
-				ys = append([]float64{ys[0]}, ys[0])
-				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
-			} else {
-				series = append(series, chart.ContinuousSeries{Name: "IPv6", XValues: xs, YValues: ys, Style: st})
+				avgVals[i] = math.NaN()
+				medVals[i] = math.NaN()
+				minVals[i] = math.NaN()
+				maxVals[i] = math.NaN()
+				p25Vals[i] = math.NaN()
+				p75Vals[i] = math.NaN()
 			}
 		}
+		if state.showAvg {
+			addSeries("IPv6 Avg", avgVals, chart.ColorGreen, "avg", timeMode)
+		}
+		if state.showMedian {
+			addSeries("IPv6 Median", medVals, chart.ColorGreen, "median", timeMode)
+		}
+		if state.showMin {
+			addSeries("IPv6 Min", minVals, chart.ColorGreen, "min", timeMode)
+		}
+		if state.showMax {
+			addSeries("IPv6 Max", maxVals, chart.ColorGreen, "max", timeMode)
+		}
+		v6P25, v6P75 = p25Vals, p75Vals
 	}
 
 	var yAxisRange chart.Range
@@ -6239,15 +6669,38 @@ func renderTTFBChart(state *uiState) image.Image {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		// Add a small margin to avoid dots touching edges
+		pad := (nMax - nMin) * 0.06
+		if pad <= 0 {
+			pad = math.Max(1, nMax*0.05)
+		}
+		yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
 		yTicks = niceTicks(nMin, nMax, 6)
 	} else if !state.useRelative && haveY {
-		// Absolute mode: baseline at 0 with a nice rounded max
+		// Absolute mode with auto-fit: if data sits high above zero, zoom to data range
 		if maxY <= 0 {
 			maxY = 1
 		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+		// Decide whether to anchor at 0 or zoom to [min,max]
+		anchorZero := true
+		// If the minimum is at least 20% of the maximum, prefer zooming to [min,max].
+		if minY > 0 && (minY/maxY) >= 0.2 {
+			anchorZero = false
+		}
+		if anchorZero {
+			_, nMax := niceAxisBounds(0, maxY)
+			yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+			// Provide nice ticks when anchored at zero as well
+			yTicks = niceTicks(0, nMax, 6)
+		} else {
+			nMin, nMax := niceAxisBounds(minY, maxY)
+			pad := (nMax - nMin) * 0.06
+			if pad <= 0 {
+				pad = math.Max(1, nMax*0.05)
+			}
+			yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
+			yTicks = niceTicks(nMin, nMax, 6)
+		}
 	}
 	padBottom := 28
 	switch state.xAxisMode {
@@ -6260,13 +6713,45 @@ func renderTTFBChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	ch := chart.Chart{
-		Title:      "Avg TTFB (ms)",
+		Title:      fmt.Sprintf("TTFB (Avg/Median/Min/Max%s) (ms)", ternary(state.showIQR, "+IQR", "")),
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
 		XAxis:      xAxis,
 		YAxis:      chart.YAxis{Name: "ms", Range: yAxisRange, Ticks: yTicks},
-		Series:     series,
+		// Build Series z-order explicitly below (IQR bands -> points -> rolling overlays)
+		Series: nil,
 	}
 	themeChart(&ch)
+	// First: IQR bands
+	if state.showIQR {
+		label := "IQR (P25–P75)"
+		used := false
+		if state.showOverall && ovP25 != nil && ovP75 != nil {
+			lab := label
+			if used {
+				lab = ""
+			}
+			addIQRBandSeriesTTFB(&ch, timeMode, times, xs, ovP25, ovP75, chart.ColorAlternateGray, lab)
+			used = true
+		}
+		if state.showIPv4 && v4P25 != nil && v4P75 != nil {
+			lab := label
+			if used {
+				lab = ""
+			}
+			addIQRBandSeriesTTFB(&ch, timeMode, times, xs, v4P25, v4P75, chart.ColorBlue, lab)
+			used = true
+		}
+		if state.showIPv6 && v6P25 != nil && v6P75 != nil {
+			lab := label
+			if used {
+				lab = ""
+			}
+			addIQRBandSeriesTTFB(&ch, timeMode, times, xs, v6P25, v6P75, chart.ColorGreen, lab)
+			used = true
+		}
+	}
+	// Second: point series
+	ch.Series = append(ch.Series, series...)
 	// Rolling overlays for TTFB (mean line and ±1 std band)
 	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
 		bandLabel := ""
@@ -6403,6 +6888,58 @@ func renderTTFBChart(state *uiState) image.Image {
 		img = drawHint(img, "Hint: TTFB reflects latency. Spikes often point to DNS/TLS/connect issues or remote slowness.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderSpeedChartVariant renders one of the split Speed charts by temporarily adjusting
+// the metric visibility toggles (Avg, Median, Min/Max) and delegating to renderSpeedChart.
+// mode: "avg" | "median" | "minmax"
+func renderSpeedChartVariant(state *uiState, mode string) image.Image {
+	if state == nil {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	// Save current toggles
+	sa, smed, smin, smax := state.showAvg, state.showMedian, state.showMin, state.showMax
+	// Configure for requested variant
+	state.showAvg, state.showMedian, state.showMin, state.showMax = false, false, false, false
+	switch strings.ToLower(mode) {
+	case "avg":
+		state.showAvg = true
+	case "median":
+		state.showMedian = true
+	case "minmax":
+		state.showMin, state.showMax = true, true
+	default:
+		state.showAvg = true
+	}
+	// Render with adjusted toggles
+	img := renderSpeedChart(state)
+	// Restore
+	state.showAvg, state.showMedian, state.showMin, state.showMax = sa, smed, smin, smax
+	return img
+}
+
+// renderTTFBChartVariant mirrors renderSpeedChartVariant for TTFB charts.
+func renderTTFBChartVariant(state *uiState, mode string) image.Image {
+	if state == nil {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	sa, smed, smin, smax := state.showAvg, state.showMedian, state.showMin, state.showMax
+	state.showAvg, state.showMedian, state.showMin, state.showMax = false, false, false, false
+	switch strings.ToLower(mode) {
+	case "avg":
+		state.showAvg = true
+	case "median":
+		state.showMedian = true
+	case "minmax":
+		state.showMin, state.showMax = true, true
+	default:
+		state.showAvg = true
+	}
+	img := renderTTFBChart(state)
+	state.showAvg, state.showMedian, state.showMin, state.showMax = sa, smed, smin, smax
+	return img
 }
 
 // addRollingSeriesSpeed adds mean line and ±1 std fill band for Speed chart.
@@ -6550,6 +7087,64 @@ func addRollingSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs 
 		}
 		ch.Series = append(ch.Series, chart.ContinuousSeries{Name: "Rolling Mean", XValues: mx, YValues: mvals, Style: chart.Style{StrokeWidth: 1.5, StrokeColor: lineColor, DotWidth: 0}})
 	}
+}
+
+// getSeriesName returns the Name field from a chart.Series via type switch.
+// (removed unused legacy IQR helpers)
+
+// ternary string helper
+func ternary(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
+}
+
+// addIQRBandSeriesSpeed appends a filled band between p25 and p75 to a chart, matching theme background for cutout.
+func addIQRBandSeriesSpeed(ch *chart.Chart, timeMode bool, times []time.Time, xs []float64, p25, p75 []float64, col drawing.Color, label string) {
+	if ch == nil || len(p25) == 0 || len(p75) == 0 {
+		return
+	}
+	bandColor := col.WithAlpha(55)
+	bgCol := ch.Canvas.FillColor
+	if timeMode {
+		ux, lx := times, times
+		uvals, lvals := p75, p25
+		if len(times) == 1 {
+			t2 := times[0].Add(1 * time.Second)
+			ux = []time.Time{times[0], t2}
+			lx = ux
+			u0 := p75[0]
+			l0 := p25[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		ch.Series = append(ch.Series,
+			chart.TimeSeries{Name: label, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}},
+			chart.TimeSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}},
+		)
+	} else {
+		ux, lx := xs, xs
+		uvals, lvals := p75, p25
+		if len(xs) == 1 {
+			x2 := xs[0] + 1
+			ux = []float64{xs[0], x2}
+			lx = ux
+			u0 := p75[0]
+			l0 := p25[0]
+			uvals = []float64{u0, u0}
+			lvals = []float64{l0, l0}
+		}
+		ch.Series = append(ch.Series,
+			chart.ContinuousSeries{Name: label, XValues: ux, YValues: uvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bandColor}},
+			chart.ContinuousSeries{Name: "", XValues: lx, YValues: lvals, Style: chart.Style{StrokeWidth: 0, DotWidth: 0, FillColor: bgCol}},
+		)
+	}
+}
+
+// addIQRBandSeriesTTFB mirrors addIQRBandSeriesSpeed for TTFB charts.
+func addIQRBandSeriesTTFB(ch *chart.Chart, timeMode bool, times []time.Time, xs []float64, p25, p75 []float64, col drawing.Color, label string) {
+	addIQRBandSeriesSpeed(ch, timeMode, times, xs, p25, p75, col, label)
 }
 
 // renderStallCountChart plots the interim stalled requests count per batch = round(Lines * StallRatePct / 100).
@@ -9972,126 +10567,7 @@ func xCentersIndexMode(n int, imgW, imgH, viewW, viewH float32) []float32 {
 }
 
 // indexFromMouseIndexMode returns the nearest batch index for a given mouseX in view space.
-func indexFromMouseIndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) int {
-	if n <= 0 {
-		return 0
-	}
-	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
-	best := 0
-	bestD := float32(math.MaxFloat32)
-	for i, cx := range centers {
-		d := float32(math.Abs(float64(cx - mouseX)))
-		if d < bestD {
-			bestD = d
-			best = i
-		}
-	}
-	return best
-}
-
-// xCentersTimeMode computes the pixel centers for given timestamps in the overlay/view space
-// using the same interpolation as the renderer: linear between min and max time.
-func xCentersTimeMode(times []time.Time, imgW, imgH, viewW, viewH float32) []float32 {
-	if len(times) == 0 {
-		return nil
-	}
-	drawX, _, _, _, scale := computeContainRect(imgW, imgH, viewW, viewH)
-	// Match chart Background.Padding plus empirical axis gutters
-	leftPadImg := float32(16) + axisLeftGutterPx
-	rightPadImg := float32(12) + axisRightGutterPx
-	plotWImg := imgW - leftPadImg - rightPadImg
-	if plotWImg < 1 {
-		plotWImg = imgW
-	}
-	minT := times[0]
-	maxT := times[0]
-	for _, t := range times[1:] {
-		if t.Before(minT) {
-			minT = t
-		}
-		if t.After(maxT) {
-			maxT = t
-		}
-	}
-	span := maxT.Sub(minT)
-	px := make([]float32, len(times))
-	for i, t := range times {
-		var fx float64
-		if span > 0 {
-			fx = float64(t.Sub(minT)) / float64(span)
-		} else {
-			fx = 0
-		}
-		pxImg := leftPadImg + float32(fx)*plotWImg
-		px[i] = drawX + pxImg*scale
-	}
-	return px
-}
-
-// snappedIndexAndLineX_IndexMode returns the selected index and snapped line X position (view space).
-func snappedIndexAndLineX_IndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
-	idx := indexFromMouseIndexMode(n, imgW, imgH, viewW, viewH, mouseX)
-	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
-	var lineX float32
-	if idx >= 0 && idx < len(centers) {
-		lineX = centers[idx]
-	}
-	return idx, lineX
-}
-
-// snappedIndexAndLineX_TimeMode returns the selected index and snapped line X position for time mode.
-func snappedIndexAndLineX_TimeMode(times []time.Time, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
-	centers := xCentersTimeMode(times, imgW, imgH, viewW, viewH)
-	if len(centers) == 0 {
-		return -1, 0
-	}
-	best := 0
-	bestD := float32(math.MaxFloat32)
-	for i, cx := range centers {
-		d := float32(math.Abs(float64(cx - mouseX)))
-		if d < bestD {
-			bestD = d
-			best = i
-		}
-	}
-	return best, centers[best]
-}
-
-// nearestIndexAndLineXFromCenters picks the nearest center to mouseX and returns its index and X.
-func nearestIndexAndLineXFromCenters(centers []float32, mouseX float32) (int, float32) {
-	if len(centers) == 0 {
-		return -1, 0
-	}
-	best := 0
-	bestD := float32(math.MaxFloat32)
-	for i, cx := range centers {
-		d := float32(math.Abs(float64(cx - mouseX)))
-		if d < bestD {
-			bestD = d
-			best = i
-		}
-	}
-	return best, centers[best]
-}
-
-// labelForIndex returns the X label used by the crosshair for a given index.
-func labelForIndex(rows []analysis.BatchSummary, xAxisMode string, idx int) string {
-	if idx < 0 || idx >= len(rows) {
-		return ""
-	}
-	switch xAxisMode {
-	case "run_tag":
-		return rows[idx].RunTag
-	case "time":
-		t := parseRunTagTime(rows[idx].RunTag)
-		if !t.IsZero() {
-			return t.Format("01-02 15:04:05")
-		}
-		return rows[idx].RunTag
-	default:
-		return fmt.Sprintf("Batch %d", idx+1)
-	}
-}
+// (removed unused crosshair helpers; crosshair uses alternate path)
 
 // drawHint draws a small hint string onto the provided image near the bottom-left.
 func drawHint(img image.Image, text string) image.Image {
@@ -10664,10 +11140,18 @@ func exportAllChartsCombined(state *uiState) {
 		labels = append(labels, "Chunked Transfer Rate (%)")
 	}
 
-	// Averages and remaining charts
-	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
-		renderers = append(renderers, renderSpeedChart)
-		labels = append(labels, "Speed")
+	// Split charts in on-screen order: Speed Avg/Median/Min/Max, then Self-test, then Percentiles, then TTFB Avg/Median/Min/Max
+	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil && state.showAvg {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "avg") })
+		labels = append(labels, "Speed – Average")
+	}
+	if state.speedMedianImgCanvas != nil && state.speedMedianImgCanvas.Image != nil && state.showMedian {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "median") })
+		labels = append(labels, "Speed – Median")
+	}
+	if state.speedMinMaxImgCanvas != nil && state.speedMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "minmax") })
+		labels = append(labels, "Speed – Min/Max")
 	}
 	// Self-test baseline
 	if state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil {
@@ -10687,10 +11171,18 @@ func exportAllChartsCombined(state *uiState) {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv6") })
 		labels = append(labels, "Speed Percentiles – IPv6")
 	}
-	// TTFB average
-	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil {
-		renderers = append(renderers, renderTTFBChart)
-		labels = append(labels, "TTFB (Avg)")
+	// TTFB split charts
+	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil && state.showAvg {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "avg") })
+		labels = append(labels, "TTFB – Average")
+	}
+	if state.ttfbMedianImgCanvas != nil && state.ttfbMedianImgCanvas.Image != nil && state.showMedian {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "median") })
+		labels = append(labels, "TTFB – Median")
+	}
+	if state.ttfbMinMaxImgCanvas != nil && state.ttfbMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) {
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "minmax") })
+		labels = append(labels, "TTFB – Min/Max")
 	}
 	// TTFB percentiles panels based on visibility
 	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil {
@@ -10928,9 +11420,17 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 	}
 	switch img {
 	case state.speedImgCanvas:
-		return renderSpeedChart
+		return func(s *uiState) image.Image { return renderSpeedChartVariant(s, "avg") }
+	case state.speedMedianImgCanvas:
+		return func(s *uiState) image.Image { return renderSpeedChartVariant(s, "median") }
+	case state.speedMinMaxImgCanvas:
+		return func(s *uiState) image.Image { return renderSpeedChartVariant(s, "minmax") }
 	case state.ttfbImgCanvas:
-		return renderTTFBChart
+		return func(s *uiState) image.Image { return renderTTFBChartVariant(s, "avg") }
+	case state.ttfbMedianImgCanvas:
+		return func(s *uiState) image.Image { return renderTTFBChartVariant(s, "median") }
+	case state.ttfbMinMaxImgCanvas:
+		return func(s *uiState) image.Image { return renderTTFBChartVariant(s, "minmax") }
 	case state.pctlOverallImg:
 		return func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") }
 	case state.pctlIPv4Img:
@@ -11111,6 +11611,12 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showRolling", state.showRolling)
 	prefs.SetBool("showRollingBand", state.showRollingBand)
 	prefs.SetInt("rollingWindow", state.rollingWindow)
+	// Metric visibility toggles
+	prefs.SetBool("showAvg", state.showAvg)
+	prefs.SetBool("showMedian", state.showMedian)
+	prefs.SetBool("showMin", state.showMin)
+	prefs.SetBool("showMax", state.showMax)
+	prefs.SetBool("showIQR", state.showIQR)
 	// (removed: pctl prefs)
 }
 
@@ -11197,6 +11703,12 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	if v := prefs.IntWithFallback("rollingWindow", state.rollingWindow); v > 0 {
 		state.rollingWindow = v
 	}
+	// Metric visibility toggles
+	state.showAvg = prefs.BoolWithFallback("showAvg", state.showAvg)
+	state.showMedian = prefs.BoolWithFallback("showMedian", state.showMedian)
+	state.showMin = prefs.BoolWithFallback("showMin", state.showMin)
+	state.showMax = prefs.BoolWithFallback("showMax", state.showMax)
+	state.showIQR = prefs.BoolWithFallback("showIQR", state.showIQR)
 	// (removed: pctl prefs)
 }
 

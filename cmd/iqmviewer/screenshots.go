@@ -21,7 +21,8 @@ import (
 // theme: "auto", "dark", or "light" (controls background and overlay styling)
 // showDNSLegacy: when true, include dashed legacy dns_time_ms overlay on the DNS chart
 // includeSelfTest: when true, include the Local Throughput Self-Test chart
-func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool, includeSelfTest bool, includePreTTFB bool) error {
+// avg/median/min/max/iqr: metric visibility toggles for averages charts
+func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, showBand bool, batches int, lowSpeedThresholdKbps int, variants string, theme string, showDNSLegacy bool, includeSelfTest bool, includePreTTFB bool, showAvg, showMedian, showMin, showMax, showIQR bool) error {
 	if filePath == "" {
 		filePath = "monitor_results.jsonl"
 	}
@@ -65,6 +66,12 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		rollingWindow:   rollingWindow,
 		showHints:       false,
 	}
+	// Ensure averages chart visibility matches requested toggles (defaults provided by caller)
+	st.showAvg = showAvg
+	st.showMedian = showMedian
+	st.showMin = showMin
+	st.showMax = showMax
+	st.showIQR = showIQR
 	// Enable legacy dns overlay in DNS chart if requested
 	st.showDNSLegacy = showDNSLegacy
 	st.summaries = sums

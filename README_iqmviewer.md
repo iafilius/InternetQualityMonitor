@@ -21,10 +21,17 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - Load `monitor_results.jsonl` and display the latest N batches (grouped by `run_tag`).
 - Situation filter with "All" option (default). The active Situation appears as a subtle on-image watermark and is embedded into exports.
 - X-axis modes: Batch, RunTag, and Time (Settings → X-Axis) with rounded ticks. Y-scale: Absolute or Relative (Settings → Y-Scale).
+- Averages split charts: Speed and TTFB are shown in three focused charts each — Average, Median, and Min/Max — controlled by Settings → "Averages visibility".
+	- Show/Hide toggles persist: Average and Median default on; Min/Max and IQR off to reduce clutter.
+	- IQR band (P25–P75): optional translucent band around typical values.
+- Y-axis auto-fit policy: consistent across Speed and TTFB.
+	- Relative scale: zooms to data bounds with a small padding and nice ticks.
+	- Absolute scale: anchors at zero unless the data sits meaningfully above zero (auto-zoom when min ≳ 20% of max), then uses padded nice bounds and ticks.
 - Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps (select under Settings → Speed Unit).
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
 	- After saving, the viewer confirms the export destination.
+	- Dedicated exports exist for each split averages chart: Speed – Average, Speed – Median, Speed – Min/Max; TTFB – Average, TTFB – Median, TTFB – Min/Max.
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
@@ -99,6 +106,9 @@ Notes:
 - Batches…: set recent N batches
 - Speed Unit: kbps, kBps, Mbps, MBps, Gbps, GBps
 - Screenshot Theme: Auto, Dark, Light
+ - Averages visibility: Show Average, Show Median, Show Min, Show Max, Show IQR Band (P25–P75)
+	 - Defaults: Average and Median on; Min/Max/IQR off. Use these to reduce clutter when many series are visible.
+	 - When Min/Max is hidden, the Min/Max panels display a subtle inline hint explaining how to enable them.
 
 ### Selection
 - Selection is session-only: the last clicked batch (RunTag) is remembered only within the current session and restored after reloads during the session. It is not persisted across app restarts.
@@ -190,6 +200,11 @@ Low‑Speed Threshold control
 Example (Avg Speed with Rolling overlays):
 
 ![Avg Speed with Rolling overlays](docs/images/speed_avg.png)
+
+### IQR band (P25–P75)
+- Enable “Show IQR Band (P25–P75)” from Settings to visualize the interquartile range around averages.
+- This band complements percentiles and helps show batch-to-batch variability without plotting all Min/Max lines.
+- The legend shows a single “IQR (P25–P75)” entry across families.
 
 ## Local Throughput Self-Test (baseline)
 
@@ -333,7 +348,12 @@ go build ./cmd/iqmviewer
 	--screenshot-low-speed-threshold-kbps 1000 \
 	--screenshot-dns-legacy false \
 	--screenshot-selftest true \
-	--screenshot-pretffb true
+	--screenshot-pretffb true \
+	--screenshot-show-avg true \
+	--screenshot-show-median true \
+	--screenshot-show-min false \
+	--screenshot-show-max false \
+	--screenshot-show-iqr false
 ```
 
 Screenshots will be written to `docs/images`. The Situation watermark is embedded.
