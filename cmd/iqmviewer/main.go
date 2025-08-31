@@ -667,9 +667,10 @@ type chartRef struct {
 // makeChartSection composes a header row (title + info button) and the stacked image+overlay
 func makeChartSection(state *uiState, title string, help string, stack *fyne.Container) *fyne.Container {
 	titleLbl := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
-	// Open in a resizable child window with a minimum size and persistent sizing
-	showChartInfoWindow(state, title+" – Info", help)
+	// Accessibility: give the Info button a visible label so screen readers announce it clearly
+	infoBtn := widget.NewButtonWithIcon("Info", theme.InfoIcon(), func() {
+		// Open in a resizable child window with a minimum size and persistent sizing
+		showChartInfoWindow(state, title+" – Info", help)
 	})
 	infoBtn.Importance = widget.LowImportance
 	header := container.New(layout.NewHBoxLayout(), titleLbl, layout.NewSpacer(), infoBtn)
@@ -756,8 +757,12 @@ func showChartInfoWindow(state *uiState, title, help string) {
 	scroll.SetMinSize(fyne.NewSize(minW, minH))
 	prefW := state.app.Preferences().IntWithFallback("infoPopupW", 640)
 	prefH := state.app.Preferences().IntWithFallback("infoPopupH", 420)
-	if float32(prefW) < minW { prefW = int(minW) }
-	if float32(prefH) < minH { prefH = int(minH) }
+	if float32(prefW) < minW {
+		prefW = int(minW)
+	}
+	if float32(prefH) < minH {
+		prefH = int(minH)
+	}
 	w.Resize(fyne.NewSize(float32(prefW), float32(prefH)))
 	// Save size on close
 	w.SetOnClosed(func() {
@@ -1188,9 +1193,7 @@ func main() {
 	state.findEntry.OnChanged = func(string) {
 		updateFindMatches(state)
 	}
-	state.findEntry.OnSubmitted = func(string) {
-		findNext(state)
-	}
+	state.findEntry.OnSubmitted = func(string) { findNext(state) }
 
 	top := container.NewHBox(
 		widget.NewButton("Open…", func() { openFileDialog(state, fileLabel) }),
@@ -1457,11 +1460,12 @@ func main() {
 - Useful for tracking overall performance trends over time or across runs.
 - Pair with Speed Percentiles to understand variability not visible in averages.
 - Rolling overlays: optional Rolling Mean and a translucent μ±1σ band computed over a sliding window of N batches (N = Rolling Window control). Larger N smooths more; the band visualizes variability (wider = more volatile). You can toggle the band independently with “±1σ Band”.
-References: https://en.wikipedia.org/wiki/Throughput` + axesTip
+References: https://en.wikipedia.org/wiki/Throughput
+Additional research: BBR congestion control — ACM Queue (2016): https://queue.acm.org/detail.cfm?id=3022184` + axesTip
 	helpTTFB := `Average Time To First Byte (TTFB, in ms) for all requests in each batch (Overall/IPv4/IPv6).
 - Captures latency before payload begins (DNS, TCP, TLS, server think time). Spikes often indicate setup or backend delays.
 - Use TTFB Percentiles to see tail latency beyond the average (rare but impactful slow requests).
-- Rolling overlays: optional Rolling Mean and a translucent μ±1σ band over a sliding window of N batches (N = Rolling Window control). Larger N = smoother mean; band width reflects variability. Toggle the band via “±1σ Band”.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte"
+- Rolling overlays: optional Rolling Mean and a translucent μ±1σ band over a sliding window of N batches (N = Rolling Window control). Larger N = smoother mean; band width reflects variability. Toggle the band via “±1σ Band”.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Time_to_first_byte" + "\nAdditional research: The Tail at Scale — CACM (2013): https://research.google/pubs/pub40801/"
 	helpTTFBPct := `Percentiles of TTFB (ms): P50 (median), P90, P95, P99 per batch.
 	- Expect P99 ≥ P95 ≥ P90 ≥ P50 by definition; bigger gaps mean heavier tail latency (spikes/outliers).
 	- Investigate large P99 when the average looks fine; tail latency hurts user experience and systems throughput.
@@ -1471,64 +1475,81 @@ References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 	- Use alongside Avg Speed to spot unstable networks (wide gaps between P50 and P95/P99).
 	References: https://en.wikipedia.org/wiki/Percentile` + axesTip
 	helpErr := `Error Rate per batch (Overall/IPv4/IPv6) as a percentage of lines with errors (TCP/HTTP failures).
-- Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"
+- Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status , https://en.wikipedia.org/wiki/List_of_HTTP_status_codes"
 	helpJitter := `Jitter (%): mean absolute relative variation between consecutive sampled speeds within a transfer.
-- Higher jitter means more erratic throughput (bursts, stalls), often due to contention or queueing.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Jitter"
+- Higher jitter means more erratic throughput (bursts, stalls), often due to contention or queueing.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Jitter" +
+		"\nAdditional research: Bufferbloat — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2063196"
 	helpCoV := `Coefficient of Variation (%): standard deviation / mean of speeds.
 - Another variability measure; higher values indicate less consistent throughput across samples.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Coefficient_of_variation"
 	helpCache := `Cache Hit Rate (%): fraction of requests likely served from intermediary caches (heuristics).
-- High cache rates can hide origin latency; useful context when TTFB or speed looks unexpectedly good.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching"
+- High cache rates can hide origin latency; useful context when TTFB or speed looks unexpectedly good.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching" +
+		"\nAdditional research: A survey and taxonomy of content delivery networks — IEEE Comms Surveys & Tutorials (2008): https://doi.org/10.1109/COMST.2008.4625808"
 	// Deprecated: legacy combined proxy metric is no longer shown in the Viewer UI.
 	// New proxy split help
 	helpEnterpriseProxy := `Enterprise Proxy Rate (%): share of requests likely traversing enterprise/security proxies (e.g., Zscaler, Blue Coat, Netskope).
-- Derived from indicators such as TLS cert issuer/subject and proxy-specific headers. Useful to see enterprise middlebox impact.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110"
+- Derived from indicators such as TLS cert issuer/subject and proxy-specific headers. Useful to see enterprise middlebox impact.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110 , https://en.wikipedia.org/wiki/Proxy_server" +
+		"\nAdditional research: The Security Impact of HTTPS Interception — NDSS (2017): https://www.ndss-symposium.org/ndss2017/ndss-2017-programme/security-impact-https-interception/"
 	helpServerProxy := `Server-side Proxy Rate (%): share of requests likely traversing server/CDN-side proxies (origin-side).
-- Derived from proxy/CDN header fingerprints or origin-side evidence.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110 , https://www.rfc-editor.org/rfc/rfc9111"
-	helpWarm := `Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches or connection reuse along the path.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9111"
+- Derived from proxy/CDN header fingerprints or origin-side evidence.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110 , https://www.rfc-editor.org/rfc/rfc9111 , https://en.wikipedia.org/wiki/Content_delivery_network" +
+		"\nAdditional research: A first look at CDN Anycast in the wild — IMC (2016): https://dl.acm.org/doi/10.1145/2987443.2987468"
+	helpWarm := `Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches or connection reuse along the path.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9111 , https://en.wikipedia.org/wiki/HTTP_caching"
 	helpPlCount := `Plateau Count: average number of intra-transfer ‘stable’ speed segments detected per batch.
-- Many plateaus can indicate buffering/flow control behavior or route/policy changes mid-transfer.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
+- Many plateaus can indicate buffering/flow control behavior or route/policy changes mid-transfer.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 	helpPlLongest := `Longest Plateau (ms): duration of the longest stable segment in a transfer.
-- Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
+- Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 	helpPlStable := `Plateau Stable Rate (%): fraction of time spent in stable plateaus during a transfer.
-- Higher values often mean smoother throughput (less variability).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
+- Higher values often mean smoother throughput (less variability).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 
 	// Stability & quality help
 	helpLowSpeed := `Low-Speed Time Share (%): share of transfer time spent below the Low-Speed Threshold.
 - Indicates how often the link is underperforming. Set the threshold in Settings → Low-Speed Threshold.
-Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6349"
+Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6349 , https://en.wikipedia.org/wiki/Bandwidth-delay_product"
 	helpStallRate := `Stall Rate (%): fraction of requests that experienced any stall during transfer.
-- Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat"
+- Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 	helpStallTime := `Avg Stall Time (ms): average total time spent stalled per request (across stalled requests).
-- Correlate with Jitter/CoV to understand severity and duration of stalls.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
+- Correlate with Jitter/CoV to understand severity and duration of stalls.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 	helpStallCount := `Stalled Requests Count: estimated number of stalled requests per batch.
 - Interim metric derived as: round(Lines × Stall Rate / 100).
-- Use alongside Stall Rate and Avg Stall Time.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
+- Use alongside Stall Rate and Avg Stall Time.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 	helpPartialBody := `Partial Body Rate (%): fraction of requests that finished with an incomplete body (Content-Length mismatch or early EOF).
-- Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9112"
+- Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9112 , https://en.wikipedia.org/wiki/Chunked_transfer_encoding"
 	// Micro-stalls help
 	helpMicroStallRate := `Transient Stall Rate (%): share of lines with ≥1 short stall (≥500 ms by default) while transfer continued.
-- Derived offline from intra-transfer speed samples. Not the same as hard stall-timeout aborts.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat"
-	helpMicroStallTime := `Avg Transient Stall Time (ms): average total duration of micro-stalls per line (among lines with any micro-stall).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
-	helpMicroStallCount := `Avg Transient Stall Count: average number of micro-stall events per line.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
+- Derived offline from intra-transfer speed samples. Not the same as hard stall-timeout aborts.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
+	helpMicroStallTime := `Avg Transient Stall Time (ms): average total duration of micro-stalls per line (among lines with any micro-stall).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
+	helpMicroStallCount := `Avg Transient Stall Count: average number of micro-stall events per line.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298" +
+		"\nAdditional research: CoDel — Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336"
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
  - Preferred source is httptrace (trace_dns_ms). When unavailable, legacy dns_time_ms is used.
  - Toggle Settings → "Overlay legacy DNS (dns_time_ms)" to overlay the legacy series (dashed) for comparison.
-- Elevated values can indicate resolver or network issues.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc1034 , https://www.rfc-editor.org/rfc/rfc1035"
+- Elevated values can indicate resolver or network issues.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc1034 , https://www.rfc-editor.org/rfc/rfc1035" +
+		"\nAdditional research: CoDNS — Improving DNS Performance via Cooperative Lookups (NSDI 2004): https://www.usenix.org/legacy/events/nsdi04/tech/andersen/andersen_html/"
 	helpConn := `TCP Connect Time (ms): average time to establish the TCP connection (SYN→ACK and socket connect).
-- Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9293"
+- Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9293 , https://en.wikipedia.org/wiki/Transmission_Control_Protocol" +
+		"\nAdditional research: BBR congestion control — ACM Queue (2016): https://queue.acm.org/detail.cfm?id=3022184"
 	helpTLS := `TLS Handshake Time (ms): average time to complete TLS handshake.
-- Includes ClientHello→ServerHello, cert exchange/verification. Spikes can indicate TLS inspection, cert revocation checks, or server load.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8446"
+- Includes ClientHello→ServerHello, cert exchange/verification. Spikes can indicate TLS inspection, cert revocation checks, or server load.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8446 , https://en.wikipedia.org/wiki/Transport_Layer_Security" +
+		"\nAdditional research: The Security Impact of HTTPS Interception — NDSS (2017): https://www.ndss-symposium.org/ndss2017/ndss-2017-programme/security-impact-https-interception/" +
+		"\nAdditional research: QUIC — Design and Internet-scale Deployment (SIGCOMM 2017): https://research.google/pubs/pub43884/"
 
 	// New charts help
 	helpTail := `Tail Heaviness (Speed P99/P50): ratio of 99th to 50th percentile throughput per batch.
-- Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
+ - Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/ , https://en.wikipedia.org/wiki/Heavy-tailed_distribution"
 	helpTTFBTail := `TTFB Tail Heaviness (P95/P50): ratio of 95th to 50th percentile TTFB per batch.
-- Higher ratios indicate heavier tail latency; ~1.0 means tighter latency distribution.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
+ - Higher ratios indicate heavier tail latency; ~1.0 means tighter latency distribution.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/ , https://en.wikipedia.org/wiki/Heavy-tailed_distribution"
 	helpDeltas := `Family Delta (IPv6−IPv4): difference between IPv6 and IPv4.
 - Speed Delta uses the chosen unit; positive means IPv6 faster.
-- TTFB Delta is (IPv4−IPv6) in ms; positive means IPv6 lower (better) latency.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8200 , https://www.rfc-editor.org/rfc/rfc791"
+- TTFB Delta is (IPv4−IPv6) in ms; positive means IPv6 lower (better) latency.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8200 , https://www.rfc-editor.org/rfc/rfc791 , https://en.wikipedia.org/wiki/IPv6"
 	helpSLA := `SLA Compliance (%): share of lines meeting thresholds.
 	- Speed SLA: median (P50) speed ≥ threshold.
 	- TTFB SLA: P95 TTFB ≤ threshold.
@@ -1544,8 +1565,8 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 
 	// Tail/latency depth extra
 	helpTTFBGap := `TTFB P95−P50 Gap (ms): difference between tail and median latency.
-- Larger gaps indicate heavier latency tails (outliers/spikes).
-- Use alongside Avg TTFB and TTFB Percentiles to spot tail issues hidden by averages.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
+ - Larger gaps indicate heavier latency tails (outliers/spikes).
+ - Use alongside Avg TTFB and TTFB Percentiles to spot tail issues hidden by averages.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/ , https://en.wikipedia.org/wiki/Percentile"
 
 	// Build separate grids for Speed and TTFB percentiles
 	speedPctlGrid := container.NewVBox(
@@ -1573,15 +1594,15 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
+		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc9110\nAdditional research: A QUIC look at HTTP/3 performance (IMC 2020): https://dl.acm.org/doi/10.1145/3419394.3423639"+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
+		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance.\nReferences: https://www.rfc-editor.org/rfc/rfc9110\nAdditional research: QUIC — Design and Internet-scale Deployment (SIGCOMM 2017): https://research.google/pubs/pub43884/"+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
-		makeChartSection(state, "Stall Share by HTTP Protocol (%)", "Share of total stalled requests by protocol. Bars typically sum to about 100% (across protocols with stalls). Complements ‘Stall Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolStallShareImgCanvas, state.protocolStallShareOverlay)),
+		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110\nAdditional research: A QUIC look at HTTP/3 performance (IMC 2020): https://dl.acm.org/doi/10.1145/3419394.3423639"+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
+		makeChartSection(state, "Stall Share by HTTP Protocol (%)", "Share of total stalled requests by protocol. Bars typically sum to about 100% (across protocols with stalls). Complements ‘Stall Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110\nAdditional research: A QUIC look at HTTP/3 performance (IMC 2020): https://dl.acm.org/doi/10.1145/3419394.3423639"+axesTip, container.NewStack(state.protocolStallShareImgCanvas, state.protocolStallShareOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
-		makeChartSection(state, "Partial Share by HTTP Protocol (%)", "Share of all partial (incomplete) responses by protocol. Bars typically sum to about 100% (across protocols with partials). Complements ‘Partial Body Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.protocolPartialShareImgCanvas, state.protocolPartialShareOverlay)),
+		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112\nAdditional research: A Large-Scale View of HTTP/2 and HTTP/3 Evolution (IMC 2022): https://dl.acm.org/doi/10.1145/3517745.3561432"+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
+		makeChartSection(state, "Partial Share by HTTP Protocol (%)", "Share of all partial (incomplete) responses by protocol. Bars typically sum to about 100% (across protocols with partials). Complements ‘Partial Body Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112\nAdditional research: A Large-Scale View of HTTP/2 and HTTP/3 Evolution (IMC 2022): https://dl.acm.org/doi/10.1145/3517745.3561432"+axesTip, container.NewStack(state.protocolPartialShareImgCanvas, state.protocolPartialShareOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Per‑protocol error prevalence: for each HTTP protocol, the fraction of that protocol’s requests that errored.\n\nNote: These values do not add up to 100% because each bar is normalized by its own protocol’s volume, not the total errors across all protocols. Missing percentage is therefore expected. (Unknown protocol is counted as ‘(unknown)’ if present).\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
 		makeChartSection(state, "Error Share by HTTP Protocol (%)", "Share of total errors attributed to each HTTP protocol. Bars typically sum to about 100% (across protocols with errors). This complements ‘Error Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorShareImgCanvas, state.protocolErrorShareOverlay)),
@@ -2766,6 +2787,9 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyR, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { loadAll(state, fileLabel) })
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyW, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) { state.window.Close() })
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyW, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { state.window.Close() })
+		// Diagnostics shortcut: Cmd/Ctrl+D opens Diagnostics for current selection or first row
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyD, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) { showDiagnosticsForSelection(state) })
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyD, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { showDiagnosticsForSelection(state) })
 		// Find shortcuts
 		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyF, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) {
 			if state.findEntry != nil {
@@ -2780,6 +2804,11 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 				state.findEntry.SetText(state.findEntry.Text)
 			}
 		})
+		// Find next/prev global shortcuts (Cmd/Ctrl+G, Shift+Cmd/Ctrl+G)
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyG, Modifier: fyne.KeyModifierSuper}, func(fyne.Shortcut) { findNext(state) })
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyG, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) { findNext(state) })
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyG, Modifier: fyne.KeyModifierShift | fyne.KeyModifierSuper}, func(fyne.Shortcut) { findPrev(state) })
+		canv.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyG, Modifier: fyne.KeyModifierShift | fyne.KeyModifierControl}, func(fyne.Shortcut) { findPrev(state) })
 	}
 }
 

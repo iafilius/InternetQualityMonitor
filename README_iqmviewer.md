@@ -27,13 +27,16 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 	- After saving, the viewer confirms the export destination.
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
+ - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
 - Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
+ - Info popups follow consistent design criteria; see `docs/ui/info_popup_design_criteria.md`.
 
 ### Diagnostics dialog
 - How to open:
 	- Click a row in the Batches table to open a per‑batch Diagnostics dialog.
 	- Or right‑click a table row and choose “Diagnostics…”.
+ 	- Or press Cmd/Ctrl+D to open Diagnostics for the current selection (or first row if none selected).
  
 - What you’ll see:
 	- DNS server and network used (best‑effort), plus network Next Hop and its source (macOS/Linux).
@@ -372,6 +375,27 @@ Notes on micro‑stall defaults
 ## Preferences (persisted)
 
 - Last Situation, axis modes, speed unit, crosshair visibility, SLA thresholds, Low‑Speed Threshold, Rolling Window (N), Rolling Mean toggle, ±1σ Band toggle, Overlay legacy DNS, Pre‑TTFB visibility and Auto‑hide (zero), and Screenshot Theme mode (Auto/Dark/Light).
+
+## Research references (by topic)
+
+This viewer’s Info popups include links to authoritative specs (RFC/MDN/IANA) and a few well‑known research papers that provide deeper context. Here is a compact list by topic:
+
+- Tail latency and percentiles
+	- The Tail at Scale — CACM (2013): https://research.google/pubs/pub40801/
+- Throughput, congestion control, and queueing
+	- BBR congestion control — ACM Queue (2016): https://queue.acm.org/detail.cfm?id=3022184
+	- Bufferbloat — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2063196
+	- CoDel: Controlling Queue Delay — ACM Queue (2012): https://queue.acm.org/detail.cfm?id=2209336
+- DNS performance
+	- CoDNS: Improving DNS Performance via Cooperative Lookups — NSDI (2004): https://www.usenix.org/legacy/events/nsdi04/tech/andersen/andersen_html/
+- TLS, interception, and handshake overheads
+	- The Security Impact of HTTPS Interception — NDSS (2017): https://www.ndss-symposium.org/ndss2017/ndss-2017-programme/security-impact-https-interception/
+- QUIC/HTTP/3 adoption and performance
+	- QUIC: Design and Internet‑scale Deployment — SIGCOMM (2017): https://research.google/pubs/pub43884/
+	- A QUIC Look at HTTP/3 Performance — IMC (2020): https://dl.acm.org/doi/10.1145/3419394.3423639
+	- A Large‑Scale View of HTTP/2 and HTTP/3 Evolution — IMC (2022): https://dl.acm.org/doi/10.1145/3517745.3561432
+
+These are optional reading; the viewer remains usable without them. They’re provided to help interpret charts like tail heaviness, stalls/micro‑stalls, setup timings, and protocol differences.
 
 ## Design
 - Offscreen rendering via go-chart, displayed as PNG with ImageFillStretch to occupy full width.
