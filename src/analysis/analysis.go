@@ -16,6 +16,25 @@ import (
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
 
+// isEnterpriseProxy returns true if the proxy name is recognized as an enterprise/security proxy
+// as opposed to a server-side CDN/cache. Names are compared in lowercase.
+func isEnterpriseProxy(name string) bool {
+	switch name {
+	case "zscaler", "bluecoat", "netskope", "paloalto", "forcepoint", "squid":
+		return true
+	}
+	// Treat generic web servers as server-side, not enterprise
+	if name == "nginx" || name == "apache" || name == "varnish" {
+		return false
+	}
+	// Known CDNs -> server-side
+	switch name {
+	case "cloudflare", "cloudfront", "fastly", "akamai", "azurecdn", "cachefly", "google":
+		return false
+	}
+	return false
+}
+
 // BatchSummary captures aggregate metrics for one run_tag batch.
 type BatchSummary struct {
 	RunTag             string  `json:"run_tag"`
@@ -41,13 +60,16 @@ type BatchSummary struct {
 	// For DNS, this captures the legacy pre-resolve field dns_time_ms when present
 	AvgDNSLegacyMs float64 `json:"avg_dns_legacy_ms,omitempty"`
 	// Extended aggregated metrics (averages or rates over successful lines)
-	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
-	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
-	AvgP99Speed               float64 `json:"avg_p99_kbps,omitempty"`
-	AvgSlopeKbpsPerSec        float64 `json:"avg_slope_kbps_per_sec,omitempty"`
-	AvgCoefVariationPct       float64 `json:"avg_coef_variation_pct,omitempty"`
-	CacheHitRatePct           float64 `json:"cache_hit_rate_pct,omitempty"`
-	ProxySuspectedRatePct     float64 `json:"proxy_suspected_rate_pct,omitempty"`
+	AvgP90Speed           float64 `json:"avg_p90_kbps,omitempty"`
+	AvgP95Speed           float64 `json:"avg_p95_kbps,omitempty"`
+	AvgP99Speed           float64 `json:"avg_p99_kbps,omitempty"`
+	AvgSlopeKbpsPerSec    float64 `json:"avg_slope_kbps_per_sec,omitempty"`
+	AvgCoefVariationPct   float64 `json:"avg_coef_variation_pct,omitempty"`
+	CacheHitRatePct       float64 `json:"cache_hit_rate_pct,omitempty"`
+	ProxySuspectedRatePct float64 `json:"proxy_suspected_rate_pct,omitempty"`
+	// New: split proxy classifications
+	EnterpriseProxyRatePct    float64 `json:"enterprise_proxy_rate_pct,omitempty"`
+	ServerProxyRatePct        float64 `json:"server_proxy_rate_pct,omitempty"`
 	IPMismatchRatePct         float64 `json:"ip_mismatch_rate_pct,omitempty"`
 	PrefetchSuspectedRatePct  float64 `json:"prefetch_suspected_rate_pct,omitempty"`
 	WarmCacheSuspectedRatePct float64 `json:"warm_cache_suspected_rate_pct,omitempty"`
@@ -82,6 +104,8 @@ type BatchSummary struct {
 	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
 	CacheHitLines           int `json:"-"`
 	ProxySuspectedLines     int `json:"-"`
+	EnterpriseProxyLines    int `json:"-"`
+	ServerProxyLines        int `json:"-"`
 	IPMismatchLines         int `json:"-"`
 	PrefetchSuspectedLines  int `json:"-"`
 	WarmCacheSuspectedLines int `json:"-"`
@@ -137,14 +161,17 @@ type FamilySummary struct {
 	AvgConnectMs    float64 `json:"avg_connect_ms,omitempty"`
 	AvgTLSHandshake float64 `json:"avg_tls_handshake_ms,omitempty"`
 	// Legacy-only averages to enable comparison overlays in the UI
-	AvgDNSLegacyMs            float64 `json:"avg_dns_legacy_ms,omitempty"`
-	AvgP90Speed               float64 `json:"avg_p90_kbps,omitempty"`
-	AvgP95Speed               float64 `json:"avg_p95_kbps,omitempty"`
-	AvgP99Speed               float64 `json:"avg_p99_kbps,omitempty"`
-	AvgSlopeKbpsPerSec        float64 `json:"avg_slope_kbps_per_sec,omitempty"`
-	AvgCoefVariationPct       float64 `json:"avg_coef_variation_pct,omitempty"`
-	CacheHitRatePct           float64 `json:"cache_hit_rate_pct,omitempty"`
-	ProxySuspectedRatePct     float64 `json:"proxy_suspected_rate_pct,omitempty"`
+	AvgDNSLegacyMs        float64 `json:"avg_dns_legacy_ms,omitempty"`
+	AvgP90Speed           float64 `json:"avg_p90_kbps,omitempty"`
+	AvgP95Speed           float64 `json:"avg_p95_kbps,omitempty"`
+	AvgP99Speed           float64 `json:"avg_p99_kbps,omitempty"`
+	AvgSlopeKbpsPerSec    float64 `json:"avg_slope_kbps_per_sec,omitempty"`
+	AvgCoefVariationPct   float64 `json:"avg_coef_variation_pct,omitempty"`
+	CacheHitRatePct       float64 `json:"cache_hit_rate_pct,omitempty"`
+	ProxySuspectedRatePct float64 `json:"proxy_suspected_rate_pct,omitempty"`
+	// New: split proxy classifications
+	EnterpriseProxyRatePct    float64 `json:"enterprise_proxy_rate_pct,omitempty"`
+	ServerProxyRatePct        float64 `json:"server_proxy_rate_pct,omitempty"`
 	IPMismatchRatePct         float64 `json:"ip_mismatch_rate_pct,omitempty"`
 	PrefetchSuspectedRatePct  float64 `json:"prefetch_suspected_rate_pct,omitempty"`
 	WarmCacheSuspectedRatePct float64 `json:"warm_cache_suspected_rate_pct,omitempty"`
@@ -223,6 +250,8 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		headGetRatio       float64
 		cachePresent       bool
 		proxySuspected     bool
+		proxyNameLower     string
+		usingProxyEndpoint bool
 		ipMismatch         bool
 		prefetchSuspected  bool
 		warmCacheSuspected bool
@@ -448,6 +477,12 @@ readLoop:
 		// boolean / ratio fields from SiteResult
 		bs.cachePresent = sr.CachePresent
 		bs.proxySuspected = sr.ProxySuspected
+		if sr.ProxyName != "" {
+			bs.proxyNameLower = strings.ToLower(strings.TrimSpace(sr.ProxyName))
+		}
+		if sr.ProxyRemoteIsProxy || (sr.UsingEnvProxy && sr.EnvProxyURL != "") {
+			bs.usingProxyEndpoint = true
+		}
 		bs.ipMismatch = sr.IPMismatch
 		bs.prefetchSuspected = sr.PrefetchSuspected
 		bs.warmCacheSuspected = sr.WarmCacheSuspected
@@ -568,7 +603,7 @@ readLoop:
 			var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 			var slopes, coefVars, headGetRatios []float64
 			var dnsTimes, dnsLegacyTimes, connTimes, tlsTimes []float64
-			var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
+			var cacheCnt, proxyCnt, entProxyCnt, srvProxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 			var errorLines int
 			var lowMsSum, totalMsSum int64
 			var stallCnt int
@@ -656,6 +691,17 @@ readLoop:
 				if r.proxySuspected {
 					proxyCnt++
 				}
+				// classify enterprise vs server-side
+				if r.proxyNameLower != "" {
+					if isEnterpriseProxy(r.proxyNameLower) {
+						entProxyCnt++
+					} else {
+						srvProxyCnt++
+					}
+				} else if r.usingProxyEndpoint {
+					// No name, but using explicit proxy endpoint (from env) -> enterprise bucket
+					entProxyCnt++
+				}
 				if r.ipMismatch {
 					ipMismatchCnt++
 				}
@@ -718,7 +764,7 @@ readLoop:
 				Lines: lineCount, AvgSpeed: avg(speeds), MedianSpeed: median(speeds), AvgTTFB: avg(ttfbs), AvgBytes: avg(bytesVals), ErrorLines: errorLines,
 				AvgFirstRTTGoodput: avg(firsts), AvgP50Speed: avg(p50s), AvgP99P50Ratio: avg(ratios), AvgPlateauCount: avg(plateauCounts), AvgLongestPlateau: avg(longest), AvgJitterPct: avg(jitters),
 				AvgP90Speed: avg(p90s), AvgP95Speed: avg(p95s), AvgP99Speed: avg(p99s), AvgSlopeKbpsPerSec: avg(slopes), AvgCoefVariationPct: avg(coefVars),
-				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
+				CacheHitRatePct: pct(cacheCnt), ProxySuspectedRatePct: pct(proxyCnt), EnterpriseProxyRatePct: pct(entProxyCnt), ServerProxyRatePct: pct(srvProxyCnt), IPMismatchRatePct: pct(ipMismatchCnt), PrefetchSuspectedRatePct: pct(prefetchCnt), WarmCacheSuspectedRatePct: pct(warmCacheCnt), ConnReuseRatePct: pct(reuseCnt), PlateauStableRatePct: pct(plateauStableCnt), AvgHeadGetTimeRatio: avg(headGetRatios),
 				BatchDurationMs: durationMs,
 				AvgDNSMs:        avg(dnsTimes),
 				AvgDNSLegacyMs:  avg(dnsLegacyTimes),
@@ -783,7 +829,7 @@ readLoop:
 		var speeds, ttfbs, bytesVals, firsts, p50s, p90s, p95s, p99s, ratios, plateauCounts, longest, jitters []float64
 		var slopes, coefVars, headGetRatios []float64
 		var dnsTimesAll, dnsLegacyTimesAll, connTimesAll, tlsTimesAll []float64
-		var cacheCnt, proxyCnt, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
+		var cacheCnt, proxyCnt, entProxyCntAll, srvProxyCntAll, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
 		var lowMsSumAll, totalMsSumAll int64
 		var stallCntAll int
@@ -909,6 +955,15 @@ readLoop:
 			if r.proxySuspected {
 				proxyCnt++
 			}
+			if r.proxyNameLower != "" {
+				if isEnterpriseProxy(r.proxyNameLower) {
+					entProxyCntAll++
+				} else {
+					srvProxyCntAll++
+				}
+			} else if r.usingProxyEndpoint {
+				entProxyCntAll++
+			}
 			if r.ipMismatch {
 				ipMismatchCnt++
 			}
@@ -1004,7 +1059,7 @@ readLoop:
 			AvgDNSLegacyMs:  avg(dnsLegacyTimesAll),
 			AvgConnectMs:    avg(connTimesAll),
 			AvgTLSHandshake: avg(tlsTimesAll),
-			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
+			CacheHitLines:   cacheCnt, ProxySuspectedLines: proxyCnt, EnterpriseProxyLines: entProxyCntAll, ServerProxyLines: srvProxyCntAll, IPMismatchLines: ipMismatchCnt, PrefetchSuspectedLines: prefetchCnt, WarmCacheSuspectedLines: warmCacheCnt, ConnReuseLines: reuseCnt, PlateauStableLines: plateauStableCnt,
 			// stability & quality (overall)
 			LowSpeedTimeSharePct: func() float64 {
 				if totalMsSumAll <= 0 {
@@ -1139,6 +1194,11 @@ readLoop:
 		summary.AvgP90TTFBMs = percentile(ttfbs, 90)
 		summary.AvgP95TTFBMs = percentile(ttfbs, 95)
 		summary.AvgP99TTFBMs = percentile(ttfbs, 99)
+		// Set split proxy rates
+		if recCount > 0 {
+			summary.EnterpriseProxyRatePct = float64(entProxyCntAll) / float64(recCount) * 100
+			summary.ServerProxyRatePct = float64(srvProxyCntAll) / float64(recCount) * 100
+		}
 		if batchSituation != "" {
 			summary.Situation = batchSituation
 		}

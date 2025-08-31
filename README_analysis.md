@@ -69,7 +69,11 @@ Per batch (Overall/IPv4/IPv6 when available):
   - Error/Partial rates by protocol (%), and their shares (% of all errors/partials).
   - Stall rate by protocol (%), Stall share by protocol (% of all stalls).
   - TLS/ALPN mixes (%), Chunked Transfer Rate (%).
-  - Cache Hit Rate, Proxy Suspected Rate, Warm Cache Suspected Rate.
+  - Cache Hit Rate, Enterprise Proxy Rate, Server-side Proxy Rate, Warm Cache Suspected Rate.
+
+Note on deprecation and compatibility
+- The legacy combined Proxy Suspected Rate (`proxy_suspected_rate_pct`) is deprecated in the Viewer UI and replaced by split metrics for clearer attribution: `enterprise_proxy_rate_pct` and `server_proxy_rate_pct`.
+- For backward compatibility, the analysis still emits `proxy_suspected_rate_pct`. Downstream consumers are encouraged to migrate to the split fields.
 
 Note on sourcing: Protocol/TLS/encoding fields are primarily taken from the primary GET response. If that is unavailable (e.g., timeout or abort), the monitor fills these fields from a successful HEAD or Range response when present, so protocol/TLS mixes remain informative in those edge cases.
 

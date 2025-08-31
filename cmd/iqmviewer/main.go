@@ -10,6 +10,7 @@ import (
 	"image/draw"
 	"image/png"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -481,24 +482,25 @@ type uiState struct {
 	// (removed: one-shot export scoping)
 
 	// situation selector (populated after data load)
-	situationSelect    *widget.Select
-	speedImgCanvas     *canvas.Image
-	ttfbImgCanvas      *canvas.Image
-	pctlOverallImg     *canvas.Image
-	pctlIPv4Img        *canvas.Image
-	pctlIPv6Img        *canvas.Image
-	tpctlOverallImg    *canvas.Image
-	tpctlIPv4Img       *canvas.Image
-	tpctlIPv6Img       *canvas.Image
-	errImgCanvas       *canvas.Image
-	jitterImgCanvas    *canvas.Image
-	covImgCanvas       *canvas.Image
-	plCountImgCanvas   *canvas.Image
-	plLongestImgCanvas *canvas.Image
-	plStableImgCanvas  *canvas.Image
-	cacheImgCanvas     *canvas.Image
-	proxyImgCanvas     *canvas.Image
-	warmCacheImgCanvas *canvas.Image
+	situationSelect          *widget.Select
+	speedImgCanvas           *canvas.Image
+	ttfbImgCanvas            *canvas.Image
+	pctlOverallImg           *canvas.Image
+	pctlIPv4Img              *canvas.Image
+	pctlIPv6Img              *canvas.Image
+	tpctlOverallImg          *canvas.Image
+	tpctlIPv4Img             *canvas.Image
+	tpctlIPv6Img             *canvas.Image
+	errImgCanvas             *canvas.Image
+	jitterImgCanvas          *canvas.Image
+	covImgCanvas             *canvas.Image
+	plCountImgCanvas         *canvas.Image
+	plLongestImgCanvas       *canvas.Image
+	plStableImgCanvas        *canvas.Image
+	cacheImgCanvas           *canvas.Image
+	enterpriseProxyImgCanvas *canvas.Image
+	serverProxyImgCanvas     *canvas.Image
+	warmCacheImgCanvas       *canvas.Image
 
 	// transport/protocol charts
 	protocolMixImgCanvas          *canvas.Image // HTTP protocol mix (%)
@@ -555,15 +557,16 @@ type uiState struct {
 	setupTLSOverlay  *crosshairOverlay
 
 	// overlays for additional charts
-	errOverlay       *crosshairOverlay
-	jitterOverlay    *crosshairOverlay
-	covOverlay       *crosshairOverlay
-	plCountOverlay   *crosshairOverlay
-	plLongestOverlay *crosshairOverlay
-	plStableOverlay  *crosshairOverlay
-	cacheOverlay     *crosshairOverlay
-	proxyOverlay     *crosshairOverlay
-	warmCacheOverlay *crosshairOverlay
+	errOverlay             *crosshairOverlay
+	jitterOverlay          *crosshairOverlay
+	covOverlay             *crosshairOverlay
+	plCountOverlay         *crosshairOverlay
+	plLongestOverlay       *crosshairOverlay
+	plStableOverlay        *crosshairOverlay
+	cacheOverlay           *crosshairOverlay
+	enterpriseProxyOverlay *crosshairOverlay
+	serverProxyOverlay     *crosshairOverlay
+	warmCacheOverlay       *crosshairOverlay
 	// overlays for transport/protocol charts
 	protocolMixOverlay          *crosshairOverlay
 	protocolAvgSpeedOverlay     *crosshairOverlay
@@ -665,10 +668,8 @@ type chartRef struct {
 func makeChartSection(state *uiState, title string, help string, stack *fyne.Container) *fyne.Container {
 	titleLbl := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	infoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
-		// Show help in a dialog with wrapping
-		dlg := dialog.NewCustom(title+" – Info", "Close", container.NewVScroll(widget.NewLabel(help)), fyne.CurrentApp().Driver().AllWindows()[0])
-		dlg.Resize(fyne.NewSize(520, 380))
-		dlg.Show()
+	// Open in a resizable child window with a minimum size and persistent sizing
+	showChartInfoWindow(state, title+" – Info", help)
 	})
 	infoBtn.Importance = widget.LowImportance
 	header := container.New(layout.NewHBoxLayout(), titleLbl, layout.NewSpacer(), infoBtn)
@@ -677,6 +678,96 @@ func makeChartSection(state *uiState, title string, help string, stack *fyne.Con
 		state.chartRefs = append(state.chartRefs, chartRef{title: title, section: sec})
 	}
 	return sec
+}
+
+// buildChartInfoContent formats a rich info panel with the help text and clickable URLs.
+// It looks for a line starting with "References:" or any http(s) links and renders them as hyperlinks.
+func buildChartInfoContent(title, help string) fyne.CanvasObject {
+	// Split into lines and collect URLs
+	lines := strings.Split(help, "\n")
+	var urls []string
+	for _, ln := range lines {
+		// Extract http(s) URLs by simple token scan
+		for _, tok := range strings.Fields(ln) {
+			if strings.HasPrefix(tok, "http://") || strings.HasPrefix(tok, "https://") {
+				// Trim trailing punctuation
+				tok = strings.TrimRight(tok, ".,);]")
+				if u, err := url.Parse(tok); err == nil && u.Scheme != "" && u.Host != "" {
+					urls = append(urls, u.String())
+				}
+			}
+		}
+	}
+
+	// Build rich text for the description (sans URLs section header duplication)
+	desc := widget.NewRichTextWithText(help)
+	desc.Wrapping = fyne.TextWrapWord
+
+	// Build links area if we have URLs
+	var linkItems []fyne.CanvasObject
+	if len(urls) > 0 {
+		linkItems = append(linkItems, widget.NewSeparator())
+		linkItems = append(linkItems, widget.NewLabelWithStyle("References:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+		for _, u := range urls {
+			// Each URL as a hyperlink
+			link := widget.NewHyperlink(u, parseURLOrNil(u))
+			link.Wrapping = fyne.TextWrapBreak
+			linkItems = append(linkItems, link)
+		}
+	}
+
+	// Standard footer tips reminder to keep consistency across charts
+	tips := widget.NewLabel("Tips: Use Settings to adjust X-Axis, Y-Scale, and Number of Batches. Use the Situation selector to filter context; exports include the active Situation watermark.")
+	tips.Wrapping = fyne.TextWrapWord
+
+	content := container.NewVBox(desc)
+	if len(linkItems) > 0 {
+		content.Add(container.NewVBox(linkItems...))
+	}
+	content.Add(widget.NewSeparator())
+	content.Add(tips)
+	return content
+}
+
+func parseURLOrNil(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
+// showChartInfoWindow opens a dedicated resizable window for the chart info and remembers its size.
+func showChartInfoWindow(state *uiState, title, help string) {
+	// Fallback to a dialog if state/app is missing
+	if state == nil || state.app == nil {
+		content := buildChartInfoContent(title, help)
+		dlg := dialog.NewCustom(title, "Close", container.NewVScroll(content), fyne.CurrentApp().Driver().AllWindows()[0])
+		dlg.Resize(fyne.NewSize(600, 450))
+		dlg.Show()
+		return
+	}
+	w := state.app.NewWindow(title)
+	// Build rich content and wrap in a scroll view
+	content := buildChartInfoContent(title, help)
+	scroll := container.NewVScroll(content)
+	// Set minimum on content and restore last size
+	const minW, minH = float32(520), float32(360)
+	scroll.SetMinSize(fyne.NewSize(minW, minH))
+	prefW := state.app.Preferences().IntWithFallback("infoPopupW", 640)
+	prefH := state.app.Preferences().IntWithFallback("infoPopupH", 420)
+	if float32(prefW) < minW { prefW = int(minW) }
+	if float32(prefH) < minH { prefH = int(minH) }
+	w.Resize(fyne.NewSize(float32(prefW), float32(prefH)))
+	// Save size on close
+	w.SetOnClosed(func() {
+		sz := w.Canvas().Size()
+		state.app.Preferences().SetInt("infoPopupW", int(sz.Width))
+		state.app.Preferences().SetInt("infoPopupH", int(sz.Height))
+	})
+	// Allow normal OS window controls to close the info
+	w.SetContent(scroll)
+	w.Show()
 }
 
 // updateFindMatches recomputes the matching chart indices based on the findEntry text
@@ -823,7 +914,7 @@ func main() {
 	var shotsIncludePreTTFB bool
 	var selfTest bool
 	var showPretffbCLI string
-	flag.StringVar(&fileFlag, "file", "", "Path to monitor_results.jsonl")
+	flag.StringVar(&fileFlag, "file", "", "Path to monitor results JSONL file")
 	flag.BoolVar(&shots, "screenshot", false, "Run in headless screenshot mode and save sample charts to --screenshot-outdir")
 	flag.StringVar(&shotsOut, "screenshot-outdir", "docs/images", "Directory to write screenshots into (created if missing)")
 	flag.StringVar(&shotsSituation, "screenshot-situation", "All", "Situation label to render (use 'All' for all situations)")
@@ -1189,10 +1280,15 @@ func main() {
 	state.cacheImgCanvas.FillMode = canvas.ImageFillStretch
 	state.cacheImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.cacheOverlay = newCrosshairOverlay(state, "cache_hit")
-	state.proxyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
-	state.proxyImgCanvas.FillMode = canvas.ImageFillStretch
-	state.proxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
-	state.proxyOverlay = newCrosshairOverlay(state, "proxy_suspected")
+	// New: Enterprise/Server-side Proxy split placeholders
+	state.enterpriseProxyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.enterpriseProxyImgCanvas.FillMode = canvas.ImageFillStretch
+	state.enterpriseProxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.enterpriseProxyOverlay = newCrosshairOverlay(state, "proxy_enterprise")
+	state.serverProxyImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.serverProxyImgCanvas.FillMode = canvas.ImageFillStretch
+	state.serverProxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.serverProxyOverlay = newCrosshairOverlay(state, "proxy_server")
 	state.warmCacheImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	// transport/protocol canvases
 	state.protocolMixImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -1375,77 +1471,81 @@ References: https://en.wikipedia.org/wiki/Throughput` + axesTip
 	- Use alongside Avg Speed to spot unstable networks (wide gaps between P50 and P95/P99).
 	References: https://en.wikipedia.org/wiki/Percentile` + axesTip
 	helpErr := `Error Rate per batch (Overall/IPv4/IPv6) as a percentage of lines with errors (TCP/HTTP failures).
-- Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip
+- Sustained increases correlate with reliability issues or upstream/network faults.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"
 	helpJitter := `Jitter (%): mean absolute relative variation between consecutive sampled speeds within a transfer.
 - Higher jitter means more erratic throughput (bursts, stalls), often due to contention or queueing.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Jitter"
 	helpCoV := `Coefficient of Variation (%): standard deviation / mean of speeds.
 - Another variability measure; higher values indicate less consistent throughput across samples.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Coefficient_of_variation"
 	helpCache := `Cache Hit Rate (%): fraction of requests likely served from intermediary caches (heuristics).
 - High cache rates can hide origin latency; useful context when TTFB or speed looks unexpectedly good.` + axesTip + "\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching"
-	helpProxy := `Proxy Suspected Rate (%): fraction of requests that appear to traverse enterprise/CDN proxies based on header/IP heuristics.
-- Proxies can add overhead or improve cache locality; correlate with TTFB and speed changes.` + axesTip
-	helpWarm := `Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches or connection reuse along the path.` + axesTip
+	// Deprecated: legacy combined proxy metric is no longer shown in the Viewer UI.
+	// New proxy split help
+	helpEnterpriseProxy := `Enterprise Proxy Rate (%): share of requests likely traversing enterprise/security proxies (e.g., Zscaler, Blue Coat, Netskope).
+- Derived from indicators such as TLS cert issuer/subject and proxy-specific headers. Useful to see enterprise middlebox impact.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110"
+	helpServerProxy := `Server-side Proxy Rate (%): share of requests likely traversing server/CDN-side proxies (origin-side).
+- Derived from proxy/CDN header fingerprints or origin-side evidence.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9110 , https://www.rfc-editor.org/rfc/rfc9111"
+	helpWarm := `Warm Cache Suspected Rate (%): fraction of requests likely benefiting from warm caches or connection reuse along the path.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9111"
 	helpPlCount := `Plateau Count: average number of intra-transfer ‘stable’ speed segments detected per batch.
 - Many plateaus can indicate buffering/flow control behavior or route/policy changes mid-transfer.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
 	helpPlLongest := `Longest Plateau (ms): duration of the longest stable segment in a transfer.
-- Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip
+- Long plateaus at low speed can indicate stalls; long plateaus at high speed can indicate smooth steady-state.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
 	helpPlStable := `Plateau Stable Rate (%): fraction of time spent in stable plateaus during a transfer.
-- Higher values often mean smoother throughput (less variability).` + axesTip
+- Higher values often mean smoother throughput (less variability).` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/TCP_congestion_control , https://en.wikipedia.org/wiki/Bufferbloat"
 
 	// Stability & quality help
 	helpLowSpeed := `Low-Speed Time Share (%): share of transfer time spent below the Low-Speed Threshold.
 - Indicates how often the link is underperforming. Set the threshold in Settings → Low-Speed Threshold.
-Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip
+Computation: sample-based using intra-transfer speed samples and the selected threshold.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6349"
 	helpStallRate := `Stall Rate (%): fraction of requests that experienced any stall during transfer.
-- Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip
+- Useful for spotting reliability issues (buffering, retransmissions, outages).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat"
 	helpStallTime := `Avg Stall Time (ms): average total time spent stalled per request (across stalled requests).
-- Correlate with Jitter/CoV to understand severity and duration of stalls.` + axesTip
+- Correlate with Jitter/CoV to understand severity and duration of stalls.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
 	helpStallCount := `Stalled Requests Count: estimated number of stalled requests per batch.
 - Interim metric derived as: round(Lines × Stall Rate / 100).
-- Use alongside Stall Rate and Avg Stall Time.` + axesTip
+- Use alongside Stall Rate and Avg Stall Time.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
 	helpPartialBody := `Partial Body Rate (%): fraction of requests that finished with an incomplete body (Content-Length mismatch or early EOF).
-- Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip
+- Helpful to spot flaky networks, proxies, or servers that terminate transfers prematurely.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9112"
 	// Micro-stalls help
 	helpMicroStallRate := `Transient Stall Rate (%): share of lines with ≥1 short stall (≥500 ms by default) while transfer continued.
-- Derived offline from intra-transfer speed samples. Not the same as hard stall-timeout aborts.` + axesTip
-	helpMicroStallTime := `Avg Transient Stall Time (ms): average total duration of micro-stalls per line (among lines with any micro-stall).` + axesTip
-	helpMicroStallCount := `Avg Transient Stall Count: average number of micro-stall events per line.` + axesTip
+- Derived offline from intra-transfer speed samples. Not the same as hard stall-timeout aborts.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298 , https://en.wikipedia.org/wiki/Bufferbloat"
+	helpMicroStallTime := `Avg Transient Stall Time (ms): average total duration of micro-stalls per line (among lines with any micro-stall).` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
+	helpMicroStallCount := `Avg Transient Stall Count: average number of micro-stall events per line.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc6298"
 
 	// Setup breakdown help
 	helpDNS := `DNS Lookup Time (ms): average time to resolve the hostname.
  - Preferred source is httptrace (trace_dns_ms). When unavailable, legacy dns_time_ms is used.
  - Toggle Settings → "Overlay legacy DNS (dns_time_ms)" to overlay the legacy series (dashed) for comparison.
-- Elevated values can indicate resolver or network issues.` + axesTip
+- Elevated values can indicate resolver or network issues.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc1034 , https://www.rfc-editor.org/rfc/rfc1035"
 	helpConn := `TCP Connect Time (ms): average time to establish the TCP connection (SYN→ACK and socket connect).
-- Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip
+- Measured from httptrace connect start/done. Sensitive to RTT and packet loss.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc9293"
 	helpTLS := `TLS Handshake Time (ms): average time to complete TLS handshake.
-- Includes ClientHello→ServerHello, cert exchange/verification. Spikes can indicate TLS inspection, cert revocation checks, or server load.` + axesTip
+- Includes ClientHello→ServerHello, cert exchange/verification. Spikes can indicate TLS inspection, cert revocation checks, or server load.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8446"
 
 	// New charts help
 	helpTail := `Tail Heaviness (Speed P99/P50): ratio of 99th to 50th percentile throughput per batch.
-- Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip
+- Higher ratios mean a heavier tail and less predictable performance; ~1.0 is most stable.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
 	helpTTFBTail := `TTFB Tail Heaviness (P95/P50): ratio of 95th to 50th percentile TTFB per batch.
-- Higher ratios indicate heavier tail latency; ~1.0 means tighter latency distribution.` + axesTip
+- Higher ratios indicate heavier tail latency; ~1.0 means tighter latency distribution.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
 	helpDeltas := `Family Delta (IPv6−IPv4): difference between IPv6 and IPv4.
 - Speed Delta uses the chosen unit; positive means IPv6 faster.
-- TTFB Delta is (IPv4−IPv6) in ms; positive means IPv6 lower (better) latency.` + axesTip
+- TTFB Delta is (IPv4−IPv6) in ms; positive means IPv6 lower (better) latency.` + axesTip + "\nReferences: https://www.rfc-editor.org/rfc/rfc8200 , https://www.rfc-editor.org/rfc/rfc791"
 	helpSLA := `SLA Compliance (%): share of lines meeting thresholds.
 	- Speed SLA: median (P50) speed ≥ threshold.
 	- TTFB SLA: P95 TTFB ≤ threshold.
-Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P95 TTFB ≤ 200 ms).` + axesTip
+Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P95 TTFB ≤ 200 ms).` + axesTip + "\nReferences: https://sre.google/sre-book/service-level-objectives/"
 
 	// Extra comparisons
 	helpDeltaPct := `Percent-based Family Deltas:
 - Speed Δ%: (IPv6 − IPv4) / IPv4 × 100. Positive = IPv6 faster vs IPv4.
-- TTFB Δ%: (IPv4 − IPv6) / IPv6 × 100. Positive = IPv6 lower (better) latency.` + axesTip
+- TTFB Δ%: (IPv4 − IPv6) / IPv6 × 100. Positive = IPv6 lower (better) latency.` + axesTip + "\nReferences: https://en.wikipedia.org/wiki/Relative_change_and_difference"
 	helpSLADelta := `SLA Compliance Delta (pp): Difference in compliance (percentage points) between IPv6 and IPv4 using current thresholds.
 - Speed SLA Δpp = IPv6 % − IPv4 % (using P50 speed threshold)
-- TTFB SLA Δpp = IPv6 % − IPv4 % (using P95 TTFB threshold)` + axesTip
+- TTFB SLA Δpp = IPv6 % − IPv4 % (using P95 TTFB threshold)` + axesTip + "\nReferences: https://sre.google/sre-book/service-level-objectives/"
 
 	// Tail/latency depth extra
 	helpTTFBGap := `TTFB P95−P50 Gap (ms): difference between tail and median latency.
 - Larger gaps indicate heavier latency tails (outliers/spikes).
-- Use alongside Avg TTFB and TTFB Percentiles to spot tail issues hidden by averages.` + axesTip
+- Use alongside Avg TTFB and TTFB Percentiles to spot tail issues hidden by averages.` + axesTip + "\nReferences: https://research.google/pubs/pub40801/"
 
 	// Build separate grids for Speed and TTFB percentiles
 	speedPctlGrid := container.NewVBox(
@@ -1473,24 +1573,24 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
+		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance."+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
+		makeChartSection(state, "Avg Speed by HTTP Protocol", "Average speed per HTTP protocol. Helps compare protocol performance.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolAvgSpeedImgCanvas, state.protocolAvgSpeedOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
-		makeChartSection(state, "Stall Share by HTTP Protocol (%)", "Share of total stalled requests by protocol. Bars typically sum to about 100% (across protocols with stalls). Complements ‘Stall Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolStallShareImgCanvas, state.protocolStallShareOverlay)),
+		makeChartSection(state, "Stall Rate by HTTP Protocol (%)", "Per‑protocol stall prevalence: for each HTTP protocol, the fraction of that protocol's requests that stalled. Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume, not across protocols. See 'Stall Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolStallRateImgCanvas, state.protocolStallRateOverlay)),
+		makeChartSection(state, "Stall Share by HTTP Protocol (%)", "Share of total stalled requests by protocol. Bars typically sum to about 100% (across protocols with stalls). Complements ‘Stall Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9110"+axesTip, container.NewStack(state.protocolStallShareImgCanvas, state.protocolStallShareOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%."+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
-		makeChartSection(state, "Partial Share by HTTP Protocol (%)", "Share of all partial (incomplete) responses by protocol. Bars typically sum to about 100% (across protocols with partials). Complements ‘Partial Body Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolPartialShareImgCanvas, state.protocolPartialShareOverlay)),
+		makeChartSection(state, "Partial Body Rate by HTTP Protocol (%)", "Per‑protocol incompletes: for each HTTP protocol, the fraction of that protocol's requests that ended with an incomplete body (Content-Length mismatch or early EOF). Note: These values do not add up to 100% because each bar is normalized by its own protocol's volume. See 'Partial Share by HTTP Protocol' for a breakdown that typically sums to ~100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.protocolPartialRateImgCanvas, state.protocolPartialRateOverlay)),
+		makeChartSection(state, "Partial Share by HTTP Protocol (%)", "Share of all partial (incomplete) responses by protocol. Bars typically sum to about 100% (across protocols with partials). Complements ‘Partial Body Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.protocolPartialShareImgCanvas, state.protocolPartialShareOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Per‑protocol error prevalence: for each HTTP protocol, the fraction of that protocol’s requests that errored.\n\nNote: These values do not add up to 100% because each bar is normalized by its own protocol’s volume, not the total errors across all protocols. Missing percentage is therefore expected. (Unknown protocol is counted as ‘(unknown)’ if present)."+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
-		makeChartSection(state, "Error Share by HTTP Protocol (%)", "Share of total errors attributed to each HTTP protocol. Bars typically sum to about 100% (across protocols with errors). This complements ‘Error Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%."+axesTip, container.NewStack(state.protocolErrorShareImgCanvas, state.protocolErrorShareOverlay)),
+		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Per‑protocol error prevalence: for each HTTP protocol, the fraction of that protocol’s requests that errored.\n\nNote: These values do not add up to 100% because each bar is normalized by its own protocol’s volume, not the total errors across all protocols. Missing percentage is therefore expected. (Unknown protocol is counted as ‘(unknown)’ if present).\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
+		makeChartSection(state, "Error Share by HTTP Protocol (%)", "Share of total errors attributed to each HTTP protocol. Bars typically sum to about 100% (across protocols with errors). This complements ‘Error Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorShareImgCanvas, state.protocolErrorShareOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
+		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc8446"+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "ALPN Mix (%)", "Share of requests by negotiated ALPN (e.g., h2, http/1.1). Bars typically sum to about 100% across ALPN values per batch (including '(unknown)' when present)."+axesTip, container.NewStack(state.alpnMixImgCanvas, state.alpnMixOverlay)),
+		makeChartSection(state, "ALPN Mix (%)", "Share of requests by negotiated ALPN (e.g., h2, http/1.1). Bars typically sum to about 100% across ALPN values per batch (including '(unknown)' when present).\nReferences: https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids"+axesTip, container.NewStack(state.alpnMixImgCanvas, state.alpnMixOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding."+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
+		makeChartSection(state, "Chunked Transfer Rate (%)", "Percentage of responses using chunked transfer encoding.\nReferences: https://www.rfc-editor.org/rfc/rfc9112"+axesTip, container.NewStack(state.chunkedRateImgCanvas, state.chunkedRateOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "Speed", helpSpeed, container.NewStack(state.speedImgCanvas, state.speedOverlay)),
 		widget.NewSeparator(),
@@ -1552,7 +1652,10 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "Cache Hit Rate", helpCache, container.NewStack(state.cacheImgCanvas, state.cacheOverlay)),
 		widget.NewSeparator(),
-		makeChartSection(state, "Proxy Suspected Rate", helpProxy, container.NewStack(state.proxyImgCanvas, state.proxyOverlay)),
+		makeChartSection(state, "Enterprise Proxy Rate", helpEnterpriseProxy, container.NewStack(state.enterpriseProxyImgCanvas, state.enterpriseProxyOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Server-side Proxy Rate", helpServerProxy, container.NewStack(state.serverProxyImgCanvas, state.serverProxyOverlay)),
+		// (Deprecated) Legacy "Proxy Suspected Rate" chart removed from UI
 		widget.NewSeparator(),
 		makeChartSection(state, "Warm Cache Suspected Rate", helpWarm, container.NewStack(state.warmCacheImgCanvas, state.warmCacheOverlay)),
 		widget.NewSeparator(),
@@ -1728,10 +1831,6 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 	if state.cacheOverlay != nil {
 		state.cacheOverlay.enabled = state.crosshairEnabled
 		state.cacheOverlay.Refresh()
-	}
-	if state.proxyOverlay != nil {
-		state.proxyOverlay.enabled = state.crosshairEnabled
-		state.proxyOverlay.Refresh()
 	}
 	if state.warmCacheOverlay != nil {
 		state.warmCacheOverlay.enabled = state.crosshairEnabled
@@ -1946,7 +2045,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportStallCount := fyne.NewMenuItem("Export Stalled Requests Count…", func() { exportChartPNG(state, state.stallCountImgCanvas, "stall_count_chart.png") })
 	exportPartialBody := fyne.NewMenuItem("Export Partial Body Rate Chart…", func() { exportChartPNG(state, state.partialBodyImgCanvas, "partial_body_rate_chart.png") })
 	exportCache := fyne.NewMenuItem("Export Cache Hit Rate Chart…", func() { exportChartPNG(state, state.cacheImgCanvas, "cache_hit_rate_chart.png") })
-	exportProxy := fyne.NewMenuItem("Export Proxy Suspected Rate Chart…", func() { exportChartPNG(state, state.proxyImgCanvas, "proxy_suspected_rate_chart.png") })
+	exportEnterpriseProxy := fyne.NewMenuItem("Export Enterprise Proxy Rate Chart…", func() { exportChartPNG(state, state.enterpriseProxyImgCanvas, "enterprise_proxy_rate_chart.png") })
+	exportServerProxy := fyne.NewMenuItem("Export Server-side Proxy Rate Chart…", func() { exportChartPNG(state, state.serverProxyImgCanvas, "server_proxy_rate_chart.png") })
 	exportWarmCache := fyne.NewMenuItem("Export Warm Cache Suspected Rate Chart…", func() { exportChartPNG(state, state.warmCacheImgCanvas, "warm_cache_suspected_rate_chart.png") })
 	exportPlCount := fyne.NewMenuItem("Export Plateau Count Chart…", func() { exportChartPNG(state, state.plCountImgCanvas, "plateau_count_chart.png") })
 	exportPlLongest := fyne.NewMenuItem("Export Longest Plateau Chart…", func() { exportChartPNG(state, state.plLongestImgCanvas, "plateau_longest_chart.png") })
@@ -2019,7 +2119,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 
 	cacheSub := fyne.NewMenu("Cache & Proxy",
 		exportCache,
-		exportProxy,
+		exportEnterpriseProxy,
+		exportServerProxy,
 		exportWarmCache,
 	)
 	cacheSubItem := fyne.NewMenuItem("Cache & Proxy", nil)
@@ -2200,10 +2301,6 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		if state.cacheOverlay != nil {
 			state.cacheOverlay.enabled = b
 			state.cacheOverlay.Refresh()
-		}
-		if state.proxyOverlay != nil {
-			state.proxyOverlay.enabled = b
-			state.proxyOverlay.Refresh()
 		}
 		if state.warmCacheOverlay != nil {
 			state.warmCacheOverlay.enabled = b
@@ -3378,19 +3475,28 @@ func redrawCharts(state *uiState) {
 				state.cacheOverlay.Refresh()
 			}
 		}
-		// Proxy Suspected Rate chart
-		proxyImg := renderProxySuspectedRateChart(state)
-		if proxyImg != nil {
-			if state.proxyImgCanvas != nil {
-				state.proxyImgCanvas.Image = proxyImg
+		// Enterprise Proxy Rate chart
+		entProxyImg := renderEnterpriseProxyRateChart(state)
+		if entProxyImg != nil {
+			if state.enterpriseProxyImgCanvas != nil {
+				state.enterpriseProxyImgCanvas.Image = entProxyImg
 			}
 			_, chh := chartSize(state)
-			if state.proxyImgCanvas != nil {
-				state.proxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
-				state.proxyImgCanvas.Refresh()
+			if state.enterpriseProxyImgCanvas != nil {
+				state.enterpriseProxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.enterpriseProxyImgCanvas.Refresh()
 			}
-			if state.proxyOverlay != nil {
-				state.proxyOverlay.Refresh()
+		}
+		// Server-side Proxy Rate chart
+		srvProxyImg := renderServerProxyRateChart(state)
+		if srvProxyImg != nil {
+			if state.serverProxyImgCanvas != nil {
+				state.serverProxyImgCanvas.Image = srvProxyImg
+			}
+			_, chh := chartSize(state)
+			if state.serverProxyImgCanvas != nil {
+				state.serverProxyImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.serverProxyImgCanvas.Refresh()
 			}
 		}
 		// Warm Cache Suspected Rate chart
@@ -4166,8 +4272,8 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
-// renderProxySuspectedRateChart draws ProxySuspectedRatePct per batch (overall/IPv4/IPv6).
-func renderProxySuspectedRateChart(state *uiState) image.Image {
+// renderEnterpriseProxyRateChart draws EnterpriseProxyRatePct per batch (overall/IPv4/IPv6).
+func renderEnterpriseProxyRateChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
 		cw, chh := chartSize(state)
@@ -4217,14 +4323,14 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 		}
 	}
 	if state.showOverall {
-		add("Overall", func(b analysis.BatchSummary) float64 { return b.ProxySuspectedRatePct }, chart.ColorAlternateGray)
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.EnterpriseProxyRatePct }, chart.ColorAlternateGray)
 	}
 	if state.showIPv4 {
 		add("IPv4", func(b analysis.BatchSummary) float64 {
 			if b.IPv4 == nil {
 				return 0
 			}
-			return b.IPv4.ProxySuspectedRatePct
+			return b.IPv4.EnterpriseProxyRatePct
 		}, chart.ColorBlue)
 	}
 	if state.showIPv6 {
@@ -4232,7 +4338,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 			if b.IPv6 == nil {
 				return 0
 			}
-			return b.IPv6.ProxySuspectedRatePct
+			return b.IPv6.EnterpriseProxyRatePct
 		}, chart.ColorGreen)
 	}
 	var yAxisRange chart.Range
@@ -4265,7 +4371,7 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: "Proxy Suspected Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: "Enterprise Proxy Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -4273,17 +4379,139 @@ func renderProxySuspectedRateChart(state *uiState) image.Image {
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
-		fmt.Printf("[viewer] proxy-suspected render error: %v; blank fallback\n", err)
+		fmt.Printf("[viewer] enterprise-proxy render error: %v; blank fallback\n", err)
 		return blank(cw, chh)
 	}
 	img, err := png.Decode(&buf)
 	if err != nil {
 		cw, chh := chartSize(state)
-		fmt.Printf("[viewer] proxy-suspected decode error: %v; blank fallback\n", err)
+		fmt.Printf("[viewer] enterprise-proxy decode error: %v; blank fallback\n", err)
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		img = drawHint(img, "Hint: How often a proxy is suspected. Spikes can indicate transit via middleboxes.")
+		img = drawHint(img, "Hint: Requests via enterprise/security proxies. Correlate with TTFB.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderServerProxyRateChart draws ServerProxyRatePct per batch (overall/IPv4/IPv6).
+func renderServerProxyRateChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	series := []chart.Series{}
+	minY, maxY := math.MaxFloat64, -math.MaxFloat64
+	add := func(name string, sel func(analysis.BatchSummary) float64, col drawing.Color) {
+		ys := make([]float64, len(rows))
+		valid := 0
+		for i, r := range rows {
+			v := sel(r)
+			if v <= 0 {
+				ys[i] = math.NaN()
+				continue
+			}
+			ys[i] = v
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
+			}
+			valid++
+		}
+		st := pointStyle(col)
+		if valid == 1 {
+			st.DotWidth = 6
+		}
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	if state.showOverall {
+		add("Overall", func(b analysis.BatchSummary) float64 { return b.ServerProxyRatePct }, chart.ColorAlternateGray)
+	}
+	if state.showIPv4 {
+		add("IPv4", func(b analysis.BatchSummary) float64 {
+			if b.IPv4 == nil {
+				return 0
+			}
+			return b.IPv4.ServerProxyRatePct
+		}, chart.ColorBlue)
+	}
+	if state.showIPv6 {
+		add("IPv6", func(b analysis.BatchSummary) float64 {
+			if b.IPv6 == nil {
+				return 0
+			}
+			return b.IPv6.ServerProxyRatePct
+		}, chart.ColorGreen)
+	}
+	var yAxisRange chart.Range
+	var yTicks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if state.useRelative && haveY {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
+		yTicks = niceTicks(nMin, nMax, 6)
+	} else if !state.useRelative && haveY {
+		if maxY < 1 {
+			maxY = 1
+		}
+		if maxY > 100 {
+			maxY = 100
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
+		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{Title: "Server-side Proxy Rate (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: yAxisRange, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] server-proxy render error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		cw, chh := chartSize(state)
+		fmt.Printf("[viewer] server-proxy decode error: %v; blank fallback\n", err)
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Requests via server/CDN-side proxies. Watch for correlation with cache hits.")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -10492,9 +10720,13 @@ func exportAllChartsCombined(state *uiState) {
 		imgs = append(imgs, state.cacheImgCanvas.Image)
 		labels = append(labels, "Cache Hit Rate")
 	}
-	if state.proxyImgCanvas != nil && state.proxyImgCanvas.Image != nil {
-		imgs = append(imgs, state.proxyImgCanvas.Image)
-		labels = append(labels, "Proxy Suspected Rate")
+	if state.enterpriseProxyImgCanvas != nil && state.enterpriseProxyImgCanvas.Image != nil {
+		imgs = append(imgs, state.enterpriseProxyImgCanvas.Image)
+		labels = append(labels, "Enterprise Proxy Rate")
+	}
+	if state.serverProxyImgCanvas != nil && state.serverProxyImgCanvas.Image != nil {
+		imgs = append(imgs, state.serverProxyImgCanvas.Image)
+		labels = append(labels, "Server-side Proxy Rate")
 	}
 	if state.warmCacheImgCanvas != nil && state.warmCacheImgCanvas.Image != nil {
 		imgs = append(imgs, state.warmCacheImgCanvas.Image)
@@ -10931,8 +11163,10 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.plStableImgCanvas
 		case "cache_hit":
 			imgCanvas = r.c.state.cacheImgCanvas
-		case "proxy_suspected":
-			imgCanvas = r.c.state.proxyImgCanvas
+		case "proxy_enterprise":
+			imgCanvas = r.c.state.enterpriseProxyImgCanvas
+		case "proxy_server":
+			imgCanvas = r.c.state.serverProxyImgCanvas
 		case "warm_cache":
 			imgCanvas = r.c.state.warmCacheImgCanvas
 		case "low_speed_share":
@@ -11065,8 +11299,10 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				imgCanvas = r.c.state.plStableImgCanvas
 			case "cache_hit":
 				imgCanvas = r.c.state.cacheImgCanvas
-			case "proxy_suspected":
-				imgCanvas = r.c.state.proxyImgCanvas
+			case "proxy_enterprise":
+				imgCanvas = r.c.state.enterpriseProxyImgCanvas
+			case "proxy_server":
+				imgCanvas = r.c.state.serverProxyImgCanvas
 			case "warm_cache":
 				imgCanvas = r.c.state.warmCacheImgCanvas
 			case "low_speed_share":
@@ -11231,8 +11467,6 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				imgCanvas = r.c.state.plStableImgCanvas
 			case "cache_hit":
 				imgCanvas = r.c.state.cacheImgCanvas
-			case "proxy_suspected":
-				imgCanvas = r.c.state.proxyImgCanvas
 			case "warm_cache":
 				imgCanvas = r.c.state.warmCacheImgCanvas
 			case "low_speed_share":
@@ -11474,15 +11708,25 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
 				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.CacheHitRatePct))
 			}
-		case "proxy_suspected":
+		case "proxy_enterprise":
 			if r.c.state.showOverall {
-				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.ProxySuspectedRatePct))
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.EnterpriseProxyRatePct))
 			}
 			if r.c.state.showIPv4 && bs.IPv4 != nil {
-				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.ProxySuspectedRatePct))
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.EnterpriseProxyRatePct))
 			}
 			if r.c.state.showIPv6 && bs.IPv6 != nil {
-				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.ProxySuspectedRatePct))
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.EnterpriseProxyRatePct))
+			}
+		case "proxy_server":
+			if r.c.state.showOverall {
+				lines = append(lines, fmt.Sprintf("Overall: %.2f%%", bs.ServerProxyRatePct))
+			}
+			if r.c.state.showIPv4 && bs.IPv4 != nil {
+				lines = append(lines, fmt.Sprintf("IPv4: %.2f%%", bs.IPv4.ServerProxyRatePct))
+			}
+			if r.c.state.showIPv6 && bs.IPv6 != nil {
+				lines = append(lines, fmt.Sprintf("IPv6: %.2f%%", bs.IPv6.ServerProxyRatePct))
 			}
 		case "warm_cache":
 			if r.c.state.showOverall {

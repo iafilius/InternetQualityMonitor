@@ -747,6 +747,8 @@ Plateaus & stability:
 Caching / proxy / reuse rates (% of lines where condition true):
 - Cache hit rate (cache_hit_rate_pct)
 - Proxy suspected rate (proxy_suspected_rate_pct)
+   - Deprecated in the Viewer UI: The legacy combined "Proxy Suspected Rate (%)" chart is hidden/removed from the Viewer. Use the split charts "Enterprise Proxy Rate (%)" and "Server-side Proxy Rate (%)" instead.
+   - Backward compatibility: The analysis still emits `proxy_suspected_rate_pct` for downstream consumers and older tooling.
 - IP mismatch rate (ip_mismatch_rate_pct)
 - Prefetch suspected rate (prefetch_suspected_rate_pct)
 - Warm cache suspected rate (warm_cache_suspected_rate_pct)
@@ -999,9 +1001,9 @@ Your Go code will then be able to use these databases for GeoIP lookups.
 | GeoIP fields empty | GeoLite2 DB not installed | Install via `geoipupdate`; verify path `/usr/share/GeoIP/GeoLite2-Country.mmdb` |
 | Slow analysis | Very large results file | Limit with `--analysis-batches`; rotate/archive old lines |
 | Memory concern | Many recent batches retained | Lower `--analysis-batches` (default 10) |
-| HEAD slower than GET (ratio >1) | Proxy / caching anomaly | Check `proxy_suspected_rate_pct` and headers (`Via`, `X-Cache`) |
+| HEAD slower than GET (ratio >1) | Proxy / caching anomaly | Prefer the split metrics (`enterprise_proxy_rate_pct`, `server_proxy_rate_pct`); `proxy_suspected_rate_pct` remains available for compatibility. Also inspect headers (`Via`, `X-Cache`). |
 | Sudden p99/p50 spike | Bursty traffic or fewer samples | Validate sample count; look for plateau instability |
-| ip_mismatch_rate_pct spike | CDN path shift or proxy insertion | Compare ASN/org; correlate with `proxy_suspected_rate_pct` |
+| ip_mismatch_rate_pct spike | CDN path shift or proxy insertion | Compare ASN/org; correlate with `enterprise_proxy_rate_pct` / `server_proxy_rate_pct` (or legacy `proxy_suspected_rate_pct`). |
 | Warm cache suspected w/ low cache hit rate | HEAD path cached, object not | Inspect `header_age` / `x-cache` and warm HEAD timings |
 | Need verbose analysis | Want batch grouping debug | `ANALYSIS_DEBUG=1 go run ./src/main.go` |
 | Need baseline only | Old data noisy | Move or delete results file; collect fresh single batch |

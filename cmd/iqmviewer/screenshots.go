@@ -127,7 +127,8 @@ func RunScreenshotsMode(filePath, outDir, situation string, rollingWindow int, s
 		{"sla_ttfb_delta.png", renderSLATTFBDeltaChart},
 		// Signals
 		{"cache_hit_rate.png", renderCacheHitRateChart},
-		{"proxy_suspected_rate.png", renderProxySuspectedRateChart},
+		{"enterprise_proxy_rate.png", renderEnterpriseProxyRateChart},
+		{"server_proxy_rate.png", renderServerProxyRateChart},
 		{"warm_cache_suspected_rate.png", renderWarmCacheSuspectedRateChart},
 		// Errors
 		{"error_rate.png", renderErrorRateChart},

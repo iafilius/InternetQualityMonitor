@@ -28,6 +28,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
+- Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
 
 ### Diagnostics dialog
 - How to open:
@@ -255,13 +256,31 @@ All are crosshair-enabled, theme-aware, and available in combined exports.
 
 ## Cache / proxy indicators
 
-- Cache Hit Rate, Proxy Suspected Rate, Warm Cache Suspected Rate.
+- Cache Hit Rate (%): share of requests that were served from cache.
+- Enterprise Proxy Rate (%): requests likely traversing enterprise/security proxies (e.g., Zscaler, Blue Coat/Symantec, Netskope). Shown for Overall/IPv4/IPv6. New.
+- Server-side Proxy Rate (%): requests likely traversing server/CDN-side proxies or origin-side intermediaries. Shown for Overall/IPv4/IPv6. New.
+- Proxy Suspected Rate (%): legacy combined proxy indicator (enterprise OR server-side). Deprecated in the Viewer UI; retained in analysis output for backward compatibility.
+- Warm Cache Suspected Rate (%): signals suggest responses came from a warmed cache (prefetch/priming effects).
+
+How proxy classification works (brief)
+
+- The analyzer uses multiple best-effort signals to classify proxies while avoiding false positives:
+	- Enterprise proxies: hints from TLS certificate subject/issuer patterns commonly used by enterprise inspection stacks; explicit proxy usage (env/system) and known enterprise proxy names when available; header patterns typical of enterprise appliances.
+	- Server-side proxies: response/request headers that imply intermediary handling at origin/CDN layers (e.g., Via, X-Cache variants), and other origin-side hints.
+- Classification is batch-aggregated and shown Overall, IPv4, and IPv6. Signals are heuristic and environment-dependent.
+- The legacy "Proxy Suspected Rate" combines both classes; keep using it if you prefer a single signal during transition.
 
 Examples:
 
 ![Cache Hit Rate](docs/images/cache_hit_rate.png)
 
-![Proxy Suspected Rate](docs/images/proxy_suspected_rate.png)
+<!-- Deprecated: legacy combined proxy chart example removed -->
+
+New split proxy charts:
+
+![Enterprise Proxy Rate](docs/images/enterprise_proxy_rate.png)
+
+![Server-side Proxy Rate](docs/images/server_proxy_rate.png)
 
 ## Error, jitter, and stability extras
 
@@ -283,6 +302,7 @@ Examples:
 - A dedicated export exists for the Stalled Requests Count chart.
  - Setup timing charts (DNS/TCP/TLS) are included in both individual and combined exports.
  - Transient/micro‑stall charts (Rate, Avg Time, Avg Count) have dedicated export items and are included in the combined export.
+- Cache/Proxy exports include Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy "Proxy Suspected Rate" chart is deprecated and not included in per-chart exports nor in "Export All (One Image)".
 
 ### Updating the screenshots
 
