@@ -54,6 +54,11 @@ var screenshotThemeMode = "auto"
 // When > 0 and state.window==nil, chartSize will return this width. Normal app runs ignore this.
 var screenshotWidthOverride = 0
 
+// renderWidthOverride is a temporary override used when re-rendering charts for export.
+// When > 0, chartSize() will honor this width regardless of window mode.
+// Always reset back to 0 after export to avoid affecting on-screen rendering.
+var renderWidthOverride = 0
+
 // resolveTheme maps a user-facing mode to an effective chart theme.
 func resolveTheme(mode string, app fyne.App) string {
 	m := strings.ToLower(strings.TrimSpace(mode))
@@ -5609,6 +5614,21 @@ func renderStallTimeChart(state *uiState) image.Image {
 
 // chartSize computes a chart size based on the current window width so charts use more X-axis space.
 func chartSize(state *uiState) (int, int) {
+	// If a one-shot render width override is set (used by export), honor it first.
+	if renderWidthOverride > 0 {
+		w := renderWidthOverride
+		if w < 800 {
+			w = 800
+		}
+		h := int(float32(w) * 0.33)
+		if h < 280 {
+			h = 280
+		}
+		if h > 520 {
+			h = 520
+		}
+		return w, h
+	}
 	// Headless/screenshot mode: allow tests to override width for exact checks.
 	if state == nil || state.window == nil || state.window.Canvas() == nil {
 		if screenshotWidthOverride > 0 {
@@ -10529,14 +10549,49 @@ func exportChartPNG(state *uiState, img *canvas.Image, defaultName string) {
 		dialog.ShowInformation("Export", "No chart to export.", state.window)
 		return
 	}
+	// Determine a renderer for this chart so we can re-render at a wider export width.
+	renderer := rendererForImage(state, img)
+	// Choose an export width: at least 1600px or current chart width, whichever is larger.
+	cw, _ := chartSize(state)
+	exportW := cw
+	if exportW < 1600 {
+		exportW = 1600
+	}
 	fs := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
 		if err != nil || wc == nil {
 			return
 		}
 		defer wc.Close()
-		_ = png.Encode(wc, img.Image)
+		if renderer != nil {
+			// Re-render at export width without affecting on-screen images.
+			prev := renderWidthOverride
+			renderWidthOverride = exportW
+			rendered := renderer(state)
+			renderWidthOverride = prev
+			if encErr := png.Encode(wc, rendered); encErr != nil {
+				dialog.ShowError(encErr, state.window)
+				return
+			}
+		} else {
+			// Fallback: encode the current on-screen image.
+			if encErr := png.Encode(wc, img.Image); encErr != nil {
+				dialog.ShowError(encErr, state.window)
+				return
+			}
+		}
+		// Show completion feedback
+		if u := wc.URI(); u != nil {
+			p := u.Path()
+			if strings.TrimSpace(p) == "" {
+				p = u.String()
+			}
+			dialog.ShowInformation("Export complete", fmt.Sprintf("Saved to:\n%s", p), state.window)
+		} else {
+			dialog.ShowInformation("Export complete", "Saved.", state.window)
+		}
 	}, state.window)
 	fs.SetFileName(defaultName)
+	fs.SetFilter(storage.NewExtensionFileFilter([]string{".png"}))
 	fs.Show()
 }
 
@@ -10545,238 +10600,254 @@ func exportAllChartsCombined(state *uiState) {
 	if state == nil || state.window == nil {
 		return
 	}
-	// Gather images in display order (match on-screen order)
+	// Build renderer list in display order (match on-screen order)
 	imgs := []image.Image{}
 	labels := []string{}
+	renderers := []func(*uiState) image.Image{}
 	// Setup timings first
 	if state.setupDNSImgCanvas != nil && state.setupDNSImgCanvas.Image != nil {
-		imgs = append(imgs, state.setupDNSImgCanvas.Image)
+		renderers = append(renderers, renderDNSLookupChart)
 		labels = append(labels, "DNS Lookup Time (ms)")
 	}
 	if state.setupConnImgCanvas != nil && state.setupConnImgCanvas.Image != nil {
-		imgs = append(imgs, state.setupConnImgCanvas.Image)
+		renderers = append(renderers, renderTCPConnectChart)
 		labels = append(labels, "TCP Connect Time (ms)")
 	}
 	if state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil {
-		imgs = append(imgs, state.setupTLSImgCanvas.Image)
+		renderers = append(renderers, renderTLSHandshakeChart)
 		labels = append(labels, "TLS Handshake Time (ms)")
 	}
 	// Then averages and the rest
 	// Transport/Protocol block (appears before Speed on-screen)
 	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolMixImgCanvas.Image)
+		renderers = append(renderers, renderHTTPProtocolMixChart)
 		labels = append(labels, "HTTP Protocol Mix (%)")
 	}
 	if state.protocolAvgSpeedImgCanvas != nil && state.protocolAvgSpeedImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolAvgSpeedImgCanvas.Image)
+		renderers = append(renderers, renderAvgSpeedByHTTPProtocolChart)
 		labels = append(labels, "Avg Speed by HTTP Protocol")
 	}
 	if state.protocolStallRateImgCanvas != nil && state.protocolStallRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolStallRateImgCanvas.Image)
+		renderers = append(renderers, renderStallRateByHTTPProtocolChart)
 		labels = append(labels, "Stall Rate by HTTP Protocol (%)")
 	}
 	if state.protocolStallShareImgCanvas != nil && state.protocolStallShareImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolStallShareImgCanvas.Image)
+		renderers = append(renderers, renderStallShareByHTTPProtocolChart)
 		labels = append(labels, "Stall Share by HTTP Protocol (%)")
 	}
 	if state.protocolPartialRateImgCanvas != nil && state.protocolPartialRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolPartialRateImgCanvas.Image)
+		renderers = append(renderers, renderPartialBodyRateByHTTPProtocolChart)
 		labels = append(labels, "Partial Body Rate by HTTP Protocol (%)")
 	}
 	if state.protocolPartialShareImgCanvas != nil && state.protocolPartialShareImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolPartialShareImgCanvas.Image)
+		renderers = append(renderers, renderPartialShareByHTTPProtocolChart)
 		labels = append(labels, "Partial Share by HTTP Protocol (%)")
 	}
 	if state.protocolErrorRateImgCanvas != nil && state.protocolErrorRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolErrorRateImgCanvas.Image)
+		renderers = append(renderers, renderErrorRateByHTTPProtocolChart)
 		labels = append(labels, "Error Rate by HTTP Protocol (%)")
 	}
 	if state.protocolErrorShareImgCanvas != nil && state.protocolErrorShareImgCanvas.Image != nil {
-		imgs = append(imgs, state.protocolErrorShareImgCanvas.Image)
+		renderers = append(renderers, renderErrorShareByHTTPProtocolChart)
 		labels = append(labels, "Error Share by HTTP Protocol (%)")
 	}
 	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil {
-		imgs = append(imgs, state.tlsVersionMixImgCanvas.Image)
+		renderers = append(renderers, renderTLSVersionMixChart)
 		labels = append(labels, "TLS Version Mix (%)")
 	}
 	if state.alpnMixImgCanvas != nil && state.alpnMixImgCanvas.Image != nil {
-		imgs = append(imgs, state.alpnMixImgCanvas.Image)
+		renderers = append(renderers, renderALPNMixChart)
 		labels = append(labels, "ALPN Mix (%)")
 	}
 	if state.chunkedRateImgCanvas != nil && state.chunkedRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.chunkedRateImgCanvas.Image)
+		renderers = append(renderers, renderChunkedTransferRateChart)
 		labels = append(labels, "Chunked Transfer Rate (%)")
 	}
 
 	// Averages and remaining charts
 	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil {
-		imgs = append(imgs, state.speedImgCanvas.Image)
+		renderers = append(renderers, renderSpeedChart)
 		labels = append(labels, "Speed")
 	}
 	// Self-test baseline
 	if state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil {
-		imgs = append(imgs, state.selfTestImgCanvas.Image)
+		renderers = append(renderers, renderSelfTestChart)
 		labels = append(labels, "Local Throughput Self-Test")
 	}
 	// Speed percentiles panels
 	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil {
-		imgs = append(imgs, state.pctlOverallImg.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") })
 		labels = append(labels, "Speed Percentiles – Overall")
 	}
 	if state.pctlIPv4Img != nil && state.pctlIPv4Img.Visible() && state.pctlIPv4Img.Image != nil {
-		imgs = append(imgs, state.pctlIPv4Img.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv4") })
 		labels = append(labels, "Speed Percentiles – IPv4")
 	}
 	if state.pctlIPv6Img != nil && state.pctlIPv6Img.Visible() && state.pctlIPv6Img.Image != nil {
-		imgs = append(imgs, state.pctlIPv6Img.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv6") })
 		labels = append(labels, "Speed Percentiles – IPv6")
 	}
 	// TTFB average
 	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil {
-		imgs = append(imgs, state.ttfbImgCanvas.Image)
+		renderers = append(renderers, renderTTFBChart)
 		labels = append(labels, "TTFB (Avg)")
 	}
 	// TTFB percentiles panels based on visibility
 	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil {
-		imgs = append(imgs, state.tpctlOverallImg.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "overall") })
 		labels = append(labels, "TTFB Percentiles – Overall")
 	}
 	if state.tpctlIPv4Img != nil && state.tpctlIPv4Img.Visible() && state.tpctlIPv4Img.Image != nil {
-		imgs = append(imgs, state.tpctlIPv4Img.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv4") })
 		labels = append(labels, "TTFB Percentiles – IPv4")
 	}
 	if state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Visible() && state.tpctlIPv6Img.Image != nil {
-		imgs = append(imgs, state.tpctlIPv6Img.Image)
+		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv6") })
 		labels = append(labels, "TTFB Percentiles – IPv6")
 	}
 	// New diagnostics in on-screen order
 	if state.tailRatioImgCanvas != nil && state.tailRatioImgCanvas.Image != nil {
-		imgs = append(imgs, state.tailRatioImgCanvas.Image)
+		renderers = append(renderers, renderTailHeavinessChart)
 		labels = append(labels, "Tail Heaviness (P99/P50 Speed)")
 	}
 	if state.ttfbTailRatioImgCanvas != nil && state.ttfbTailRatioImgCanvas.Image != nil {
-		imgs = append(imgs, state.ttfbTailRatioImgCanvas.Image)
+		renderers = append(renderers, renderTTFBTailHeavinessChart)
 		labels = append(labels, "TTFB Tail Heaviness (P95/P50)")
 	}
 	if state.speedDeltaImgCanvas != nil && state.speedDeltaImgCanvas.Image != nil {
-		imgs = append(imgs, state.speedDeltaImgCanvas.Image)
+		renderers = append(renderers, renderFamilyDeltaSpeedChart)
 		labels = append(labels, "Family Delta – Speed (IPv6−IPv4)")
 	}
 	if state.ttfbDeltaImgCanvas != nil && state.ttfbDeltaImgCanvas.Image != nil {
-		imgs = append(imgs, state.ttfbDeltaImgCanvas.Image)
+		renderers = append(renderers, renderFamilyDeltaTTFBChart)
 		labels = append(labels, "Family Delta – TTFB (IPv4−IPv6)")
 	}
 	if state.speedDeltaPctImgCanvas != nil && state.speedDeltaPctImgCanvas.Image != nil {
-		imgs = append(imgs, state.speedDeltaPctImgCanvas.Image)
+		renderers = append(renderers, renderFamilyDeltaSpeedPctChart)
 		labels = append(labels, "Family Delta – Speed % (IPv6 vs IPv4)")
 	}
 	if state.ttfbDeltaPctImgCanvas != nil && state.ttfbDeltaPctImgCanvas.Image != nil {
-		imgs = append(imgs, state.ttfbDeltaPctImgCanvas.Image)
+		renderers = append(renderers, renderFamilyDeltaTTFBPctChart)
 		labels = append(labels, "Family Delta – TTFB % (IPv6 vs IPv4)")
 	}
 	if state.slaSpeedImgCanvas != nil && state.slaSpeedImgCanvas.Image != nil {
-		imgs = append(imgs, state.slaSpeedImgCanvas.Image)
+		renderers = append(renderers, renderSLASpeedChart)
 		labels = append(labels, "SLA Compliance – Speed")
 	}
 	if state.slaTTFBImgCanvas != nil && state.slaTTFBImgCanvas.Image != nil {
-		imgs = append(imgs, state.slaTTFBImgCanvas.Image)
+		renderers = append(renderers, renderSLATTFBChart)
 		labels = append(labels, "SLA Compliance – TTFB")
 	}
 	if state.slaSpeedDeltaImgCanvas != nil && state.slaSpeedDeltaImgCanvas.Image != nil {
-		imgs = append(imgs, state.slaSpeedDeltaImgCanvas.Image)
+		renderers = append(renderers, renderSLASpeedDeltaChart)
 		labels = append(labels, "SLA Compliance Delta – Speed (pp)")
 	}
 	if state.slaTTFBDeltaImgCanvas != nil && state.slaTTFBDeltaImgCanvas.Image != nil {
-		imgs = append(imgs, state.slaTTFBDeltaImgCanvas.Image)
+		renderers = append(renderers, renderSLATTFBDeltaChart)
 		labels = append(labels, "SLA Compliance Delta – TTFB (pp)")
 	}
 	// TTFB P95−P50 Gap
 	if state.tpctlP95GapImgCanvas != nil && state.tpctlP95GapImgCanvas.Image != nil {
-		imgs = append(imgs, state.tpctlP95GapImgCanvas.Image)
+		renderers = append(renderers, renderTTFBP95GapChart)
 		labels = append(labels, "TTFB P95−P50 Gap")
 	}
 	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil {
-		imgs = append(imgs, state.errImgCanvas.Image)
+		renderers = append(renderers, renderErrorRateChart)
 		labels = append(labels, "Error Rate")
 	}
 	if state.jitterImgCanvas != nil && state.jitterImgCanvas.Image != nil {
-		imgs = append(imgs, state.jitterImgCanvas.Image)
+		renderers = append(renderers, renderJitterChart)
 		labels = append(labels, "Jitter")
 	}
 	if state.covImgCanvas != nil && state.covImgCanvas.Image != nil {
-		imgs = append(imgs, state.covImgCanvas.Image)
+		renderers = append(renderers, renderCoVChart)
 		labels = append(labels, "Coefficient of Variation")
 	}
 	// Stability & quality
 	if state.lowSpeedImgCanvas != nil && state.lowSpeedImgCanvas.Image != nil {
-		imgs = append(imgs, state.lowSpeedImgCanvas.Image)
+		renderers = append(renderers, renderLowSpeedShareChart)
 		labels = append(labels, "Low-Speed Time Share")
 	}
 	if state.stallRateImgCanvas != nil && state.stallRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.stallRateImgCanvas.Image)
+		renderers = append(renderers, renderStallRateChart)
 		labels = append(labels, "Stall Rate")
 	}
 	if state.pretffbBlock != nil && state.pretffbBlock.Visible() && state.pretffbImgCanvas != nil && state.pretffbImgCanvas.Image != nil {
-		imgs = append(imgs, state.pretffbImgCanvas.Image)
+		renderers = append(renderers, renderPreTTFBStallRateChart)
 		labels = append(labels, "Pre‑TTFB Stall Rate")
 	}
 	if state.partialBodyImgCanvas != nil && state.partialBodyImgCanvas.Image != nil {
-		imgs = append(imgs, state.partialBodyImgCanvas.Image)
+		renderers = append(renderers, renderPartialBodyRateChart)
 		labels = append(labels, "Partial Body Rate")
 	}
 	if state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil {
-		imgs = append(imgs, state.stallCountImgCanvas.Image)
+		renderers = append(renderers, renderStallCountChart)
 		labels = append(labels, "Stalled Requests Count")
 	}
 	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
-		imgs = append(imgs, state.stallTimeImgCanvas.Image)
+		renderers = append(renderers, renderStallTimeChart)
 		labels = append(labels, "Avg Stall Time")
 	}
 	// Transient/Micro‑Stalls
 	if state.microStallRateImgCanvas != nil && state.microStallRateImgCanvas.Image != nil {
-		imgs = append(imgs, state.microStallRateImgCanvas.Image)
+		renderers = append(renderers, renderMicroStallRateChart)
 		labels = append(labels, "Transient Stall Rate (%)")
 	}
 	if state.microStallTimeImgCanvas != nil && state.microStallTimeImgCanvas.Image != nil {
-		imgs = append(imgs, state.microStallTimeImgCanvas.Image)
+		renderers = append(renderers, renderMicroStallTimeChart)
 		labels = append(labels, "Avg Transient Stall Time (ms)")
 	}
 	if state.microStallCountImgCanvas != nil && state.microStallCountImgCanvas.Image != nil {
-		imgs = append(imgs, state.microStallCountImgCanvas.Image)
+		renderers = append(renderers, renderMicroStallCountChart)
 		labels = append(labels, "Avg Transient Stall Count")
 	}
 	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
-		imgs = append(imgs, state.cacheImgCanvas.Image)
+		renderers = append(renderers, renderCacheHitRateChart)
 		labels = append(labels, "Cache Hit Rate")
 	}
 	if state.enterpriseProxyImgCanvas != nil && state.enterpriseProxyImgCanvas.Image != nil {
-		imgs = append(imgs, state.enterpriseProxyImgCanvas.Image)
+		renderers = append(renderers, renderEnterpriseProxyRateChart)
 		labels = append(labels, "Enterprise Proxy Rate")
 	}
 	if state.serverProxyImgCanvas != nil && state.serverProxyImgCanvas.Image != nil {
-		imgs = append(imgs, state.serverProxyImgCanvas.Image)
+		renderers = append(renderers, renderServerProxyRateChart)
 		labels = append(labels, "Server-side Proxy Rate")
 	}
 	if state.warmCacheImgCanvas != nil && state.warmCacheImgCanvas.Image != nil {
-		imgs = append(imgs, state.warmCacheImgCanvas.Image)
+		renderers = append(renderers, renderWarmCacheSuspectedRateChart)
 		labels = append(labels, "Warm Cache Suspected Rate")
 	}
 	if state.plCountImgCanvas != nil && state.plCountImgCanvas.Image != nil {
-		imgs = append(imgs, state.plCountImgCanvas.Image)
+		renderers = append(renderers, renderPlateauCountChart)
 		labels = append(labels, "Plateau Count")
 	}
 	if state.plLongestImgCanvas != nil && state.plLongestImgCanvas.Image != nil {
-		imgs = append(imgs, state.plLongestImgCanvas.Image)
+		renderers = append(renderers, renderPlateauLongestChart)
 		labels = append(labels, "Longest Plateau (ms)")
 	}
 	if state.plStableImgCanvas != nil && state.plStableImgCanvas.Image != nil {
-		imgs = append(imgs, state.plStableImgCanvas.Image)
+		renderers = append(renderers, renderPlateauStableChart)
 		labels = append(labels, "Plateau Stable Rate")
 	}
-	if len(imgs) == 0 {
+	if len(renderers) == 0 {
 		dialog.ShowInformation("Export All", "No charts to export.", state.window)
 		return
 	}
+	// Re-render all charts at a wider, consistent export width.
+	cw, _ := chartSize(state)
+	exportW := cw
+	if exportW < 1600 {
+		exportW = 1600
+	}
+	prev := renderWidthOverride
+	renderWidthOverride = exportW
+	for _, fn := range renderers {
+		if fn == nil {
+			continue
+		}
+		imgs = append(imgs, fn(state))
+	}
+	renderWidthOverride = prev
 	// Determine max width, total height
 	maxW := 0
 	totalH := 0
@@ -10847,6 +10918,121 @@ func exportAllChartsCombined(state *uiState) {
 	// Suggest PNG file type
 	fs.SetFilter(storage.NewExtensionFileFilter([]string{".png"}))
 	fs.Show()
+}
+
+// rendererForImage returns a function that re-renders the given chart image at the current state,
+// or nil if we don't know how to re-render it. Used by single-image export to render wider PNGs.
+func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Image {
+	if state == nil || img == nil {
+		return nil
+	}
+	switch img {
+	case state.speedImgCanvas:
+		return renderSpeedChart
+	case state.ttfbImgCanvas:
+		return renderTTFBChart
+	case state.pctlOverallImg:
+		return func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") }
+	case state.pctlIPv4Img:
+		return func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv4") }
+	case state.pctlIPv6Img:
+		return func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv6") }
+	case state.tpctlOverallImg:
+		return func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "overall") }
+	case state.tpctlIPv4Img:
+		return func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv4") }
+	case state.tpctlIPv6Img:
+		return func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv6") }
+	case state.tailRatioImgCanvas:
+		return renderTailHeavinessChart
+	case state.ttfbTailRatioImgCanvas:
+		return renderTTFBTailHeavinessChart
+	case state.speedDeltaImgCanvas:
+		return renderFamilyDeltaSpeedChart
+	case state.ttfbDeltaImgCanvas:
+		return renderFamilyDeltaTTFBChart
+	case state.speedDeltaPctImgCanvas:
+		return renderFamilyDeltaSpeedPctChart
+	case state.ttfbDeltaPctImgCanvas:
+		return renderFamilyDeltaTTFBPctChart
+	case state.slaSpeedImgCanvas:
+		return renderSLASpeedChart
+	case state.slaTTFBImgCanvas:
+		return renderSLATTFBChart
+	case state.slaSpeedDeltaImgCanvas:
+		return renderSLASpeedDeltaChart
+	case state.slaTTFBDeltaImgCanvas:
+		return renderSLATTFBDeltaChart
+	case state.tpctlP95GapImgCanvas:
+		return renderTTFBP95GapChart
+	case state.errImgCanvas:
+		return renderErrorRateChart
+	case state.jitterImgCanvas:
+		return renderJitterChart
+	case state.covImgCanvas:
+		return renderCoVChart
+	case state.plCountImgCanvas:
+		return renderPlateauCountChart
+	case state.plLongestImgCanvas:
+		return renderPlateauLongestChart
+	case state.plStableImgCanvas:
+		return renderPlateauStableChart
+	case state.cacheImgCanvas:
+		return renderCacheHitRateChart
+	case state.enterpriseProxyImgCanvas:
+		return renderEnterpriseProxyRateChart
+	case state.serverProxyImgCanvas:
+		return renderServerProxyRateChart
+	case state.warmCacheImgCanvas:
+		return renderWarmCacheSuspectedRateChart
+	case state.lowSpeedImgCanvas:
+		return renderLowSpeedShareChart
+	case state.stallRateImgCanvas:
+		return renderStallRateChart
+	case state.pretffbImgCanvas:
+		return renderPreTTFBStallRateChart
+	case state.stallTimeImgCanvas:
+		return renderStallTimeChart
+	case state.stallCountImgCanvas:
+		return renderStallCountChart
+	case state.microStallRateImgCanvas:
+		return renderMicroStallRateChart
+	case state.microStallTimeImgCanvas:
+		return renderMicroStallTimeChart
+	case state.microStallCountImgCanvas:
+		return renderMicroStallCountChart
+	case state.setupDNSImgCanvas:
+		return renderDNSLookupChart
+	case state.setupConnImgCanvas:
+		return renderTCPConnectChart
+	case state.setupTLSImgCanvas:
+		return renderTLSHandshakeChart
+	case state.protocolMixImgCanvas:
+		return renderHTTPProtocolMixChart
+	case state.protocolAvgSpeedImgCanvas:
+		return renderAvgSpeedByHTTPProtocolChart
+	case state.protocolStallRateImgCanvas:
+		return renderStallRateByHTTPProtocolChart
+	case state.protocolErrorRateImgCanvas:
+		return renderErrorRateByHTTPProtocolChart
+	case state.protocolErrorShareImgCanvas:
+		return renderErrorShareByHTTPProtocolChart
+	case state.protocolStallShareImgCanvas:
+		return renderStallShareByHTTPProtocolChart
+	case state.protocolPartialRateImgCanvas:
+		return renderPartialBodyRateByHTTPProtocolChart
+	case state.protocolPartialShareImgCanvas:
+		return renderPartialShareByHTTPProtocolChart
+	case state.tlsVersionMixImgCanvas:
+		return renderTLSVersionMixChart
+	case state.alpnMixImgCanvas:
+		return renderALPNMixChart
+	case state.chunkedRateImgCanvas:
+		return renderChunkedTransferRateChart
+	case state.selfTestImgCanvas:
+		return renderSelfTestChart
+	}
+	return nil
 }
 
 // exportChartsForSelectedBatch restricts rendering/export to the currently selected batch's RunTag
