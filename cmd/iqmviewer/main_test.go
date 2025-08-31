@@ -192,6 +192,8 @@ func TestCrosshair_SnapsAndShowsCorrectContent_TimeMode(t *testing.T) {
 	}
 }
 
+// (removed: batch include/exclude filter tests)
+
 // Render a simple index-mode chart with red dot markers, and detect actual plotted X centers.
 func renderIndexModeDotsImage(n, w, h int) (image.Image, []string, error) {
 	xs := make([]float64, n)

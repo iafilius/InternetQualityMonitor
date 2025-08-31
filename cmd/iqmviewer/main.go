@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -25,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -88,6 +90,366 @@ func pointStyle(col drawing.Color) chart.Style {
 	}
 }
 
+// emptyDash returns s or "-" if s is empty after trimming
+func emptyDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+// topK returns the key with the highest value from a map[string]float64.
+// If the map is empty, it returns ("", 0, false).
+func topK(m map[string]float64) (string, float64, bool) {
+	var (
+		kBest string
+		vBest float64
+		ok    bool
+	)
+	for k, v := range m {
+		if !ok || v > vBest {
+			kBest, vBest, ok = k, v, true
+		}
+	}
+	return kBest, vBest, ok
+}
+
+// buildDiagnosticsText generates a multi-section human-readable diagnostics string for a batch.
+func buildDiagnosticsText(bs analysis.BatchSummary) string {
+	// Majority TLS and ALPN where available
+	tlsVer, _, _ := topK(bs.TLSVersionRatePct)
+	alpn, _, _ := topK(bs.ALPNRatePct)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("RunTag: %s\n\n", bs.RunTag))
+	// Network identifiers
+	b.WriteString(fmt.Sprintf("DNS server: %s\nDNS network: %s\n\n", emptyDash(bs.DNSServer), emptyDash(bs.DNSServerNetwork)))
+	b.WriteString(fmt.Sprintf("Next hop: %s\nSource: %s\n\n", emptyDash(bs.NextHop), emptyDash(bs.NextHopSource)))
+
+	// Setup timing means
+	if bs.AvgDNSMs > 0 || bs.AvgConnectMs > 0 || bs.AvgTLSHandshake > 0 {
+		b.WriteString("Setup timing (means)\n")
+		if bs.AvgDNSMs > 0 {
+			b.WriteString(fmt.Sprintf("  DNS: %.1f ms\n", bs.AvgDNSMs))
+		}
+		if bs.AvgConnectMs > 0 {
+			b.WriteString(fmt.Sprintf("  TCP connect: %.1f ms\n", bs.AvgConnectMs))
+		}
+		if bs.AvgTLSHandshake > 0 {
+			b.WriteString(fmt.Sprintf("  TLS handshake: %.1f ms\n", bs.AvgTLSHandshake))
+		}
+		b.WriteString("\n")
+	}
+
+	// Local baseline
+	if bs.LocalSelfTestKbps > 0 {
+		b.WriteString(fmt.Sprintf("Local self-test baseline: %.0f kbps\n\n", bs.LocalSelfTestKbps))
+	}
+
+	// Proxy hints
+	if bs.ClassifiedProxyRatePct > 0 || bs.EnvProxyUsageRatePct > 0 || len(bs.ProxyNameRatePct) > 0 {
+		b.WriteString("Proxy hints\n")
+		if bs.ClassifiedProxyRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Classified proxy rate: %.1f%%\n", bs.ClassifiedProxyRatePct))
+		}
+		if bs.EnvProxyUsageRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Env proxy usage: %.1f%%\n", bs.EnvProxyUsageRatePct))
+		}
+		if len(bs.ProxyNameRatePct) > 0 {
+			name, pct, _ := topK(bs.ProxyNameRatePct)
+			if name != "" {
+				b.WriteString(fmt.Sprintf("  Top proxy: %s (%.1f%% of lines)\n", name, pct))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// TLS/ALPN majority
+	if tlsVer != "" || alpn != "" {
+		b.WriteString("Negotiated protocols\n")
+		if tlsVer != "" {
+			b.WriteString("  TLS: " + tlsVer + "\n")
+		}
+		if alpn != "" {
+			b.WriteString("  ALPN: " + alpn + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Cache/path indicators
+	if bs.CacheHitRatePct > 0 || bs.WarmCacheSuspectedRatePct > 0 || bs.PrefetchSuspectedRatePct > 0 || bs.IPMismatchRatePct > 0 || bs.ConnReuseRatePct > 0 || bs.ChunkedRatePct > 0 {
+		b.WriteString("Cache/path indicators\n")
+		if bs.CacheHitRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Cache hit rate: %.1f%%\n", bs.CacheHitRatePct))
+		}
+		if bs.WarmCacheSuspectedRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Warm-cache suspected: %.1f%%\n", bs.WarmCacheSuspectedRatePct))
+		}
+		if bs.PrefetchSuspectedRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Prefetch suspected: %.1f%%\n", bs.PrefetchSuspectedRatePct))
+		}
+		if bs.IPMismatchRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  IP mismatch rate: %.1f%%\n", bs.IPMismatchRatePct))
+		}
+		if bs.ConnReuseRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Connection reuse rate: %.1f%%\n", bs.ConnReuseRatePct))
+		}
+		if bs.ChunkedRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Chunked transfer: %.1f%%\n", bs.ChunkedRatePct))
+		}
+		b.WriteString("\n")
+	}
+
+	// Stability highlights
+	if bs.StallRatePct > 0 || bs.MicroStallRatePct > 0 || bs.LowSpeedTimeSharePct > 0 || bs.PreTTFBStallRatePct > 0 {
+		b.WriteString("Stability highlights\n")
+		if bs.StallRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Stall rate: %.1f%%\n", bs.StallRatePct))
+		}
+		if bs.MicroStallRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Transient stall rate: %.1f%%\n", bs.MicroStallRatePct))
+		}
+		if bs.LowSpeedTimeSharePct > 0 {
+			b.WriteString(fmt.Sprintf("  Low-speed time share: %.1f%%\n", bs.LowSpeedTimeSharePct))
+		}
+		if bs.PreTTFBStallRatePct > 0 {
+			b.WriteString(fmt.Sprintf("  Pre-TTFB stall rate: %.1f%%\n", bs.PreTTFBStallRatePct))
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
+func buildDiagnosticsJSON(bs analysis.BatchSummary) string {
+	payload := map[string]any{
+		"run_tag":            bs.RunTag,
+		"dns_server":         emptyDash(bs.DNSServer),
+		"dns_network":        emptyDash(bs.DNSServerNetwork),
+		"next_hop":           emptyDash(bs.NextHop),
+		"next_hop_source":    emptyDash(bs.NextHopSource),
+		"avg_dns_ms":         bs.AvgDNSMs,
+		"avg_connect_ms":     bs.AvgConnectMs,
+		"avg_tls_ms":         bs.AvgTLSHandshake,
+		"baseline_kbps":      bs.LocalSelfTestKbps,
+		"stall_rate_pct":     bs.StallRatePct,
+		"transient_rate_pct": bs.MicroStallRatePct,
+		"low_speed_pct":      bs.LowSpeedTimeSharePct,
+		"pretffb_rate_pct":   bs.PreTTFBStallRatePct,
+		"cache_hit_pct":      bs.CacheHitRatePct,
+		"warm_cache_pct":     bs.WarmCacheSuspectedRatePct,
+		"prefetch_pct":       bs.PrefetchSuspectedRatePct,
+		"ip_mismatch_pct":    bs.IPMismatchRatePct,
+		"conn_reuse_pct":     bs.ConnReuseRatePct,
+		"chunked_pct":        bs.ChunkedRatePct,
+	}
+	if k, _, ok := topK(bs.TLSVersionRatePct); ok {
+		payload["tls_majority"] = k
+	}
+	if k, _, ok := topK(bs.ALPNRatePct); ok {
+		payload["alpn_majority"] = k
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+// buildTracerouteCommand returns an OS-appropriate traceroute command string for the next hop.
+// Returns empty string if next hop is unavailable.
+func buildTracerouteCommand(bs analysis.BatchSummary) string {
+	target := getNetworkTarget(bs)
+	if target == "" {
+		return ""
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return "tracert " + target
+	case "darwin", "linux":
+		return "traceroute -n " + target
+	default:
+		return "traceroute -n " + target
+	}
+}
+
+// buildPingCommand returns an OS-appropriate ping command for next hop.
+func buildPingCommand(bs analysis.BatchSummary) string {
+	target := getNetworkTarget(bs)
+	if target == "" {
+		return ""
+	}
+	switch runtime.GOOS {
+	case "windows":
+		// Windows ping sends 4 by default; keep it simple
+		return "ping " + target
+	case "darwin", "linux":
+		// Send a small, finite count; -n for numeric output where applicable (not in ping)
+		return "ping -c 10 " + target
+	default:
+		return "ping -c 10 " + target
+	}
+}
+
+// buildMTRCommand returns an mtr command if mtr is available and OS supports it; empty otherwise.
+func buildMTRCommand(bs analysis.BatchSummary) string {
+	target := getNetworkTarget(bs)
+	if target == "" {
+		return ""
+	}
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	// detect mtr in PATH or common Homebrew/MacPorts locations
+	if _, err := exec.LookPath("mtr"); err != nil {
+		candidates := []string{
+			"/opt/homebrew/sbin/mtr",
+			"/usr/local/sbin/mtr",
+			"/opt/homebrew/bin/mtr",
+			"/usr/local/bin/mtr",
+			"/opt/local/sbin/mtr",
+			"/opt/local/bin/mtr",
+		}
+		found := false
+		for _, p := range candidates {
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ""
+		}
+	}
+	// Use report mode (-r), wide (-w), show both AS and IP when available (-z may require root on some systems), count 20, numeric (-n)
+	return "mtr -rwn -c 20 " + target
+}
+
+// getNetworkTarget chooses the best target for network tools: NextHop, then DNSServer.
+func getNetworkTarget(bs analysis.BatchSummary) string {
+	if v := strings.TrimSpace(bs.NextHop); v != "" && v != "-" {
+		return v
+	}
+	if v := strings.TrimSpace(bs.DNSServer); v != "" && v != "-" {
+		return v
+	}
+	return ""
+}
+
+// buildCurlVerboseCommand builds a copyable curl -v command against a representative URL when available.
+// Includes -k only if TLS errors are suspected is out-of-scope; we keep it simple and omit -k.
+// Adds --http2 or --http1.1 hints based on majority protocol when unambiguous.
+func buildCurlVerboseCommand(bs analysis.BatchSummary) string {
+	u := strings.TrimSpace(bs.SampleURL)
+	if u == "" || u == "-" {
+		return ""
+	}
+	// Decide HTTP version hint from protocol mix if clearly dominant
+	hv := ""
+	if len(bs.HTTPProtocolRatePct) > 0 {
+		proto, pct, ok := topK(bs.HTTPProtocolRatePct)
+		if ok && pct >= 60 { // add a hint only when a clear majority
+			lp := strings.ToLower(proto)
+			if strings.Contains(lp, "http/2") || strings.Contains(lp, "h2") {
+				hv = " --http2"
+			} else if strings.Contains(lp, "http/1.1") || strings.Contains(lp, "http/1") {
+				hv = " --http1.1"
+			} else if strings.Contains(lp, "http/3") || strings.Contains(lp, "h3") {
+				// curl uses --http3 for QUIC
+				hv = " --http3"
+			}
+		}
+	}
+	return "curl -v" + hv + " " + u
+}
+
+// showDiagnosticsForSelection opens the diagnostics dialog for the currently selected table data row.
+func showDiagnosticsForSelection(state *uiState) {
+	// The table selection is transient; call handler with the last clicked row when present.
+	// We don’t keep a persistent selected index, so pick the first data row when available.
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		dialog.ShowInformation("Diagnostics", "No data rows available.", state.window)
+		return
+	}
+	// Prefer the last selected row; fall back to the first row if needed
+	rix := state.selectedRow
+	if rix < 0 || rix >= len(rows) {
+		rix = 0
+	}
+	bs := rows[rix]
+	// Build content with copy helpers, including traceroute command when available
+	text := buildDiagnosticsText(bs)
+	jsonStr := buildDiagnosticsJSON(bs)
+	traceCmd := buildTracerouteCommand(bs)
+	pingCmd := buildPingCommand(bs)
+	mtrCmd := buildMTRCommand(bs)
+	curlCmd := buildCurlVerboseCommand(bs)
+	rt := widget.NewRichTextWithText(text)
+	rt.Wrapping = fyne.TextWrapWord
+	scroll := container.NewVScroll(rt)
+	copyBtn := widget.NewButton("Copy", func() { state.app.Clipboard().SetContent(text) })
+	copyJSONBtn := widget.NewButton("Copy JSON", func() { state.app.Clipboard().SetContent(jsonStr) })
+	copyTraceBtn := widget.NewButton("Copy traceroute", func() { state.app.Clipboard().SetContent(traceCmd) })
+	if traceCmd == "" {
+		copyTraceBtn.Disable()
+	}
+	copyPingBtn := widget.NewButton("Copy ping", func() { state.app.Clipboard().SetContent(pingCmd) })
+	if pingCmd == "" {
+		copyPingBtn.Disable()
+	}
+	copyMTRBtn := widget.NewButton("Copy mtr", func() { state.app.Clipboard().SetContent(mtrCmd) })
+	if mtrCmd == "" {
+		copyMTRBtn.Disable()
+	}
+	copyCurlBtn := widget.NewButton("Copy curl -v", func() { state.app.Clipboard().SetContent(curlCmd) })
+	if curlCmd == "" {
+		copyCurlBtn.Disable()
+	}
+	content := container.NewBorder(nil, container.NewHBox(copyBtn, copyJSONBtn, copyTraceBtn, copyPingBtn, copyMTRBtn, copyCurlBtn), nil, nil, scroll)
+	d := dialog.NewCustom("Diagnostics", "Close", content, state.window)
+	d.Resize(fyne.NewSize(560, 460))
+	d.Show()
+}
+
+// tableCellLabel is a table cell that supports right-click (secondary tap) to show a context menu.
+type tableCellLabel struct {
+	widget.Label
+	row   int
+	col   int
+	state *uiState
+}
+
+func newTableCellLabel(state *uiState) *tableCellLabel {
+	l := &tableCellLabel{state: state}
+	l.ExtendBaseWidget(l)
+	return l
+}
+
+// TappedSecondary opens a context menu for Diagnostics on data rows.
+func (l *tableCellLabel) TappedSecondary(pe *fyne.PointEvent) {
+	if l.state == nil {
+		return
+	}
+	if l.row <= 0 { // ignore header row
+		return
+	}
+	// Set the selected row and show menu
+	l.state.selectedRow = l.row - 1
+	diagItem := fyne.NewMenuItem("Diagnostics…", func() { showDiagnosticsForSelection(l.state) })
+	// Disable when out of range
+	menu := fyne.NewMenu("", diagItem)
+	w := l.state.window
+	if w == nil {
+		return
+	}
+	// Prefer absolute position when available
+	pos := pe.AbsolutePosition
+	pm := widget.NewPopUpMenu(menu, w.Canvas())
+	pm.ShowAtPosition(pos)
+}
+
 type uiState struct {
 	app      fyne.App
 	window   fyne.Window
@@ -112,6 +474,12 @@ type uiState struct {
 	// widgets
 	table        *widget.Table
 	batchesLabel *widget.Label
+	selectedRow  int // last selected data-row index (0-based within filtered rows)
+	// selection persistence
+	selectedRunTag string // last selected RunTag (persisted in preferences)
+	// one-shot export scoping: when set, rendering uses only this RunTag
+	// (removed: one-shot export scoping)
+
 	// situation selector (populated after data load)
 	situationSelect    *widget.Select
 	speedImgCanvas     *canvas.Image
@@ -263,8 +631,6 @@ type uiState struct {
 	tpctlOverallOverlay *crosshairOverlay
 	tpctlIPv4Overlay    *crosshairOverlay
 	tpctlIPv6Overlay    *crosshairOverlay
-	lastSpeedPopup      *widget.PopUp
-	lastTTFBPopup       *widget.PopUp
 
 	// chart hints toggle
 	showHints bool
@@ -598,10 +964,12 @@ func main() {
 			return rows, 9
 		},
 		// template object
-		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func() fyne.CanvasObject { return newTableCellLabel(state) },
 		// cell update
 		func(id widget.TableCellID, o fyne.CanvasObject) {
-			lbl := o.(*widget.Label)
+			lbl := o.(*tableCellLabel)
+			lbl.row = id.Row
+			lbl.col = id.Col
 			rows := filteredSummaries(state)
 			// columns: 0 RunTag, 1 Lines, 2 AvgSpeed, 3 AvgTTFB, 4 Errors, 5 v4 speed, 6 v4 ttfb, 7 v6 speed, 8 v6 ttfb
 			if id.Row == 0 {
@@ -683,6 +1051,22 @@ func main() {
 	state.table.SetColumnWidth(6, 110)
 	state.table.SetColumnWidth(7, 120)
 	state.table.SetColumnWidth(8, 110)
+
+	// open diagnostics details on row selection (single-click for now)
+	state.table.OnSelected = func(id widget.TableCellID) {
+		if id.Row == 0 {
+			return
+		}
+		rows := filteredSummaries(state)
+		rix := id.Row - 1
+		if rix < 0 || rix >= len(rows) {
+			return
+		}
+		state.selectedRow = rix
+		// Remember selection for this session only (used to restore after reloads)
+		state.selectedRunTag = rows[rix].RunTag
+		showDiagnosticsForSelection(state)
+	}
 
 	// chart placeholders
 	// Compute initial chart size to give all images full application width from the start
@@ -1649,10 +2033,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	platSubItem := fyne.NewMenuItem("Plateaus", nil)
 	platSubItem.ChildMenu = platSub
 
-	fileMenu := fyne.NewMenu("File",
-		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
-		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
-		fyne.NewMenuItemSeparator(),
+	// Group all export submenus under a single "Export Charts" submenu
+	exportChartsSub := fyne.NewMenu("Export Charts",
 		setupSubItem,
 		transportSubItem,
 		avgSubItem,
@@ -1665,6 +2047,15 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		platSubItem,
 		fyne.NewMenuItemSeparator(),
 		exportAll,
+	)
+	exportChartsItem := fyne.NewMenuItem("Export Charts", nil)
+	exportChartsItem.ChildMenu = exportChartsSub
+
+	fileMenu := fyne.NewMenu("File",
+		fyne.NewMenuItem("Open…", func() { openFileDialog(state, fileLabel) }),
+		fyne.NewMenuItem("Reload", func() { loadAll(state, fileLabel) }),
+		fyne.NewMenuItemSeparator(),
+		exportChartsItem,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
@@ -2407,6 +2798,17 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 		savePrefs(state)
 	}
 	if state.table != nil {
+		// Restore previously selected RunTag for this session if available
+		if tag := strings.TrimSpace(state.selectedRunTag); tag != "" {
+			rows := filteredSummaries(state)
+			state.selectedRow = 0
+			for i, r := range rows {
+				if r.RunTag == tag {
+					state.selectedRow = i
+					break
+				}
+			}
+		}
 		state.table.Refresh()
 	}
 	updateColumnVisibility(state)
@@ -2458,22 +2860,26 @@ func filteredSummaries(state *uiState) []analysis.BatchSummary {
 	if state == nil {
 		return nil
 	}
-	if state.situation == "" || strings.EqualFold(state.situation, "All") {
-		return state.summaries
-	}
-	out := make([]analysis.BatchSummary, 0, len(state.summaries))
-	for _, s := range state.summaries {
-		// Prefer the situation embedded in the summary, fall back to the mapping if needed
-		if strings.EqualFold(s.Situation, state.situation) {
-			out = append(out, s)
-			continue
+	// If a one-shot export override is set, restrict to that RunTag regardless of situation filter
+	// Start with situation filter (if any)
+	base := state.summaries
+	if !(state.situation == "" || strings.EqualFold(state.situation, "All")) {
+		tmp := make([]analysis.BatchSummary, 0, len(state.summaries))
+		for _, s := range state.summaries {
+			if strings.EqualFold(s.Situation, state.situation) {
+				tmp = append(tmp, s)
+				continue
+			}
+			if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
+				tmp = append(tmp, s)
+			}
 		}
-		if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
-			out = append(out, s)
-		}
+		base = tmp
 	}
-	return out
+	return base
 }
+
+// (removed: batch filter label/update controls)
 
 func redrawCharts(state *uiState) {
 	// Speed chart
@@ -10161,11 +10567,30 @@ func exportAllChartsCombined(state *uiState) {
 			return
 		}
 		defer wc.Close()
-		_ = png.Encode(wc, out)
+		if encErr := png.Encode(wc, out); encErr != nil {
+			dialog.ShowError(encErr, state.window)
+			return
+		}
+		// Show completion feedback with destination path if available
+		if u := wc.URI(); u != nil {
+			p := u.Path()
+			if strings.TrimSpace(p) == "" {
+				p = u.String()
+			}
+			dialog.ShowInformation("Export complete", fmt.Sprintf("Saved to:\n%s", p), state.window)
+		} else {
+			dialog.ShowInformation("Export complete", "Saved.", state.window)
+		}
 	}, state.window)
 	fs.SetFileName("iqm_all_charts.png")
+	// Suggest PNG file type
+	fs.SetFilter(storage.NewExtensionFileFilter([]string{".png"}))
 	fs.Show()
 }
+
+// exportChartsForSelectedBatch restricts rendering/export to the currently selected batch's RunTag
+// by setting a one-shot override and invoking the combined export routine. It restores state after.
+// (removed: exportChartsForSelectedBatch)
 
 // recent files helpers
 func recentFiles(state *uiState) []string {

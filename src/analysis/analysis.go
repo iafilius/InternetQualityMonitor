@@ -72,6 +72,13 @@ type BatchSummary struct {
 	AvgP99TTFBMs float64 `json:"avg_ttfb_p99_ms,omitempty"`
 	// Local environment baseline (from meta; reflects latest seen in the batch)
 	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
+	// Network diagnostics (best-effort): reflect the most recent non-empty values within the batch
+	DNSServer        string `json:"dns_server,omitempty"`
+	DNSServerNetwork string `json:"dns_server_network,omitempty"`
+	NextHop          string `json:"next_hop,omitempty"`
+	NextHopSource    string `json:"next_hop_source,omitempty"`
+	// Representative URL from this batch (most recent non-empty); useful for tooling like curl copy in the viewer
+	SampleURL string `json:"sample_url,omitempty"`
 	// Raw count fields (not serialized) retained to enable higher-level aggregation (overall across batches)
 	CacheHitLines           int `json:"-"`
 	ProxySuspectedLines     int `json:"-"`
@@ -206,6 +213,7 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		timestamp          time.Time
 		speed, ttfb, bytes float64
 		firstRTT           float64
+		url                string
 		p50, p90, p95, p99 float64
 		plateauCount       float64
 		longestPlateau     float64
@@ -244,6 +252,11 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		dnsLegacyMs float64 // raw legacy dns_time_ms if present
 		connMs      float64
 		tlsMs       float64
+		// network diagnostics
+		dnsServer  string
+		dnsNet     string
+		nextHop    string
+		nextHopSrc string
 	}
 	// Phase 1: scan the JSONL results file and extract only the typed envelope lines
 	// matching the requested schemaVersion. Each valid line becomes a lightweight
@@ -303,7 +316,7 @@ readLoop:
 				ts = parsed
 			}
 		}
-		bs := rec{runTag: env.Meta.RunTag, situation: env.Meta.Situation, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps}
+		bs := rec{runTag: env.Meta.RunTag, situation: env.Meta.Situation, ipFamily: sr.IPFamily, proxyName: sr.ProxyName, usingEnvProxy: sr.UsingEnvProxy, timestamp: ts, speed: sr.TransferSpeedKbps, ttfb: float64(sr.TraceTTFBMs), bytes: float64(sr.TransferSizeBytes), firstRTT: sr.FirstRTTGoodputKbps, url: sr.URL}
 		// capture meta self-test baseline if present
 		if env.Meta.LocalSelfTestKbps > 0 {
 			bs.localSelfKbps = env.Meta.LocalSelfTestKbps
@@ -445,6 +458,11 @@ readLoop:
 		bs.tlsVer = sr.TLSVersion
 		bs.alpn = sr.ALPN
 		bs.chunked = sr.Chunked
+		// network diagnostics
+		bs.dnsServer = strings.TrimSpace(sr.DNSServer)
+		bs.dnsNet = strings.TrimSpace(sr.DNSServerNetwork)
+		bs.nextHop = strings.TrimSpace(sr.NextHop)
+		bs.nextHopSrc = strings.TrimSpace(sr.NextHopSource)
 		records = append(records, bs)
 	}
 	if len(records) == 0 {
@@ -946,6 +964,35 @@ readLoop:
 		if !minTS.IsZero() && !maxTS.IsZero() && maxTS.After(minTS) {
 			durationMs = maxTS.Sub(minTS).Milliseconds()
 		}
+		// Capture most recent non-empty diagnostics across the batch
+		latestDNS, latestDNSNet := "", ""
+		latestHop, latestHopSrc := "", ""
+		latestURL := ""
+		for i := len(recs) - 1; i >= 0; i-- {
+			r := recs[i]
+			if latestDNS == "" && r.dnsServer != "" {
+				latestDNS = r.dnsServer
+			}
+			if latestDNSNet == "" && r.dnsNet != "" {
+				latestDNSNet = r.dnsNet
+			}
+			if latestHop == "" && r.nextHop != "" {
+				latestHop = r.nextHop
+			}
+			if latestHopSrc == "" && r.nextHopSrc != "" {
+				latestHopSrc = r.nextHopSrc
+			}
+			// capture a representative URL for tooling
+			if latestURL == "" && strings.TrimSpace(r.url) != "" {
+				latestURL = r.url
+			}
+			if latestDNS != "" && latestDNSNet != "" && latestHop != "" && latestHopSrc != "" {
+				// keep scanning further for URL if still empty
+				if latestURL != "" {
+					break
+				}
+			}
+		}
 		summary := BatchSummary{
 			RunTag: tag, Lines: recCount,
 			AvgSpeed: avg(speeds), MedianSpeed: median(speeds), AvgTTFB: avg(ttfbs), AvgBytes: avg(bytesVals), ErrorLines: errorLines,
@@ -1012,6 +1059,12 @@ readLoop:
 				return float64(preTTFBCntAll) / float64(recCount) * 100
 			}(),
 		}
+		// Attach diagnostics
+		summary.DNSServer = latestDNS
+		summary.DNSServerNetwork = latestDNSNet
+		summary.NextHop = latestHop
+		summary.NextHopSource = latestHopSrc
+		summary.SampleURL = latestURL
 		// Set LocalSelfTestKbps from the most recent non-zero value in this batch
 		for i := len(recs) - 1; i >= 0; i-- {
 			if recs[i].localSelfKbps > 0 {

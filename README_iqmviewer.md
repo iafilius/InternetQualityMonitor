@@ -24,9 +24,66 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - Speed units: kbps, kBps, Mbps, MBps, Gbps, GBps (select under Settings → Speed Unit).
 - Crosshair overlay: theme-aware, follows mouse, label with semi-transparent background; hidden outside drawn area.
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
+	- After saving, the viewer confirms the export destination.
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
+
+### Diagnostics dialog
+- How to open:
+	- Click a row in the Batches table to open a per‑batch Diagnostics dialog.
+	- Or right‑click a table row and choose “Diagnostics…”.
+ 
+- What you’ll see:
+	- DNS server and network used (best‑effort), plus network Next Hop and its source (macOS/Linux).
+	- Local Throughput Self‑Test baseline (kbps) captured by the viewer on startup.
+	- Proxy hints: whether a proxy was used, any proxy names seen, and env‑proxy usage rate.
+	- TLS/ALPN majority: the most common negotiated TLS version and ALPN (e.g., h2, http/1.1).
+	- Cache and path indicators: cache‑hit rate, warm‑cache suspected rate, prefetch suspected rate, IP mismatch rate, connection reuse rate, and chunked transfer rate.
+	- Stability highlights: stall rate, transient (micro‑stall) rate, Low‑Speed Time Share, Pre‑TTFB stall rate.
+	- Setup timing averages: DNS, TCP connect, and TLS handshake means for the batch.
+- Notes:
+	- Values are batch aggregates or “latest observed” within the batch where applicable (e.g., DNS server, Next Hop).
+	- DNS/Next‑hop are best‑effort: availability depends on OS and resolver/routing introspection.
+	- Empty/unknown values are shown as “–”.
+ - Copy options:
+	- Copy copies the human‑readable diagnostics text.
+	- Copy JSON copies a compact JSON blob with key diagnostics for sharing or filing issues.
+	- Copy traceroute copies an OS‑appropriate traceroute command prefilled with the batch’s next hop (disabled if next hop is unknown).
+	- Copy ping copies a quick ping command targeting the next hop (disabled if next hop is unknown).
+	- Copy mtr copies an mtr report command when available on macOS/Linux (disabled if mtr is not installed or on Windows).
+	- Copy curl -v copies a verbose curl command for a representative URL from the batch; adds an HTTP version hint when a clear majority is detected.
+ - Readability: The dialog uses theme‑aware rich text for better contrast and wrapping.
+
+#### Capture a Diagnostics screenshot or GIF
+You can add a visual of the Diagnostics dialog to your docs or bug reports:
+
+Option A (macOS UI):
+- Open the viewer and click a batch row to open Diagnostics.
+- Press Shift+Cmd+5 → choose “Capture Selected Window” → click the Diagnostics window.
+- Save as `docs/images/diagnostics_dialog.png` so it shows up alongside other screenshots.
+
+Option B (macOS CLI, window snapshot):
+```
+screencapture -w docs/images/diagnostics_dialog.png
+```
+Then click the Diagnostics window to capture it.
+
+#### Troubleshoot quickly with traceroute
+
+Use the “Copy traceroute” button in the Diagnostics dialog to copy a ready‑to‑paste command that targets the detected next hop.
+- On macOS/Linux it uses `traceroute -n <nextHop>`.
+- On Windows it uses `tracert <nextHop>`.
+Paste into your terminal to inspect the path. If the button is disabled, the next hop wasn’t detected for that batch.
+
+You can also use “Copy ping” for a quick reachability/latency probe, and “Copy mtr” (if installed) for a continuous path quality report.
+
+Option C (short video/GIF):
+- Record a short screen capture (Control Center → Screen Recording or QuickTime → New Screen Recording), then convert to GIF with your preferred tool (e.g., gifski). Keep it brief (<5s) for readability.
+
+Notes:
+- If you record a GIF, keep the capture region tight around the dialog to reduce size.
+- Theme follows the viewer’s current theme (Auto/Dark/Light).
 
 ### Settings menu
 - Crosshair, Hints, Rolling Mean overlay, and ±1σ Band toggles
@@ -38,6 +95,10 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - Batches…: set recent N batches
 - Speed Unit: kbps, kBps, Mbps, MBps, Gbps, GBps
 - Screenshot Theme: Auto, Dark, Light
+
+### Selection
+- Selection is session-only: the last clicked batch (RunTag) is remembered only within the current session and restored after reloads during the session. It is not persisted across app restarts.
+- Right‑click on a table row opens the Diagnostics dialog for that batch.
 
 ### Layout and sizing
 - Full-width charts: images use a stretch fill to visually occupy the entire available width.

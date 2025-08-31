@@ -43,6 +43,8 @@ Details (PlantUML source):
 
 - Per line: ResultEnvelope { meta, site_result } (schema_version=3)
 - Key telemetry: DNS/TCP/TLS/TTFB, tls_handshake_ms, speeds and samples, stall signals, protocol (HTTPProtocol), TLSVersion, ALPN, headers (Age/X‑Cache/Via), proxy heuristics, IPv4/IPv6 family
+- DNS server used (best‑effort): dns_server, dns_server_network
+- Network next hop (best‑effort): next_hop, next_hop_source (iproute2/route)
 - Batches keyed by meta.run_tag; summaries computed per batch (Overall/IPv4/IPv6)
 
 See README_analysis.md for the full list of derived metrics.

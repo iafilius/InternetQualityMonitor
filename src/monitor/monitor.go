@@ -16,6 +16,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -90,6 +91,8 @@ type SiteResult struct {
 	ResolvedIP        string   `json:"resolved_ip,omitempty"`
 	IPIndex           int      `json:"ip_index,omitempty"`
 	IPFamily          string   `json:"ip_family,omitempty"`
+	DNSServer         string   `json:"dns_server,omitempty"`         // e.g., 192.0.2.53:53 (best-effort)
+	DNSServerNetwork  string   `json:"dns_server_network,omitempty"` // e.g., udp, tcp (best-effort)
 	ASNNumber         uint     `json:"asn_number,omitempty"`
 	ASNOrg            string   `json:"asn_org,omitempty"`
 	RemoteIP          string   `json:"remote_ip,omitempty"`
@@ -140,6 +143,9 @@ type SiteResult struct {
 	// back to the first resolved DNS IP (if any) so downstream analysis can still reason about
 	// suspected origin location / ASN. It is best-effort and may be empty.
 	OriginIPCandidate string `json:"origin_ip_candidate,omitempty"`
+	// Layer-3 next hop (best-effort). On macOS/Linux, derived from routing table; empty when unknown or unsupported.
+	NextHop       string `json:"next_hop,omitempty"`
+	NextHopSource string `json:"next_hop_source,omitempty"` // e.g., iproute2, route, unknown
 	// TLS certificate subject / issuer (leaf). Included only when captured for potential
 	// corporate proxy MITM detection (Zscaler, Bluecoat, Palo Alto, Netskope, Forcepoint, etc.).
 	TLSCertSubject string `json:"tls_cert_subject,omitempty"`
@@ -431,6 +437,14 @@ func CloseResultWriter() {
 	}
 }
 
+// context keys used to propagate ancillary info like DNS server used during resolution.
+type ctxKey string
+
+const (
+	ctxDNSAddrKey ctxKey = "dns_addr"
+	ctxDNSNetKey  ctxKey = "dns_net"
+)
+
 // MonitorSite performs the measurement and writes a JSONL line via writeResult.
 func MonitorSite(site types.Site) {
 	parsed, err := url.Parse(site.URL)
@@ -464,7 +478,18 @@ func MonitorSite(site types.Site) {
 		dnsCtx, dnsCancel = context.WithTimeout(context.Background(), dnsTimeoutDefault)
 		defer dnsCancel()
 	}
-	addrs, derr := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+	// Use a custom resolver to capture which DNS server was dialed (best-effort).
+	var usedDNSServer, usedDNSServerNet string
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			usedDNSServerNet = network
+			usedDNSServer = address
+			d := &net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, network, address)
+		},
+	}
+	addrs, derr := resolver.LookupIPAddr(dnsCtx, host)
 	if derr != nil {
 		err = derr
 	} else {
@@ -519,7 +544,10 @@ func MonitorSite(site types.Site) {
 			Warnf("[%s] site timeout reached after %s (aborting remaining IPs)", site.Name, time.Since(startSite))
 			return
 		}
-		monitorOneIP(ctx, site, ipAddr, idx, dnsIPs, dnsTime)
+		// attach DNS server info into context for downstream recording
+		ctxWithDNS := context.WithValue(ctx, ctxDNSAddrKey, usedDNSServer)
+		ctxWithDNS = context.WithValue(ctxWithDNS, ctxDNSNetKey, usedDNSServerNet)
+		monitorOneIP(ctxWithDNS, site, ipAddr, idx, dnsIPs, dnsTime)
 	}
 }
 
@@ -580,6 +608,17 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	var start time.Time
 	// Begin migration to typed SiteResult: maintain legacy map for rich metrics while introducing sr.
 	sr := &SiteResult{Name: site.Name, URL: site.URL, IP: ipStr, CountryConfigured: site.Country, DNSIPs: dnsIPs, DNSTimeMs: dnsTime.Milliseconds(), ResolvedIP: ipStr, IPIndex: idx}
+	// Populate DNS server info from context (best-effort)
+	if v := ctx.Value(ctxDNSAddrKey); v != nil {
+		if s, ok := v.(string); ok {
+			sr.DNSServer = s
+		}
+	}
+	if v := ctx.Value(ctxDNSNetKey); v != nil {
+		if s, ok := v.(string); ok {
+			sr.DNSServerNetwork = s
+		}
+	}
 	if envProxyURL != "" {
 		sr.EnvProxyURL = envProxyURL
 	} else if envBypass {
@@ -764,6 +803,11 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 					if sr.OriginIPCandidate == "" && len(sr.DNSIPs) > 0 {
 						sr.OriginIPCandidate = sr.DNSIPs[0]
 					}
+					// Best-effort next hop detection
+					if nh, src := detectNextHop(remoteIP); nh != "" {
+						sr.NextHop = nh
+						sr.NextHopSource = src
+					}
 				}
 				return c, e
 			},
@@ -791,6 +835,11 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				// direct path: origin candidate == remote IP
 				if sr.OriginIPCandidate == "" {
 					sr.OriginIPCandidate = remoteIP
+				}
+				// Best-effort next hop detection
+				if nh, src := detectNextHop(remoteIP); nh != "" {
+					sr.NextHop = nh
+					sr.NextHopSource = src
 				}
 			}
 			return c, e
@@ -1730,14 +1779,74 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	} else if sr.ContentLengthMismatch {
 		statusLabel = "incomplete"
 	}
-	var extra string
-	extra = formatPercentOf(transferBytes, sr.ContentLengthHeader)
+	extra := formatPercentOf(transferBytes, sr.ContentLengthHeader)
 	finalLine := fmt.Sprintf("[%s %s] %s head=%d sec_get=%d bytes=%d%s time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, statusLabel, headStatus, secStatus, transferBytes, extra, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
 	if statusLabel == "done" {
 		Infof(finalLine)
 	} else {
 		// escalate visibility for abnormal end states
 		Warnf(finalLine)
+	}
+}
+
+// detectNextHop returns the next-hop IP for the given destination IP using platform-specific tooling.
+// On Linux uses `ip route get <dest>`, on macOS uses `route -n get <dest>`.
+// Returns empty string if not determinable.
+func detectNextHop(destIP string) (string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	switch runtime.GOOS {
+	case "linux":
+		// ip route get <dest>
+		out, err := exec.CommandContext(ctx, "ip", "route", "get", destIP).CombinedOutput()
+		if err != nil {
+			return "", ""
+		}
+		// Example: "<dest> via 192.0.2.1 dev eth0 src 192.0.2.10 ..."
+		fields := strings.Fields(string(out))
+		for i := 0; i < len(fields); i++ {
+			if fields[i] == "via" && i+1 < len(fields) {
+				return fields[i+1], "iproute2"
+			}
+		}
+		return "", "iproute2"
+	case "darwin":
+		// route -n get <dest>
+		out, err := exec.CommandContext(ctx, "route", "-n", "get", destIP).CombinedOutput()
+		if err != nil {
+			return "", ""
+		}
+		// Look for line: gateway: x.x.x.x
+		lines := strings.Split(string(out), "\n")
+		for _, ln := range lines {
+			ln = strings.TrimSpace(ln)
+			if strings.HasPrefix(ln, "gateway:") {
+				parts := strings.Fields(ln)
+				if len(parts) >= 2 {
+					return parts[1], "route"
+				}
+			}
+		}
+		return "", "route"
+	case "windows":
+		// Prefer PowerShell Get-NetRoute which can query a specific destination prefix.
+		// Try IPv4 /32 first, then IPv6 /128.
+		psCmd := `(Get-NetRoute -DestinationPrefix '` + destIP + `/32' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1).NextHop`
+		out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd).CombinedOutput()
+		nh := strings.TrimSpace(string(out))
+		if err == nil && nh != "" {
+			return nh, "Get-NetRoute"
+		}
+		// IPv6 attempt
+		psCmd6 := `(Get-NetRoute -DestinationPrefix '` + destIP + `/128' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1).NextHop`
+		out6, err6 := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd6).CombinedOutput()
+		nh6 := strings.TrimSpace(string(out6))
+		if err6 == nil && nh6 != "" {
+			return nh6, "Get-NetRoute"
+		}
+		return "", "Get-NetRoute"
+	default:
+		return "", ""
 	}
 }
 

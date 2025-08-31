@@ -3,14 +3,6 @@
 All notable changes to this project are documented here. Dates use YYYY‑MM‑DD.
 
 ## [Unreleased]
-- Viewer: Rolling overlays with independent toggles — Rolling Mean (μ) and translucent ±1σ band; single legend entry “Rolling μ±1σ (N)”; window N persisted (default 7).
-- Viewer: Stability & quality suite — Low‑Speed Time Share (%), Stall Rate (%), Avg Stall Time (ms), and Stalled Requests Count (derived) with dedicated export item.
-- Viewer: Transient/micro‑stalls — new charts for Transient Stall Rate (%), Avg Transient Stall Time (ms), Avg Transient Stall Count; individual exports, included in combined export and headless screenshots; default micro‑stall gap threshold 500 ms.
-- Viewer: Situation watermark embedded in all exports; chart titles kept clean; export order mirrors on‑screen order.
-- Viewer: Percentiles re‑organized — Speed Percentiles under Avg Speed; TTFB Percentiles under Avg TTFB.
-- Viewer: Preferences persist Situation, axis modes, speed unit, crosshair, SLA thresholds, Low‑Speed Threshold, Rolling Window, overlays toggles.
-- Analysis: Added jitter, coefficient of variation, plateau metrics (count/longest/stability), tail heaviness, TTFB P95−P50 gap, IPv6↔IPv4 deltas (abs/%), SLA compliance and deltas, proxy/cache/warm‑cache indicators.
-- Analysis: Safer rendering ranges and single‑point padding to avoid panics/blank charts.
  - Viewer (Protocols): Added companion “Share by HTTP Protocol (%)” charts for Errors, Stalls, and Partials alongside the existing per‑protocol “Rate …” charts; inline help clarified “Rates vs Shares”; README updated and headless screenshots regenerated (error/stall/partial share images).
  - Monitor (Logging): Fixed printf artifact that rendered “%!o(MISSING)” when logging preformatted lines with literal percent signs; logger now avoids double‑formatting when no args are provided.
  - Docs: `README_iqmreader.md` now includes a brief “Log lines explained” section covering status labels (done/aborted/incomplete) and the “(x% of y)” snippet when Content‑Length is known.
@@ -23,15 +15,15 @@ All notable changes to this project are documented here. Dates use YYYY‑MM‑D
  - Scripts: `update_screenshots.sh` updated to accept THEME/VARIANTS/BATCHES/LOW_SPEED_KBPS and pass through to the viewer.
  - Docs: `README.md` and `README_iqmviewer.md` updated with theme selection, headless flags, examples, and defaults.
  - Viewer (Crosshair): Fixed X‑axis drift and ensured the crosshair snaps to the nearest data point in both index/time modes. Implemented image‑based calibration (gridline detection) to align overlay with the actual go‑chart plot geometry; falls back to math mapping if calibration isn’t available. Added robust image‑based tests that assert snapping and tooltip content always reflect the snapped X.
+ - Viewer (Diagnostics): Brighter, theme‑aware Diagnostics dialog using rich text with scrolling; added Copy (text) and Copy JSON buttons; new menu item “Show Diagnostics (selected row)” with Cmd/Ctrl+D shortcut; remembers last selected row.
+	- Viewer (Diagnostics): Right‑click context menu on table rows adds “Diagnostics…” for mouse users.
+		- Viewer (Diagnostics): Added “Copy traceroute”, “Copy ping”, and “Copy mtr” buttons. Traceroute uses `traceroute -n` on macOS/Linux or `tracert` on Windows. Ping uses a finite count on Unix. mtr appears only if installed and on macOS/Linux.
+		- Viewer (Diagnostics): Added “Copy curl -v” which builds a verbose curl command for a representative URL from the batch, adding an HTTP version hint when there’s a clear majority. Analysis now propagates a SampleURL per batch to enable this.
+ - Viewer (Export): Combined export stitches all visible charts into one PNG and now shows a confirmation after saving.
+ - Viewer (UX): Selection is session‑only (restored during the session, not persisted across restarts). Context menu includes Diagnostics only.
 
-## [3.0.0] – 2025‑08‑18
-- Major analysis pipeline refactor into `analysis.AnalyzeRecentResultsFull*`.
-- Per‑IP‑family batch summaries (IPv4/IPv6) and console output improvements.
 - Alert JSON schema v3 with thresholds and per‑batch/overall sections.
-
-## [2.6.0] – 2025‑07‑xx
 - High‑resolution speed fallback for sub‑ms transfers.
-- Expanded proxy/CDN/enterprise proxy detection and environment proxy usage tracking.
 
 ## [2.5.0] – 2025‑06‑xx
 - First RTT goodput, plateaus, jitter, slope, CoV, and richer insights.
