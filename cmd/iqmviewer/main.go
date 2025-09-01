@@ -3175,23 +3175,14 @@ func redrawCharts(state *uiState) {
 		state.speedMedianImgCanvas.Image = blank(w, h)
 		state.speedMedianImgCanvas.Refresh()
 	}
-	if state.showMin || state.showMax {
-		if img := renderSpeedChartVariant(state, "minmax"); img != nil && state.speedMinMaxImgCanvas != nil {
-			state.speedMinMaxImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
-			state.speedMinMaxImgCanvas.Refresh()
-			if state.speedMinMaxOverlay != nil {
-				state.speedMinMaxOverlay.Refresh()
-			}
-		}
-	} else if state.speedMinMaxImgCanvas != nil {
-		w, h := chartSize(state)
-		img := blank(w, h)
-		// Draw a small centered hint so it's clear why there's no data when Min/Max are hidden
-		img = drawHint(img, "Min/Max hidden. Enable in Settings → Averages visibility.")
+	if img := renderSpeedChartVariant(state, "minmax"); img != nil && state.speedMinMaxImgCanvas != nil {
 		state.speedMinMaxImgCanvas.Image = img
+		_, chh := chartSize(state)
+		state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 		state.speedMinMaxImgCanvas.Refresh()
+		if state.speedMinMaxOverlay != nil {
+			state.speedMinMaxOverlay.Refresh()
+		}
 	}
 	// TTFB split charts
 	if state.showAvg {
@@ -3224,22 +3215,14 @@ func redrawCharts(state *uiState) {
 		state.ttfbMedianImgCanvas.Image = blank(w, h)
 		state.ttfbMedianImgCanvas.Refresh()
 	}
-	if state.showMin || state.showMax {
-		if img := renderTTFBChartVariant(state, "minmax"); img != nil && state.ttfbMinMaxImgCanvas != nil {
-			state.ttfbMinMaxImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.ttfbMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
-			state.ttfbMinMaxImgCanvas.Refresh()
-			if state.ttfbMinMaxOverlay != nil {
-				state.ttfbMinMaxOverlay.Refresh()
-			}
-		}
-	} else if state.ttfbMinMaxImgCanvas != nil {
-		w, h := chartSize(state)
-		img := blank(w, h)
-		img = drawHint(img, "Min/Max hidden. Enable in Settings → Averages visibility.")
+	if img := renderTTFBChartVariant(state, "minmax"); img != nil && state.ttfbMinMaxImgCanvas != nil {
 		state.ttfbMinMaxImgCanvas.Image = img
+		_, chh := chartSize(state)
+		state.ttfbMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 		state.ttfbMinMaxImgCanvas.Refresh()
+		if state.ttfbMinMaxOverlay != nil {
+			state.ttfbMinMaxOverlay.Refresh()
+		}
 	}
 	// Percentiles chart(s) stacked: Overall, IPv4, IPv6; visibility via checkboxes
 	// Local self-test chart (single series)
@@ -4297,7 +4280,7 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 	}
 
 	// Unified Y-axis behavior (gap; non-negative)
-	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -4404,26 +4387,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 		}, chart.ColorGreen)
 	}
 	// no IQR envelopes for this chart
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		if maxY > 100 {
-			maxY = 100
-		}
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
-		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	}
+	yAxisRange, yTicks := computeYAxisRangePercent(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -6469,12 +6433,17 @@ func computeYAxisRangeSigned(minY, maxY float64, useRelative bool) (chart.Range,
 	if !haveY {
 		return nil, nil
 	}
+	padPct := 0.04
 	if useRelative {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
 		nMin, nMax := niceAxisBounds(minY, maxY)
-		return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+		pad := (nMax - nMin) * padPct
+		if pad <= 0 {
+			pad = math.Max(1, nMax*padPct)
+		}
+		return &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}, niceTicks(nMin, nMax, 6)
 	}
 	nMin, nMax := niceAxisBounds(minY, maxY)
 	if nMin > 0 {
@@ -6483,7 +6452,32 @@ func computeYAxisRangeSigned(minY, maxY float64, useRelative bool) (chart.Range,
 	if nMax < 0 {
 		nMax = 0
 	}
-	return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+	// Add slight padding to avoid dots/bands touching the edges
+	pad := (nMax - nMin) * padPct
+	if pad <= 0 {
+		pad = math.Max(1, nMax*padPct)
+	}
+	return &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}, niceTicks(nMin, nMax, 6)
+}
+
+// computeYAxisRangePercent centralizes percent-axis behavior:
+// - In Relative mode, fit to data band with nice bounds and ticks
+// - In Absolute mode, clamp to [0,100] with fixed ticks
+func computeYAxisRangePercent(minY, maxY float64, useRelative bool) (chart.Range, []chart.Tick) {
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if !haveY {
+		return nil, nil
+	}
+	if useRelative {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+	}
+	// Absolute: fixed [0,100]
+	ticks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	return &chart.ContinuousRange{Min: 0, Max: 100}, ticks
 }
 
 // applyMedianOnlyAbsoluteOccupancyClamp enforces that in Absolute + median-only mode, when up to
@@ -9480,27 +9474,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 			return b.IPv6.PlateauStableRatePct
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		// clamp 0..100
-		if maxY < 1 {
-			maxY = 1
-		}
-		if maxY > 100 {
-			maxY = 100
-		}
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: 100}
-		yTicks = []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	}
+	yAxisRange, yTicks := computeYAxisRangePercent(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9899,7 +9873,8 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
+	// Signed percent delta: ensure zero included in Absolute mode
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
