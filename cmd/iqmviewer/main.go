@@ -843,25 +843,30 @@ func findScrollToCurrent(state *uiState) {
 	}
 	ref := state.chartRefs[idx]
 	if ref.section != nil {
-		// Approximate vertical offset by summing previous sections' heights
-		var offY float32
-		for i := 0; i < idx && i < len(state.chartRefs); i++ {
-			if state.chartRefs[i].section != nil {
-				h := state.chartRefs[i].section.MinSize().Height
-				offY += h + 8 // include separator/spacing estimate
-			}
+		// Prefer precise scrolling to the object if supported by the Scroll container
+		type scrollerWithObj interface{ ScrollTo(obj fyne.CanvasObject) }
+		if s, ok := any(state.chartsScroll).(scrollerWithObj); ok {
+			s.ScrollTo(ref.section)
+			return
 		}
-		// Try to use ScrollToOffset if available
-		type scroller interface{ ScrollToOffset(pos fyne.Position) }
-		if s, ok := any(state.chartsScroll).(scroller); ok {
-			s.ScrollToOffset(fyne.NewPos(0, offY))
-		} else {
-			// Fallback: crude heuristic based on position in list
-			if float64(idx) > float64(len(state.chartRefs))/2.0 {
-				state.chartsScroll.ScrollToBottom()
-			} else {
-				state.chartsScroll.ScrollToTop()
+		// Otherwise, compute offset from the current laid-out position of the section
+		// Position() is relative to the scroll content; use that to set the offset directly.
+		type scrollerWithOffset interface{ ScrollToOffset(pos fyne.Position) }
+		if s, ok := any(state.chartsScroll).(scrollerWithOffset); ok {
+			pos := ref.section.Position()
+			// Add a small negative margin to bring the section title near the top
+			offY := pos.Y - 6
+			if offY < 0 {
+				offY = 0
 			}
+			s.ScrollToOffset(fyne.NewPos(0, offY))
+			return
+		}
+		// Last resort: top/bottom heuristic
+		if float64(idx) > float64(len(state.chartRefs))/2.0 {
+			state.chartsScroll.ScrollToBottom()
+		} else {
+			state.chartsScroll.ScrollToTop()
 		}
 	}
 }
@@ -1639,6 +1644,10 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 	)
 
 	// charts column (hints are rendered inside chart images when enabled)
+	// Reset registry so Find reflects the current set/order of charts.
+	if state != nil {
+		state.chartRefs = state.chartRefs[:0]
+	}
 	// Requested order: DNS, TCP Connect, TLS Handshake at the top, then the rest.
 	helpPreTTFB := `Pre‑TTFB Stall Rate (%): fraction of requests canceled due to a pre‑TTFB stall (no first byte within stall timeout).\n- Requires monitor runs with --pre-ttfb-stall.\n- Useful to spot early server/network stalls before any response bytes.` + axesTip
 	// Build Pre‑TTFB section block separately so we can hide/show it dynamically
@@ -2911,7 +2920,20 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		themeSubItem,
 	)
 
-	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, settingsMenu)
+	// Find menu for quick navigation across charts
+	findMenu := fyne.NewMenu("Find",
+		fyne.NewMenuItem("Find…", func() {
+			if state.window != nil && state.findEntry != nil {
+				if canv := state.window.Canvas(); canv != nil {
+					canv.Focus(state.findEntry)
+				}
+			}
+		}),
+		fyne.NewMenuItem("Find Next", func() { findNext(state) }),
+		fyne.NewMenuItem("Find Previous", func() { findPrev(state) }),
+	)
+
+	mainMenu := fyne.NewMainMenu(fileMenu, recentMenu, settingsMenu, findMenu)
 	state.window.SetMainMenu(mainMenu)
 
 	canv := state.window.Canvas()
@@ -3357,6 +3379,9 @@ func redrawCharts(state *uiState) {
 				state.tailRatioOverlay.Refresh()
 			}
 		}
+
+		// After redrawing (and potentially changing/hiding sections), refresh the Find index list
+		updateFindMatches(state)
 	}
 	// TTFB Tail Heaviness (P95/P50)
 	ttrImg := renderTTFBTailHeavinessChart(state)
