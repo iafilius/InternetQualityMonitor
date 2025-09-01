@@ -288,6 +288,27 @@ func buildDiagnosticsText(bs analysis.BatchSummary, tolPct int) string {
 		b.WriteString("\n")
 	}
 
+	// Measurement quality (if present)
+	if bs.SampleCount > 0 || bs.CI95RelMoEPct > 0 || bs.RequiredSamplesFor10Pct95CI > 0 {
+		b.WriteString("Measurement quality\n")
+		if bs.SampleCount > 0 {
+			b.WriteString(fmt.Sprintf("  Intra-transfer samples: %d\n", bs.SampleCount))
+		}
+		if bs.CI95RelMoEPct > 0 {
+			passNote := ""
+			if bs.QualityGood {
+				passNote = ", PASS ≤10%"
+			} else {
+				passNote = ", FAIL >10%"
+			}
+			b.WriteString(fmt.Sprintf("  95%% CI relative MoE: %.1f%%%s\n", bs.CI95RelMoEPct, passNote))
+		}
+		if bs.RequiredSamplesFor10Pct95CI > 0 {
+			b.WriteString(fmt.Sprintf("  Required N for ≤10%% @95%% CI: %d\n", bs.RequiredSamplesFor10Pct95CI))
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 
@@ -329,6 +350,19 @@ func buildDiagnosticsJSON(bs analysis.BatchSummary, tolPct int) string {
 		"mem_free_bytes":       bs.MemFreeOrAvailable,
 		"disk_total_bytes":     bs.DiskRootTotalBytes,
 		"disk_free_bytes":      bs.DiskRootFreeBytes,
+	}
+	// Measurement quality
+	if bs.SampleCount > 0 {
+		payload["sample_count"] = bs.SampleCount
+	}
+	if bs.CI95RelMoEPct > 0 {
+		payload["ci95_rel_moe_pct"] = bs.CI95RelMoEPct
+	}
+	if bs.RequiredSamplesFor10Pct95CI > 0 {
+		payload["required_samples_for_10pct_95ci"] = bs.RequiredSamplesFor10Pct95CI
+	}
+	if bs.SampleCount > 0 || bs.CI95RelMoEPct > 0 || bs.RequiredSamplesFor10Pct95CI > 0 {
+		payload["quality_good"] = bs.QualityGood
 	}
 	if tolPct > 0 && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesObs) && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesErrPct) {
 		payload["calibration_tolerance_pct"] = tolPct
@@ -513,6 +547,9 @@ type tableCellLabel struct {
 	row   int
 	col   int
 	state *uiState
+	// hover tooltip for Qual column
+	tip      *widget.PopUp
+	tipLabel *widget.Label
 }
 
 func newTableCellLabel(state *uiState) *tableCellLabel {
@@ -544,6 +581,68 @@ func (l *tableCellLabel) TappedSecondary(pe *fyne.PointEvent) {
 	pm.ShowAtPosition(pos)
 }
 
+// Hover tooltip for Qual column (shows CI details)
+func (l *tableCellLabel) MouseIn(ev *desktop.MouseEvent) {
+	l.maybeShowQualTooltip(ev)
+}
+
+func (l *tableCellLabel) MouseMoved(ev *desktop.MouseEvent) {
+	// Reposition tooltip if visible
+	if l.tip != nil && l.tip.Visible() {
+		l.tip.ShowAtPosition(ev.AbsolutePosition)
+	} else {
+		l.maybeShowQualTooltip(ev)
+	}
+}
+
+func (l *tableCellLabel) MouseOut() {
+	if l.tip != nil {
+		l.tip.Hide()
+	}
+}
+
+func (l *tableCellLabel) maybeShowQualTooltip(ev *desktop.MouseEvent) {
+	if l == nil || l.state == nil || l.state.window == nil {
+		return
+	}
+	// Only for Qual column cells (exclude header)
+	if l.col != 9 || l.row <= 0 {
+		if l.tip != nil {
+			l.tip.Hide()
+		}
+		return
+	}
+	rows := filteredSummaries(l.state)
+	rix := l.row - 1
+	if rix < 0 || rix >= len(rows) {
+		return
+	}
+	bs := rows[rix]
+	var text string
+	if bs.SampleCount <= 0 {
+		text = "Measurement quality: unknown\nNo intra-transfer samples present."
+	} else {
+		status := "FAIL"
+		if bs.QualityGood {
+			status = "PASS"
+		}
+		text = fmt.Sprintf("Measurement quality: %s\nSamples: %d\n95%% CI rel MoE: %.1f%%\nReq samples for ≤10%% @95%%: %d",
+			status, bs.SampleCount, bs.CI95RelMoEPct, bs.RequiredSamplesFor10Pct95CI)
+	}
+	if l.tipLabel == nil {
+		l.tipLabel = widget.NewLabel(text)
+	} else {
+		l.tipLabel.SetText(text)
+	}
+	if l.tip == nil {
+		l.tip = widget.NewPopUp(l.tipLabel, l.state.window.Canvas())
+	}
+	l.tip.ShowAtPosition(ev.AbsolutePosition)
+}
+
+// Assert that tableCellLabel implements desktop.Hoverable
+var _ desktop.Hoverable = (*tableCellLabel)(nil)
+
 type uiState struct {
 	app      fyne.App
 	window   fyne.Window
@@ -564,6 +663,11 @@ type uiState struct {
 	showIPv4    bool
 	showIPv6    bool
 	// (removed: pctlFamily, pctlCompare)
+
+	// filter controls
+	showOnlyQualityGood bool // when enabled, only include batches with QualityGood=true
+	// table columns visibility
+	showQualColumn bool // show the Qual (quality_good) column in the table
 
 	// widgets
 	table        *widget.Table
@@ -1122,6 +1226,7 @@ func main() {
 		showMin:         false,
 		showMax:         false,
 		showIQR:         false,
+		showQualColumn:  true,
 	}
 	// Sensible corporate defaults for SLA thresholds
 	state.slaSpeedThresholdKbps = 10000 // 10 Mbps P50 speed target
@@ -1199,13 +1304,13 @@ func main() {
 
 	// Data table (batches overview)
 	state.table = widget.NewTable(
-		// size provider: 1 header row + data rows; 9 columns
+		// size provider: 1 header row + data rows; 10 columns (added Qual)
 		func() (int, int) {
 			rows := len(filteredSummaries(state)) + 1
 			if rows < 1 {
 				rows = 1
 			}
-			return rows, 9
+			return rows, 10
 		},
 		// template object
 		func() fyne.CanvasObject { return newTableCellLabel(state) },
@@ -1215,7 +1320,7 @@ func main() {
 			lbl.row = id.Row
 			lbl.col = id.Col
 			rows := filteredSummaries(state)
-			// columns: 0 RunTag, 1 Lines, 2 AvgSpeed, 3 AvgTTFB, 4 Errors, 5 v4 speed, 6 v4 ttfb, 7 v6 speed, 8 v6 ttfb
+			// columns: 0 RunTag, 1 Lines, 2 AvgSpeed, 3 AvgTTFB, 4 Errors, 5 v4 speed, 6 v4 ttfb, 7 v6 speed, 8 v6 ttfb, 9 Qual
 			if id.Row == 0 {
 				unitName, _ := speedUnitNameAndFactor(state.speedUnit)
 				switch id.Col {
@@ -1237,6 +1342,8 @@ func main() {
 					lbl.SetText("IPv6 Speed (" + unitName + ")")
 				case 8:
 					lbl.SetText("IPv6 TTFB (ms)")
+				case 9:
+					lbl.SetText("Qual")
 				}
 				return
 			}
@@ -1282,6 +1389,17 @@ func main() {
 				} else {
 					lbl.SetText("-")
 				}
+			case 9:
+				// Quality indicator: ✓ for quality_good; ✗ if known and not good; - if unknown
+				if bs.SampleCount > 0 {
+					if bs.QualityGood {
+						lbl.SetText("✓")
+					} else {
+						lbl.SetText("✗")
+					}
+				} else {
+					lbl.SetText("-")
+				}
 			}
 		},
 	)
@@ -1295,6 +1413,7 @@ func main() {
 	state.table.SetColumnWidth(6, 110)
 	state.table.SetColumnWidth(7, 120)
 	state.table.SetColumnWidth(8, 110)
+	state.table.SetColumnWidth(9, 60)
 
 	// open diagnostics details on row selection (single-click for now)
 	state.table.OnSelected = func(id widget.TableCellID) {
@@ -2728,6 +2847,54 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}()
 	})
 
+	// Quality filter toggle
+	qualityOnlyLabel := func() string {
+		if state.showOnlyQualityGood {
+			return "Only show quality‑good batches ✓"
+		}
+		return "Only show quality‑good batches"
+	}
+	qualityOnlyToggle := fyne.NewMenuItem(qualityOnlyLabel(), func() {
+		state.showOnlyQualityGood = !state.showOnlyQualityGood
+		savePrefs(state)
+		// Refresh table and charts to reflect filtered set
+		if state.table != nil {
+			state.table.Refresh()
+		}
+		redrawCharts(state)
+		// Rebuild menus to update checkmark
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+
+	// Qual column toggle
+	qualColLabel := func() string {
+		if state.showQualColumn {
+			return "Show Qual Column ✓"
+		}
+		return "Show Qual Column"
+	}
+	qualColToggle := fyne.NewMenuItem(qualColLabel(), func() {
+		state.showQualColumn = !state.showQualColumn
+		savePrefs(state)
+		// Apply column width
+		if state.table != nil {
+			if state.showQualColumn {
+				state.table.SetColumnWidth(9, 60)
+			} else {
+				state.table.SetColumnWidth(9, 0)
+			}
+			state.table.Refresh()
+		}
+		// Rebuild menus to update label
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			fyne.Do(func() { buildMenus(state, fileLabel) })
+		}()
+	})
+
 	// Metric visibility toggles (Avg/Median/Min/Max/IQR)
 	avgLabel := func() string {
 		if state.showAvg {
@@ -3064,6 +3231,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		rollingToggle,
 		bandToggle,
+		qualityOnlyToggle,
+		qualColToggle,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Calibration tolerance…", func() { openCalibTolDialog() }),
 		fyne.NewMenuItemSeparator(),
@@ -3315,6 +3484,16 @@ func filteredSummaries(state *uiState) []analysis.BatchSummary {
 				continue
 			}
 			if sit, ok := state.runTagSituation[s.RunTag]; ok && strings.EqualFold(sit, state.situation) {
+				tmp = append(tmp, s)
+			}
+		}
+		base = tmp
+	}
+	// Optionally filter to only quality-good batches
+	if state.showOnlyQualityGood {
+		tmp := make([]analysis.BatchSummary, 0, len(base))
+		for _, s := range base {
+			if s.QualityGood {
 				tmp = append(tmp, s)
 			}
 		}
@@ -11977,6 +12156,10 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showMin", state.showMin)
 	prefs.SetBool("showMax", state.showMax)
 	prefs.SetBool("showIQR", state.showIQR)
+	// Quality filter
+	prefs.SetBool("showOnlyQualityGood", state.showOnlyQualityGood)
+	// Table columns
+	prefs.SetBool("showQualColumn", state.showQualColumn)
 	// (removed: pctl prefs)
 	// Calibration tolerance
 	prefs.SetInt("calibTolerancePct", state.calibTolerancePct)
@@ -12072,6 +12255,10 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showMin = prefs.BoolWithFallback("showMin", state.showMin)
 	state.showMax = prefs.BoolWithFallback("showMax", state.showMax)
 	state.showIQR = prefs.BoolWithFallback("showIQR", state.showIQR)
+	// Quality filter
+	state.showOnlyQualityGood = prefs.BoolWithFallback("showOnlyQualityGood", state.showOnlyQualityGood)
+	// Table columns
+	state.showQualColumn = prefs.BoolWithFallback("showQualColumn", state.showQualColumn)
 	// (removed: pctl prefs)
 }
 
@@ -12122,6 +12309,12 @@ func updateColumnVisibility(state *uiState) {
 	} else {
 		state.table.SetColumnWidth(7, 0)
 		state.table.SetColumnWidth(8, 0)
+	}
+	// Qual column visibility
+	if state.showQualColumn {
+		state.table.SetColumnWidth(9, 60)
+	} else {
+		state.table.SetColumnWidth(9, 0)
 	}
 	state.table.Refresh()
 }

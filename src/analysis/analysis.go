@@ -97,6 +97,11 @@ type BatchSummary struct {
 	AvgMicroStallMs    float64 `json:"avg_micro_stall_ms,omitempty"`    // average total ms per line among lines with at least one micro-stall
 	// Optional: rate of requests aborted before the first byte due to pre-TTFB stall watchdog
 	PreTTFBStallRatePct float64 `json:"pretffb_stall_rate_pct,omitempty"`
+	// Measurement quality (unknown true speed) derived from intra-transfer samples (latest line in batch)
+	SampleCount                 int     `json:"sample_count,omitempty"`
+	CI95RelMoEPct               float64 `json:"ci95_rel_moe_pct,omitempty"`
+	RequiredSamplesFor10Pct95CI int     `json:"required_samples_for_10pct_95ci,omitempty"`
+	QualityGood                 bool    `json:"quality_good,omitempty"`
 	// TTFB percentiles (ms) computed per batch across lines
 	AvgP50TTFBMs float64 `json:"avg_ttfb_p50_ms,omitempty"`
 	AvgP90TTFBMs float64 `json:"avg_ttfb_p90_ms,omitempty"`
@@ -332,6 +337,12 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		connMs      float64
 		tlsMs       float64
 		// network diagnostics
+		// measurement quality (from SpeedAnalysis)
+		mqSampleCount int
+		mqCI95RelMoE  float64
+		mqReqN10Pct   int
+		mqGood        bool
+		// network diagnostics
 		dnsServer  string
 		dnsNet     string
 		nextHop    string
@@ -455,6 +466,19 @@ readLoop:
 			bs.p50 = sa.P50Kbps
 			if sa.P99Kbps > 0 {
 				bs.p99 = sa.P99Kbps
+			}
+			// measurement quality
+			if sa.SampleCount > 0 {
+				bs.mqSampleCount = sa.SampleCount
+			}
+			if sa.CI95RelMoEPct > 0 {
+				bs.mqCI95RelMoE = sa.CI95RelMoEPct
+			}
+			if sa.RequiredSamplesFor10Pct95CI > 0 {
+				bs.mqReqN10Pct = sa.RequiredSamplesFor10Pct95CI
+			}
+			if sa.QualityGood {
+				bs.mqGood = true
 			}
 			bs.plateauCount = float64(sa.PlateauCount)
 			bs.longestPlateau = float64(sa.LongestPlateauMs)
@@ -1258,6 +1282,13 @@ readLoop:
 				summary.LoadAvg1 = r.load1
 				summary.LoadAvg5 = r.load5
 				summary.LoadAvg15 = r.load15
+			}
+			// attach measurement quality (latest)
+			if r.mqSampleCount > 0 || r.mqCI95RelMoE > 0 || r.mqReqN10Pct > 0 || r.mqGood {
+				summary.SampleCount = r.mqSampleCount
+				summary.CI95RelMoEPct = r.mqCI95RelMoE
+				summary.RequiredSamplesFor10Pct95CI = r.mqReqN10Pct
+				summary.QualityGood = r.mqGood
 			}
 			if r.memTotal > 0 {
 				summary.MemTotalBytes = r.memTotal

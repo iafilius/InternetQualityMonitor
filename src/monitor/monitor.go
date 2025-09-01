@@ -238,6 +238,65 @@ func LocalMaxSpeedProbe(d time.Duration) (float64, error) {
 	return kbps, nil
 }
 
+// computeMeasurementQuality derives CI-based quality metrics from per-interval speeds.
+// It returns: sampleCount, ci95RelMoEPct, requiredSamplesFor10Pct95CI, qualityGood.
+// Guardrails:
+// - require at least 8 samples and >= 0.8s total duration to consider CI; else quality=false.
+// - MoE computed for the mean: 1.96 * (s/mean) / sqrt(n) expressed in percent.
+// - Required samples: ceil((1.96 * CV / 0.10)^2), where CV = s/mean (bounded to avoid inf when mean~0).
+func computeMeasurementQuality(samples []SpeedSample) (int, float64, int, bool) {
+	n := len(samples)
+	if n == 0 {
+		return 0, 0, 0, false
+	}
+	// duration from first to last sample time
+	durMs := int64(0)
+	if n > 1 {
+		durMs = samples[n-1].TimeMs - samples[0].TimeMs
+	}
+	// compute mean and stddev of speeds
+	var mean, ssd float64
+	for _, smp := range samples {
+		mean += smp.Speed
+	}
+	mean /= float64(n)
+	if mean <= 0 {
+		// degenerate; cannot compute relative metrics
+		return n, 0, 0, false
+	}
+	for _, smp := range samples {
+		d := smp.Speed - mean
+		ssd += d * d
+	}
+	std := 0.0
+	if n > 1 {
+		std = math.Sqrt(ssd / float64(n))
+	}
+	cv := 0.0
+	if mean > 0 {
+		cv = std / mean
+	}
+	// 95% CI MoE for mean with z=1.96
+	ci95 := 0.0
+	if n > 0 {
+		ci95 = 1.96 * cv / math.Sqrt(float64(n)) * 100.0
+	}
+	// required samples for <=10% MoE at 95% CI
+	required := 0
+	if cv > 0 {
+		required = int(math.Ceil(math.Pow(1.96*cv/0.10, 2)))
+	}
+	// guardrails
+	quality := false
+	if n >= 8 && durMs >= 800 {
+		// also require a minimum bytes progress indirectly via mean>0 already
+		if ci95 > 0 && ci95 <= 10.0 {
+			quality = true
+		}
+	}
+	return n, ci95, required, quality
+}
+
 // PlateauSegment captures a relatively stable throughput window.
 type PlateauSegment struct {
 	StartMs    int64   `json:"start_ms"`
@@ -264,7 +323,16 @@ type SpeedAnalysis struct {
 	LongestPlateauMs int64            `json:"longest_plateau_ms"`
 	PlateauStable    bool             `json:"plateau_stable"`
 	PlateauSegments  []PlateauSegment `json:"plateau_segments"`
-	Insights         []string         `json:"insights,omitempty"`
+	// Measurement quality (unknown true speed) based on intra-transfer samples
+	// - sample_count: number of intra-transfer throughput samples (100ms period)
+	// - ci95_rel_moe_pct: 95% CI relative margin-of-error (%) for mean speed
+	// - required_samples_for_10pct_95ci: N required to reach <=10% MoE at 95% CI
+	// - quality_good: whether this measurement meets guardrails and <=10% MoE
+	SampleCount                 int      `json:"sample_count,omitempty"`
+	CI95RelMoEPct               float64  `json:"ci95_rel_moe_pct,omitempty"`
+	RequiredSamplesFor10Pct95CI int      `json:"required_samples_for_10pct_95ci,omitempty"`
+	QualityGood                 bool     `json:"quality_good,omitempty"`
+	Insights                    []string `json:"insights,omitempty"`
 }
 
 // ResultEnvelope is the strongly-typed root object written as one JSONL line.
@@ -1695,6 +1763,14 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 	analysis := &SpeedAnalysis{AverageKbps: avgSpeed, StddevKbps: stddevSpeed, CoefVariation: cov, MinKbps: minSpeed, MaxKbps: maxSpeed, P50Kbps: p50, P90Kbps: p90, P95Kbps: p95, P99Kbps: p99, SlopeKbpsPerSec: slope, JitterMeanAbsPct: jitterMeanAbsPct, Patterns: patterns, PlateauCount: plateauCount, LongestPlateauMs: longestPlateauMs, PlateauStable: plateauStable, PlateauSegments: plateauSegments}
+	// Populate measurement quality fields from intra-transfer samples
+	if len(speedSamples) > 0 {
+		sc, ci95, req, good := computeMeasurementQuality(speedSamples)
+		analysis.SampleCount = sc
+		analysis.CI95RelMoEPct = ci95
+		analysis.RequiredSamplesFor10Pct95CI = req
+		analysis.QualityGood = good
+	}
 	if n > 0 {
 		insights := []string{}
 		if p50 > 0 && p99 > 0 {

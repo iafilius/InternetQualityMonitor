@@ -98,6 +98,22 @@ Notes:
 - These fields are optional and appear only when calibration metadata is present in the input JSONL.
 - The input also accepts the alias key speed_targets for targets; analysis/viewer normalize this to the above arrays.
 
+## Measurement quality (unknown true speed)
+
+When the true network speed isn’t known in advance, the monitor computes CI-based quality indicators directly from intra-transfer speed samples (100 ms sampling interval):
+
+- sample_count: number of intra-transfer samples contributing to the measurement.
+- ci95_rel_moe_pct: 95% confidence interval relative margin-of-error (%) for the mean throughput.
+- required_samples_for_10pct_95ci: required N to achieve ≤10% MoE at 95% confidence for the observed variability (uses coefficient of variation, CV = std/mean).
+- quality_good: true when guardrails are met and ci95_rel_moe_pct ≤ 10%.
+
+Computation details:
+- Guardrails: require at least 8 samples and ≥ 0.8 s duration; otherwise quality_good=false.
+- Formula: MoE% = 1.96 × (CV) / sqrt(n) × 100, where CV = stddev/mean over the per-interval speeds.
+- Required samples: n_req = ceil((1.96 × CV / 0.10)^2).
+
+These fields are part of each line’s `speed_analysis` block and are optional. They enable downstream filtering or highlighting of measurements that meet statistical quality targets.
+
 ## Programmatic usage
 
 Use `AnalyzeRecentResultsFullWithOptions(path, schemaVersion, maxBatches, AnalyzeOptions)` to retrieve summaries. The options let you apply situation filters and thresholds like Low‑Speed and Micro‑stall gap.
