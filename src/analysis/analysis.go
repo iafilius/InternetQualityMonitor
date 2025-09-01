@@ -119,6 +119,7 @@ type BatchSummary struct {
 	CalibrationRangesTarget []float64 `json:"calibration_ranges_target_kbps,omitempty"`
 	CalibrationRangesObs    []float64 `json:"calibration_ranges_observed_kbps,omitempty"`
 	CalibrationRangesErrPct []float64 `json:"calibration_ranges_error_pct,omitempty"`
+	CalibrationSamples      []int     `json:"calibration_samples,omitempty"`
 	// Network diagnostics (best-effort): reflect the most recent non-empty values within the batch
 	DNSServer        string `json:"dns_server,omitempty"`
 	DNSServerNetwork string `json:"dns_server_network,omitempty"`
@@ -309,6 +310,7 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		calibTargets  []float64
 		calibObserved []float64
 		calibErrPct   []float64
+		calibSamples  []int
 		// protocol/tls/encoding
 		httpProto string
 		tlsVer    string
@@ -432,6 +434,7 @@ readLoop:
 					bs.calibTargets = append(bs.calibTargets, p.TargetKbps)
 					bs.calibObserved = append(bs.calibObserved, p.ObservedKbps)
 					bs.calibErrPct = append(bs.calibErrPct, p.ErrorPct)
+					bs.calibSamples = append(bs.calibSamples, p.Samples)
 				}
 			}
 		}
@@ -1270,6 +1273,9 @@ readLoop:
 					summary.CalibrationRangesTarget = append([]float64(nil), r.calibTargets...)
 					summary.CalibrationRangesObs = append([]float64(nil), r.calibObserved...)
 					summary.CalibrationRangesErrPct = append([]float64(nil), r.calibErrPct...)
+					if len(r.calibSamples) == len(r.calibTargets) {
+						summary.CalibrationSamples = append([]int(nil), r.calibSamples...)
+					}
 				}
 				break
 			}

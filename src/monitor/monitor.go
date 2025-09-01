@@ -1940,8 +1940,6 @@ var processStart = time.Now()
 // localSelfTestKbps holds the most recent self-test result set by the host process.
 var localSelfTestKbps float64
 
-// calibrationOnce protects calibration metadata updates that may run early at startup
-var calibrationOnce sync.Once
 var cachedCalibration *Calibration
 
 // SetLocalSelfTestKbps records the local throughput self-test (kbps) to be embedded in meta for each line.
@@ -1961,6 +1959,7 @@ type CalibrationPoint struct {
 	TargetKbps   float64 `json:"target_kbps"`
 	ObservedKbps float64 `json:"observed_kbps"`
 	ErrorPct     float64 `json:"error_pct"`
+	Samples      int     `json:"samples,omitempty"`
 }
 
 // Calibration summarizes local measurement fidelity across a few target rates and the maximum sustainable speed.
@@ -1999,7 +1998,8 @@ func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*C
 			// skip explicit 0 target here; max already recorded
 			continue
 		}
-		// create a server that writes at approximately tgt kbps
+		// create a server that writes at approximately tgt kbps using a feedback controller
+		// that tracks desired bytes over time to reduce drift from timer granularity
 		targetKbps := tgt
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Determine bytes per second
@@ -2007,25 +2007,63 @@ func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*C
 			if bytesPerSec <= 0 {
 				bytesPerSec = 1
 			}
-			// Choose chunk size and sleep per chunk
-			const chunkSize = 32 * 1024 // 32KB
+			// Derive chunk size from desired bytesPerSec to keep write cadence responsive at low rates.
+			// Target ≈ 20ms worth of bytes; clamp to [256B, 8KB]
+			dynChunk := int(bytesPerSec * 0.02)
+			if dynChunk < 256 {
+				dynChunk = 256
+			} else if dynChunk > 8*1024 {
+				dynChunk = 8 * 1024
+			}
+			chunkSize := dynChunk
 			buf := make([]byte, chunkSize)
 			for i := range buf {
 				buf[i] = 0x5A
 			}
-			sleepPerChunk := time.Duration(float64(chunkSize) / bytesPerSec * float64(time.Second))
-			if sleepPerChunk < time.Microsecond {
-				sleepPerChunk = time.Microsecond
+			start := time.Now()
+			deadline := start.Add(perTargetDur + 50*time.Millisecond)
+			var sent int64
+			// helper: compute how many bytes we should have sent by now
+			desiredBytes := func() int64 {
+				elapsed := time.Since(start).Seconds()
+				if elapsed < 0 {
+					elapsed = 0
+				}
+				return int64(bytesPerSec * elapsed)
 			}
-			deadline := time.Now().Add(perTargetDur + 50*time.Millisecond)
+			// loop until deadline; on each iteration write enough chunks to catch up to desired rate
 			for time.Now().Before(deadline) {
-				if _, err := w.Write(buf); err != nil {
-					return
+				toSend := desiredBytes() - sent
+				if toSend >= int64(chunkSize) {
+					// write as many whole chunks as needed to reduce deficit
+					nChunks := int(toSend / int64(chunkSize))
+					// cap bursts to avoid monopolizing CPU; remaining will be caught in next loop
+					if nChunks > 8 {
+						nChunks = 8
+					}
+					for i := 0; i < nChunks; i++ {
+						if _, err := w.Write(buf); err != nil {
+							return
+						}
+						sent += int64(chunkSize)
+					}
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+					// continue loop without sleeping to re-evaluate deficit
+					continue
 				}
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
+				// We're ahead or close to desired rate; sleep just enough to accumulate ~one chunk of deficit
+				// Compute time to accumulate a chunk deficit at the current bytesPerSec
+				// guard against division by zero above
+				secForChunk := float64(chunkSize) / bytesPerSec
+				sleep := time.Duration(secForChunk * float64(time.Second))
+				if sleep < 200*time.Microsecond {
+					sleep = 200 * time.Microsecond
+				} else if sleep > 5*time.Millisecond {
+					sleep = 5 * time.Millisecond
 				}
-				time.Sleep(sleepPerChunk)
+				time.Sleep(sleep)
 			}
 		}))
 		// client reads for perTargetDur and computes observed throughput
@@ -2039,12 +2077,14 @@ func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*C
 			start := time.Now()
 			resp, err := client.Do(req)
 			if err != nil {
-				cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: 0, ErrorPct: 100})
+				cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: 0, ErrorPct: 100, Samples: 0})
 				return
 			}
 			defer resp.Body.Close()
 			var nBytes int64
-			buf := make([]byte, 64*1024)
+			samples := 0
+			// smaller buffer increases sample count and smooths measurement
+			buf := make([]byte, 8*1024)
 			for {
 				if time.Since(start) >= perTargetDur {
 					break
@@ -2052,6 +2092,7 @@ func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*C
 				nr, er := resp.Body.Read(buf)
 				if nr > 0 {
 					nBytes += int64(nr)
+					samples++
 				}
 				if er != nil {
 					if errors.Is(er, io.EOF) {
@@ -2060,16 +2101,16 @@ func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*C
 					break
 				}
 			}
-			elapsed := time.Since(start).Seconds()
+			elSec := time.Since(start).Seconds()
 			var obsKbps float64
-			if elapsed > 0 {
-				obsKbps = (float64(nBytes) * 8.0 / 1000.0) / elapsed
+			if elSec > 0 {
+				obsKbps = (float64(nBytes) * 8.0 / 1000.0) / elSec
 			}
 			errPct := 0.0
 			if targetKbps > 0 {
 				errPct = math.Abs(obsKbps-targetKbps) / targetKbps * 100.0
 			}
-			cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: obsKbps, ErrorPct: errPct})
+			cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: obsKbps, ErrorPct: errPct, Samples: samples})
 		}()
 	}
 	SetCalibration(cal)
@@ -2290,19 +2331,13 @@ func readMem() (uint64, uint64, error) {
 
 // readDisk returns total and free bytes for the given mount path (best-effort; Unix only)
 func readDisk(path string) (uint64, uint64, error) {
-	// syscall is deprecated but sufficient here and avoids external deps
-	type statfsT struct {
-		// placeholder type to avoid import alias churn in patch header; we'll use syscall.Statfs directly below
-	}
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, 0, err
 	}
 	// Prefer Bavail for free bytes available to non-root
 	total := uint64(st.Blocks) * uint64(st.Bsize)
-	var bavail uint64
-	// Some platforms use different field names; protect with conversion
-	bavail = uint64(st.Bavail) * uint64(st.Bsize)
+	bavail := uint64(st.Bavail) * uint64(st.Bsize)
 	return total, bavail, nil
 }
 func readKernelVersion() (string, error) {

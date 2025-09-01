@@ -84,6 +84,20 @@ Note on sourcing: Protocol/TLS/encoding fields are primarily taken from the prim
   - SLA Compliance – Speed (% meeting P50 target), SLA Compliance – TTFB (% with P95 ≤ target).
   - SLA deltas (percentage points) between IPv6 and IPv4.
 
+## Calibration fields (metadata → analysis)
+
+When the monitor runs with calibration enabled (default in collection mode), metadata includes a calibration block that the analysis layer lifts into per‑batch summaries:
+
+- calibration_max_kbps: max sustainable local throughput observed by the loopback probe.
+- calibration_ranges_target_kbps: array of target speeds (kbps) used during calibration (auto‑generated as 10/30 per decade up to the measured max when not provided).
+- calibration_ranges_observed_kbps: observed throughput (kbps) per target.
+- calibration_ranges_error_pct: absolute error (%) per target vs the target speed.
+- calibration_samples: integer array with the number of measurement samples contributing to each target’s observation (same order as targets/observed).
+
+Notes:
+- These fields are optional and appear only when calibration metadata is present in the input JSONL.
+- The input also accepts the alias key speed_targets for targets; analysis/viewer normalize this to the above arrays.
+
 ## Programmatic usage
 
 Use `AnalyzeRecentResultsFullWithOptions(path, schemaVersion, maxBatches, AnalyzeOptions)` to retrieve summaries. The options let you apply situation filters and thresholds like Low‑Speed and Micro‑stall gap.

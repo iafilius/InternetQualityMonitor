@@ -3,6 +3,11 @@
 All notable changes to this project are documented here. Dates use YYYY‑MM‑DD.
 
 ## [Unreleased]
+ - Calibration (Default‑on): The monitor now runs a short local speed calibration at the start of each collection session (skipped in analyze‑only). Targets auto‑generate as 10/30 per decade up to the measured local max when not provided.
+ - Calibration (Tolerance): CLI prints a concise summary of targets within tolerance (e.g., "within 10%: X/Y"). Tolerance is configurable via --calibrate-tolerance.
+ - Calibration (Samples): Each calibration target now records how many measurement samples were taken; the CLI logs "[calibration] samples per target: [...]" for context.
+ - Metadata/Analysis: Calibration sample counts are propagated in analysis output as calibration_samples (array, per target), alongside existing calibration fields (targets, observed, error%).
+ - Viewer (Diagnostics): Diagnostics show Speed Targets with observed values, error percentages, and sample counts (header indicates "[samples]"). "Copy JSON" now includes calibration_samples; "speed_targets" alias is supported in input.
  - Viewer (Protocols): Added companion “Share by HTTP Protocol (%)” charts for Errors, Stalls, and Partials alongside the existing per‑protocol “Rate …” charts; inline help clarified “Rates vs Shares”; README updated and headless screenshots regenerated (error/stall/partial share images).
  - Monitor (Logging): Fixed printf artifact that rendered “%!o(MISSING)” when logging preformatted lines with literal percent signs; logger now avoids double‑formatting when no args are provided.
  - Docs: `README_iqmreader.md` now includes a brief “Log lines explained” section covering status labels (done/aborted/incomplete) and the “(x% of y)” snippet when Content‑Length is known.

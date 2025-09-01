@@ -48,6 +48,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - What you’ll see:
 	- DNS server and network used (best‑effort), plus network Next Hop and its source (macOS/Linux).
 	- Local Throughput Self‑Test baseline (kbps) captured by the viewer on startup.
+	- Speed calibration summary (from monitor metadata): Max measured local throughput and Speed Targets with observed values, error vs target, and per‑target sample counts. Header shows “Observed (error) [samples]”.
 	- Proxy hints: whether a proxy was used, any proxy names seen, and env‑proxy usage rate.
 	- TLS/ALPN majority: the most common negotiated TLS version and ALPN (e.g., h2, http/1.1).
 	- Cache and path indicators: cache‑hit rate, warm‑cache suspected rate, prefetch suspected rate, IP mismatch rate, connection reuse rate, and chunked transfer rate.
@@ -59,7 +60,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 	- Empty/unknown values are shown as “–”.
  - Copy options:
 	- Copy copies the human‑readable diagnostics text.
-	- Copy JSON copies a compact JSON blob with key diagnostics for sharing or filing issues.
+	- Copy JSON copies a compact JSON blob with key diagnostics for sharing or filing issues. Includes calibration fields: calibration_max_kbps, calibration_ranges_target_kbps, calibration_ranges_observed_kbps, calibration_ranges_error_pct, and calibration_samples (array of ints). The alias key speed_targets is also recognized on input.
 	- Copy traceroute copies an OS‑appropriate traceroute command prefilled with the batch’s next hop (disabled if next hop is unknown).
 	- Copy ping copies a quick ping command targeting the next hop (disabled if next hop is unknown).
 	- Copy mtr copies an mtr report command when available on macOS/Linux (disabled if mtr is not installed or on Windows).

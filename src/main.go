@@ -144,13 +144,17 @@ func main() {
 	// Self-test flags (default-on)
 	selfTest := flag.Bool("selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
 	selfTestDur := flag.Duration("selftest-duration", 300*time.Millisecond, "Duration for local throughput self-test")
-	calib := flag.Bool("calibrate", false, "Run local speed calibration at startup and embed results into metadata")
-	calibTargetsCSV := flag.String("calibrate-targets", "250,1000,10000", "Comma-separated target speeds in kbps for calibration (0 means skip; always measures max)")
+	// Run calibration by default for each monitor session; can be disabled with --calibrate=false
+	calib := flag.Bool("calibrate", true, "Run local speed calibration at startup and embed results into metadata (collection mode only)")
+	calibTargetsCSV := flag.String("calibrate-targets", "", "Comma-separated speed targets in kbps (empty = auto: 10,30,100,300,1000,… up to local max; 0 means skip a value). Max is always measured.")
 	calibDur := flag.Duration("calibrate-duration", 500*time.Millisecond, "Duration per calibration target")
+	calibTolPct := flag.Int("calibrate-tolerance", 10, "Calibration tolerance percent for target checks (info only)")
 	flag.Parse()
 
+	var selfTestKbps float64
 	if *selfTest {
 		if kbps, err := monitor.LocalMaxSpeedProbe(*selfTestDur); err == nil {
+			selfTestKbps = kbps
 			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps/1000.0, kbps)
 			monitor.SetLocalSelfTestKbps(kbps)
 		} else {
@@ -158,17 +162,38 @@ func main() {
 		}
 	}
 
-	if *calib {
-		// parse targets
+	// Only run calibration for collection sessions (embed into emitted metadata)
+	if *calib && !*analyzeOnly {
+		// build targets: if CSV provided use it; otherwise auto-generate 10,30 per decade up to local max
 		var targets []float64
-		for _, tok := range strings.Split(*calibTargetsCSV, ",") {
-			tok = strings.TrimSpace(tok)
-			if tok == "" {
-				continue
+		if strings.TrimSpace(*calibTargetsCSV) != "" {
+			for _, tok := range strings.Split(*calibTargetsCSV, ",") {
+				tok = strings.TrimSpace(tok)
+				if tok == "" {
+					continue
+				}
+				if v, err := strconv.ParseFloat(tok, 64); err == nil && v >= 0 {
+					if v > 0 {
+						targets = append(targets, v)
+					}
+				}
 			}
-			if v, err := strconv.ParseFloat(tok, 64); err == nil && v >= 0 {
-				if v > 0 {
-					targets = append(targets, v)
+		} else {
+			maxRef := selfTestKbps
+			if maxRef <= 0 {
+				if kbps, err := monitor.LocalMaxSpeedProbe(*calibDur); err == nil {
+					maxRef = kbps
+				}
+			}
+			if maxRef > 0 {
+				// Generate: 10, 30, 100, 300, 1000, 3000, ... up to maxRef
+				for base := 10.0; base <= maxRef; base *= 10.0 {
+					if base <= maxRef {
+						targets = append(targets, base)
+					}
+					if base*3.0 <= maxRef {
+						targets = append(targets, base*3.0)
+					}
 				}
 			}
 		}
@@ -177,7 +202,29 @@ func main() {
 			fmt.Printf("[calibration] error: %v\n", err)
 		} else {
 			monitor.SetCalibration(cal)
-			fmt.Printf("[calibration] max=%.0f kbps, %d targets\n", cal.MaxKbps, len(cal.Ranges))
+			// Compute pass/fail against tolerance if provided
+			pass, total := 0, 0
+			if *calibTolPct > 0 {
+				total = len(cal.Ranges)
+				for _, p := range cal.Ranges {
+					if p.ErrorPct <= float64(*calibTolPct) {
+						pass++
+					}
+				}
+			}
+			if *calibTolPct > 0 && total > 0 {
+				fmt.Printf("[calibration] max=%.0f kbps, %d targets, within %d%%: %d/%d\n", cal.MaxKbps, len(cal.Ranges), *calibTolPct, pass, total)
+			} else {
+				fmt.Printf("[calibration] max=%.0f kbps, %d targets\n", cal.MaxKbps, len(cal.Ranges))
+			}
+			// Log how many read samples contributed per target for context
+			if len(cal.Ranges) > 0 {
+				sampleCounts := make([]int, 0, len(cal.Ranges))
+				for _, p := range cal.Ranges {
+					sampleCounts = append(sampleCounts, p.Samples)
+				}
+				fmt.Printf("[calibration] samples per target: %v\n", sampleCounts)
+			}
 		}
 	}
 

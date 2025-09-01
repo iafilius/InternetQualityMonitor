@@ -21,6 +21,7 @@ Recent changes:
  - Batch proxy aggregation metrics: analysis now reports `env_proxy_usage_rate_pct`, `classified_proxy_rate_pct`, per `proxy_name_counts` & `proxy_name_rate_pct` maps; console adds `env_proxy=` and `proxy_classified=` percentages plus top proxy names for quick scan.
  - Overall multi-batch aggregation line: when more than one batch is analyzed, an additional `overall across <N> batches` line is printed, showing line-weighted aggregate metrics (including IPv4/IPv6 splits) across all displayed batches. Individual batch lines are now marked with `(per-batch)` for clarity.
 - Console output units: analysis lines now include explicit units for clarity (kbps, ms, B, kbps/s).
+ - Calibration (default‑on in collection mode): On startup the monitor performs a local loopback speed calibration and embeds results into metadata. Targets default to 10/30 per decade up to the measured local max when not specified. CLI prints a tolerance summary (\"within N%: X/Y\") and logs \"[calibration] samples per target: [..]\" to show how many read iterations contributed per target. See also `README_analysis.md` (calibration fields) and `README_iqmviewer.md` (Diagnostics view).
 
 First time (no results yet) you likely want to collect data (this is now the default mode):
 ```bash

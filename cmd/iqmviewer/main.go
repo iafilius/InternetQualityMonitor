@@ -121,7 +121,8 @@ func topK(m map[string]float64) (string, float64, bool) {
 }
 
 // buildDiagnosticsText generates a multi-section human-readable diagnostics string for a batch.
-func buildDiagnosticsText(bs analysis.BatchSummary) string {
+// tolPct, when >0, adds PASS/FAIL annotations for calibration range errors.
+func buildDiagnosticsText(bs analysis.BatchSummary, tolPct int) string {
 	// Majority TLS and ALPN where available
 	tlsVer, _, _ := topK(bs.TLSVersionRatePct)
 	alpn, _, _ := topK(bs.ALPNRatePct)
@@ -157,13 +158,41 @@ func buildDiagnosticsText(bs analysis.BatchSummary) string {
 			b.WriteString(fmt.Sprintf("  Calibration (max): %.0f kbps\n", bs.CalibrationMaxKbps))
 		}
 		if len(bs.CalibrationRangesTarget) > 0 && len(bs.CalibrationRangesObs) == len(bs.CalibrationRangesTarget) {
-			b.WriteString("  Targets -> Observed (error)\n")
+			if tolPct > 0 && len(bs.CalibrationRangesErrPct) == len(bs.CalibrationRangesTarget) {
+				pass := 0
+				for i := range bs.CalibrationRangesErrPct {
+					if bs.CalibrationRangesErrPct[i] <= float64(tolPct) {
+						pass++
+					}
+				}
+				b.WriteString(fmt.Sprintf("  Within tolerance: %d/%d speed targets\n", pass, len(bs.CalibrationRangesTarget)))
+			}
+			if tolPct > 0 {
+				b.WriteString(fmt.Sprintf("  Tolerance: ≤%d%%\n", tolPct))
+			}
+			b.WriteString("  Speed Targets -> Observed (error)")
+			if len(bs.CalibrationSamples) == len(bs.CalibrationRangesTarget) && len(bs.CalibrationSamples) > 0 {
+				b.WriteString(" [samples]")
+			}
+			b.WriteString("\n")
 			for i := range bs.CalibrationRangesTarget {
 				errPct := 0.0
 				if i < len(bs.CalibrationRangesErrPct) {
 					errPct = bs.CalibrationRangesErrPct[i]
 				}
-				b.WriteString(fmt.Sprintf("    %.0f -> %.0f kbps (%.1f%%)\n", bs.CalibrationRangesTarget[i], bs.CalibrationRangesObs[i], errPct))
+				passNote := ""
+				if tolPct > 0 {
+					if errPct <= float64(tolPct) {
+						passNote = fmt.Sprintf(", PASS ≤%d%%", tolPct)
+					} else {
+						passNote = fmt.Sprintf(", FAIL >%d%%", tolPct)
+					}
+				}
+				sampleNote := ""
+				if i < len(bs.CalibrationSamples) && bs.CalibrationSamples[i] > 0 {
+					sampleNote = fmt.Sprintf(", %d samples", bs.CalibrationSamples[i])
+				}
+				b.WriteString(fmt.Sprintf("    %.0f -> %.0f kbps (%.1f%%%s%s)\n", bs.CalibrationRangesTarget[i], bs.CalibrationRangesObs[i], errPct, passNote, sampleNote))
 			}
 		}
 		b.WriteString("\n")
@@ -263,7 +292,9 @@ func buildDiagnosticsText(bs analysis.BatchSummary) string {
 }
 
 // buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
-func buildDiagnosticsJSON(bs analysis.BatchSummary) string {
+// buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
+// Includes calibration tolerance and per-target pass/fail when tolPct>0.
+func buildDiagnosticsJSON(bs analysis.BatchSummary, tolPct int) string {
 	payload := map[string]any{
 		"run_tag":              bs.RunTag,
 		"dns_server":           emptyDash(bs.DNSServer),
@@ -275,8 +306,10 @@ func buildDiagnosticsJSON(bs analysis.BatchSummary) string {
 		"avg_tls_ms":           bs.AvgTLSHandshake,
 		"baseline_kbps":        bs.LocalSelfTestKbps,
 		"calibration_max_kbps": bs.CalibrationMaxKbps,
-		"calibration_targets":  bs.CalibrationRangesTarget,
+		"calibration_targets":  bs.CalibrationRangesTarget, // legacy name
+		"speed_targets":        bs.CalibrationRangesTarget, // alias for clarity
 		"calibration_observed": bs.CalibrationRangesObs,
+		"calibration_samples":  bs.CalibrationSamples,
 		"stall_rate_pct":       bs.StallRatePct,
 		"transient_rate_pct":   bs.MicroStallRatePct,
 		"low_speed_pct":        bs.LowSpeedTimeSharePct,
@@ -296,6 +329,14 @@ func buildDiagnosticsJSON(bs analysis.BatchSummary) string {
 		"mem_free_bytes":       bs.MemFreeOrAvailable,
 		"disk_total_bytes":     bs.DiskRootTotalBytes,
 		"disk_free_bytes":      bs.DiskRootFreeBytes,
+	}
+	if tolPct > 0 && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesObs) && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesErrPct) {
+		payload["calibration_tolerance_pct"] = tolPct
+		within := make([]bool, len(bs.CalibrationRangesErrPct))
+		for i, e := range bs.CalibrationRangesErrPct {
+			within[i] = e <= float64(tolPct)
+		}
+		payload["calibration_within_tolerance"] = within
 	}
 	if k, _, ok := topK(bs.TLSVersionRatePct); ok {
 		payload["tls_majority"] = k
@@ -433,8 +474,8 @@ func showDiagnosticsForSelection(state *uiState) {
 	}
 	bs := rows[rix]
 	// Build content with copy helpers, including traceroute command when available
-	text := buildDiagnosticsText(bs)
-	jsonStr := buildDiagnosticsJSON(bs)
+	text := buildDiagnosticsText(bs, state.calibTolerancePct)
+	jsonStr := buildDiagnosticsJSON(bs, state.calibTolerancePct)
 	traceCmd := buildTracerouteCommand(bs)
 	pingCmd := buildPingCommand(bs)
 	mtrCmd := buildMTRCommand(bs)
@@ -724,6 +765,9 @@ type uiState struct {
 	findCountLbl *widget.Label
 	findIndex    int
 	findMatches  []int
+
+	// Calibration tolerance (percent) for pass/fail in diagnostics
+	calibTolerancePct int // default 10
 }
 
 // chartRef tracks a chart section for search/navigation
@@ -1082,6 +1126,8 @@ func main() {
 	// Sensible corporate defaults for SLA thresholds
 	state.slaSpeedThresholdKbps = 10000 // 10 Mbps P50 speed target
 	state.slaTTFBThresholdMs = 200      // 200 ms P95 TTFB target
+	// Calibration tolerance default (10%)
+	state.calibTolerancePct = 10
 	// Ensure crosshair preference is loaded before creating overlays/controls
 	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
 	// Load showHints early so the checkbox reflects it on creation
@@ -2979,6 +3025,35 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		d.Show()
 	}
 
+	// Calibration tolerance dialog
+	openCalibTolDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Calibration tolerance (%)")
+		if state.calibTolerancePct <= 0 {
+			state.calibTolerancePct = 10
+		}
+		entry.SetText(strconv.Itoa(state.calibTolerancePct))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Calibration tolerance (%)", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 1 {
+					iv = 1
+				}
+				if iv > 100 {
+					iv = 100
+				}
+				state.calibTolerancePct = iv
+				savePrefs(state)
+			}
+		}}
+		d := dialog.NewCustomConfirm("Calibration Tolerance", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
+		d.Resize(fyne.NewSize(360, 160))
+		d.Show()
+	}
+
 	settingsMenu := fyne.NewMenu("Settings",
 		crosshairToggle,
 		hintsToggle,
@@ -2989,6 +3064,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		rollingToggle,
 		bandToggle,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Calibration tolerance…", func() { openCalibTolDialog() }),
 		fyne.NewMenuItemSeparator(),
 		dnsToggle,
 		fyne.NewMenuItem("SLA Thresholds…", func() { openSLADialog() }),
@@ -11901,6 +11978,8 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showMax", state.showMax)
 	prefs.SetBool("showIQR", state.showIQR)
 	// (removed: pctl prefs)
+	// Calibration tolerance
+	prefs.SetInt("calibTolerancePct", state.calibTolerancePct)
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, tabs *container.AppTabs) {
@@ -11925,6 +12004,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showIPv6 = prefs.BoolWithFallback("showIPv6", state.showIPv6)
 	state.showPreTTFB = prefs.BoolWithFallback("showPreTTFB", state.showPreTTFB)
 	state.autoHidePreTTFB = prefs.BoolWithFallback("autoHidePreTTFB", state.autoHidePreTTFB)
+	state.calibTolerancePct = prefs.IntWithFallback("calibTolerancePct", state.calibTolerancePct)
 	if avg != nil {
 		avg.SetChecked(state.showOverall)
 	}
