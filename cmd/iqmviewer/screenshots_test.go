@@ -60,7 +60,7 @@ func TestScreenshotWidths_BaseSet(t *testing.T) {
 	outDir := t.TempDir()
 
 	// Render screenshots headlessly using the base set only (variants = "none").
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false, false, true, true, true, true); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestScreenshotWidths_AllowsShrink(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false, false, true, true, true, true); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestScreenshots_IncludesErrorShare(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false, false, true, true, true, true); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestScreenshots_IncludesStallAndPartialShares(t *testing.T) {
 		t.Fatalf("close results: %v", err)
 	}
 	outDir := t.TempDir()
-	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false); err != nil {
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false, false, true, true, true, true); err != nil {
 		t.Fatalf("RunScreenshotsMode: %v", err)
 	}
 	for _, name := range []string{"stall_share_by_http_protocol.png", "partial_share_by_http_protocol.png"} {

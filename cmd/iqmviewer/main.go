@@ -4062,24 +4062,9 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99TTFBMs }, chart.ColorRed)
 	}
 
-	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
-	yAxisRange := &chart.ContinuousRange{}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 4)
-	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	// Unified Y-axis behavior (positive metric)
+	// Signed percent delta: ensure zero included in Absolute mode
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -4202,24 +4187,8 @@ func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 			return b.IPv6.AvgP95TTFBMs / b.IPv6.AvgP50TTFBMs
 		}, chart.ColorGreen)
 	}
-	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
-	yAxisRange := &chart.ContinuousRange{}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 0.1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 1 {
-			maxY = 2
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	// Unified Y-axis behavior (ratio; positive)
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -4327,24 +4296,8 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 		}, chart.ColorGreen)
 	}
 
-	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
-	yAxisRange := &chart.ContinuousRange{}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 4)
-	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	// Unified Y-axis behavior (gap; non-negative)
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -4450,6 +4403,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 			return b.IPv6.CacheHitRatePct
 		}, chart.ColorGreen)
 	}
+	// no IQR envelopes for this chart
 	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
@@ -4572,6 +4526,7 @@ func renderEnterpriseProxyRateChart(state *uiState) image.Image {
 			return b.IPv6.EnterpriseProxyRatePct
 		}, chart.ColorGreen)
 	}
+	// no IQR envelopes for this chart
 	var yAxisRange chart.Range
 	var yTicks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
@@ -5294,24 +5249,7 @@ func renderMicroStallTimeChart(state *uiState) image.Image {
 			return b.IPv6.AvgMicroStallMs
 		}, chart.ColorGreen)
 	}
-	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
-	yAxisRange := &chart.ContinuousRange{}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -5410,24 +5348,7 @@ func renderMicroStallCountChart(state *uiState) image.Image {
 			return b.IPv6.AvgMicroStallCount
 		}, chart.ColorGreen)
 	}
-	// Initialize to a non-nil zero range to avoid go-chart calling methods on a nil pointer
-	yAxisRange := &chart.ContinuousRange{}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 1 {
-			maxY = 2
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -5763,23 +5684,7 @@ func renderStallTimeChart(state *uiState) image.Image {
 			return b.IPv6.AvgStallElapsedMs
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -5933,6 +5838,9 @@ func renderSpeedChart(state *uiState) image.Image {
 	var ovP25, ovP75 []float64
 	var v4P25, v4P75 []float64
 	var v6P25, v6P75 []float64
+	// Track family-specific maxima for median and P75 (to enforce occupancy when a single family is shown)
+	ovMedMax, v4MedMax, v6MedMax := -math.MaxFloat64, -math.MaxFloat64, -math.MaxFloat64
+	ovP75Max, v4P75Max, v6P75Max := -math.MaxFloat64, -math.MaxFloat64, -math.MaxFloat64
 	if state.showOverall {
 		// Build values for avg/median/min/max (Overall)
 		avgVals := make([]float64, len(rows))
@@ -5949,6 +5857,17 @@ func renderSpeedChart(state *uiState) image.Image {
 				minVals[i] = r.MinSpeed * factor
 			} else {
 				minVals[i] = math.NaN()
+			}
+			// Track maxima for occupancy enforcement
+			for _, v := range medVals {
+				if !math.IsNaN(v) && v > ovMedMax {
+					ovMedMax = v
+				}
+			}
+			for _, v := range p75Vals {
+				if !math.IsNaN(v) && v > ovP75Max {
+					ovP75Max = v
+				}
 			}
 			if !math.IsNaN(r.MaxSpeed) && r.MaxSpeed >= 0 {
 				maxVals[i] = r.MaxSpeed * factor
@@ -5996,6 +5915,17 @@ func renderSpeedChart(state *uiState) image.Image {
 					minVals[i] = r.IPv4.MinSpeed * factor
 				} else {
 					minVals[i] = math.NaN()
+				}
+				// Track maxima
+				for _, v := range medVals {
+					if !math.IsNaN(v) && v > v4MedMax {
+						v4MedMax = v
+					}
+				}
+				for _, v := range p75Vals {
+					if !math.IsNaN(v) && v > v4P75Max {
+						v4P75Max = v
+					}
 				}
 				if r.IPv4.MaxSpeed >= 0 && !math.IsNaN(r.IPv4.MaxSpeed) {
 					maxVals[i] = r.IPv4.MaxSpeed * factor
@@ -6051,6 +5981,17 @@ func renderSpeedChart(state *uiState) image.Image {
 				} else {
 					minVals[i] = math.NaN()
 				}
+				// Track maxima
+				for _, v := range medVals {
+					if !math.IsNaN(v) && v > v6MedMax {
+						v6MedMax = v
+					}
+				}
+				for _, v := range p75Vals {
+					if !math.IsNaN(v) && v > v6P75Max {
+						v6P75Max = v
+					}
+				}
 				if r.IPv6.MaxSpeed >= 0 && !math.IsNaN(r.IPv6.MaxSpeed) {
 					maxVals[i] = r.IPv6.MaxSpeed * factor
 				} else {
@@ -6090,48 +6031,169 @@ func renderSpeedChart(state *uiState) image.Image {
 		v6P25, v6P75 = p25Vals, p75Vals
 	}
 
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		// Add a small margin to avoid dots touching edges
-		pad := (nMax - nMin) * 0.06
-		if pad <= 0 {
-			pad = math.Max(1, nMax*0.05)
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		// Absolute mode with auto-fit: if data sits high above zero, zoom to data range
-		if maxY <= 0 {
-			maxY = 1
-		}
-		// Decide whether to anchor at 0 or zoom to [min,max]
-		anchorZero := true
-		// Be more willing to zoom when the data band is away from zero.
-		// If the minimum is at least 20% of the maximum, prefer zooming to [min,max].
-		if minY > 0 && (minY/maxY) >= 0.2 {
-			anchorZero = false
-		}
-		if anchorZero {
-			_, nMax := niceAxisBounds(0, maxY)
-			yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-			// Provide nice ticks in anchored mode as well for consistency
-			yTicks = niceTicks(0, nMax, 6)
-		} else {
-			nMin, nMax := niceAxisBounds(minY, maxY)
-			pad := (nMax - nMin) * 0.06
-			if pad <= 0 {
-				pad = math.Max(1, nMax*0.05)
+	// Extend min/max with P25/P75 when IQR is shown, and also when rendering median-only
+	if state.showIQR || (state.showMedian && !state.showAvg && !state.showMin && !state.showMax) {
+		updateRangeFrom := func(vals []float64) {
+			for _, v := range vals {
+				if math.IsNaN(v) {
+					continue
+				}
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
-			yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-			yTicks = niceTicks(nMin, nMax, 6)
+		}
+		if ovP25 != nil && ovP75 != nil {
+			updateRangeFrom(ovP25)
+			updateRangeFrom(ovP75)
+		}
+		if v4P25 != nil && v4P75 != nil {
+			updateRangeFrom(v4P25)
+			updateRangeFrom(v4P75)
+		}
+		if v6P25 != nil && v6P75 != nil {
+			updateRangeFrom(v6P25)
+			updateRangeFrom(v6P75)
 		}
 	}
+
+	// Ensure axis min/max consider P25/P75 when IQR is shown, and also when median-only variant
+	if state.showIQR || (state.showMedian && !state.showAvg && !state.showMin && !state.showMax) {
+		updateRangeFrom := func(vals []float64) {
+			for _, v := range vals {
+				if math.IsNaN(v) {
+					continue
+				}
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
+			}
+		}
+		if ovP25 != nil && ovP75 != nil {
+			updateRangeFrom(ovP25)
+			updateRangeFrom(ovP75)
+		}
+		if v4P25 != nil && v4P75 != nil {
+			updateRangeFrom(v4P25)
+			updateRangeFrom(v4P75)
+		}
+		if v6P25 != nil && v6P75 != nil {
+			updateRangeFrom(v6P25)
+			updateRangeFrom(v6P75)
+		}
+	}
+
+	// Also include rolling overlay extremes in y-bounds to avoid clipping when overlays exceed point ranges
+	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
+		// reuse small local helpers mirroring those below
+		build := func(sel func(analysis.BatchSummary) (float64, bool)) ([]float64, []bool) {
+			ys := make([]float64, len(rows))
+			ok := make([]bool, len(rows))
+			for i, r := range rows {
+				v, valid := sel(r)
+				if valid && !math.IsNaN(v) && v > 0 {
+					ys[i] = v
+					ok[i] = true
+				}
+			}
+			return ys, ok
+		}
+		rolling := func(vals []float64, oks []bool, win int) ([]float64, []float64) {
+			n := len(vals)
+			if win > n {
+				win = n
+			}
+			m := make([]float64, n)
+			s := make([]float64, n)
+			var sum, sumsq float64
+			count := 0
+			for i := 0; i < n; i++ {
+				if oks[i] {
+					sum += vals[i]
+					sumsq += vals[i] * vals[i]
+					count++
+				}
+				if i >= win {
+					j := i - win
+					if oks[j] {
+						sum -= vals[j]
+						sumsq -= vals[j] * vals[j]
+						count--
+					}
+				}
+				if count >= 2 {
+					mu := sum / float64(count)
+					varVar := sumsq/float64(count) - mu*mu
+					if varVar < 0 {
+						varVar = 0
+					}
+					m[i] = mu
+					s[i] = math.Sqrt(varVar)
+				} else {
+					m[i] = math.NaN()
+					s[i] = math.NaN()
+				}
+			}
+			return m, s
+		}
+		extendFromBand := func(m, s []float64) {
+			for i := range m {
+				if !math.IsNaN(m[i]) {
+					if m[i] < minY {
+						minY = m[i]
+					}
+					if m[i] > maxY {
+						maxY = m[i]
+					}
+				}
+				if state.showRollingBand && !math.IsNaN(m[i]) && !math.IsNaN(s[i]) {
+					low := m[i] - s[i]
+					high := m[i] + s[i]
+					if low < minY {
+						minY = low
+					}
+					if high > maxY {
+						maxY = high
+					}
+				}
+			}
+		}
+		if state.showOverall {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) { return b.AvgSpeed * factor, b.AvgSpeed > 0 })
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+		if state.showIPv4 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv4 == nil {
+					return 0, false
+				}
+				return b.IPv4.AvgSpeed * factor, b.IPv4.AvgSpeed > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+		if state.showIPv6 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv6 == nil {
+					return 0, false
+				}
+				return b.IPv6.AvgSpeed * factor, b.IPv6.AvgSpeed > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+	}
+
+	// Clamp for median-only Absolute with up to two visible families to ensure ≥50% occupancy
+	maxY = applyMedianOnlyAbsoluteOccupancyClamp(maxY, state, ovMedMax, v4MedMax, v6MedMax, ovP75Max, v4P75Max, v6P75Max)
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, state.showMedian && !state.showAvg && !state.showMin && !state.showMax)
 	// More bottom padding when X-axis labels are long
 	padBottom := 28
 	switch state.xAxisMode {
@@ -6330,6 +6392,134 @@ func renderSpeedChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// computeYAxisRange centralizes y-axis range/tick logic.
+// - minY, maxY are observed data bounds
+// - useRelative: if true, fit to data band with padding; if false, anchor to zero or zoom
+// - medianOnly: apply tighter padding and avoid "nice" overshoot for zero-anchored charts
+func computeYAxisRange(minY, maxY float64, useRelative bool, medianOnly bool) (chart.Range, []chart.Tick) {
+	var rng chart.Range
+	var ticks []chart.Tick
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if !haveY {
+		return &chart.ContinuousRange{Min: 0, Max: 1}, nil
+	}
+	padPct := 0.04
+	if medianOnly {
+		padPct = 0.02
+	}
+	if useRelative {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		pad := (nMax - nMin) * padPct
+		if pad <= 0 {
+			pad = math.Max(1, nMax*padPct)
+		}
+		rng = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
+		ticks = niceTicks(nMin, nMax, 6)
+		return rng, ticks
+	}
+	// Absolute mode
+	if maxY <= 0 {
+		maxY = 1
+	}
+	anchorZero := true
+	if minY > 0 && (minY/maxY) >= 0.2 {
+		anchorZero = false
+	}
+	if medianOnly {
+		// Prefer stable baseline at zero for median-only to prevent negative range and clipping
+		anchorZero = true
+	}
+	if anchorZero {
+		if medianOnly {
+			nMax := maxY
+			padTop := nMax * padPct
+			if padTop <= 0 {
+				padTop = 1
+			}
+			rng = &chart.ContinuousRange{Min: 0, Max: nMax + padTop}
+			ticks = niceTicks(0, nMax, 6)
+			return rng, ticks
+		}
+		_, nMax := niceAxisBounds(0, maxY)
+		padTop := (nMax - 0) * padPct
+		if padTop <= 0 {
+			padTop = math.Max(1, nMax*padPct)
+		}
+		rng = &chart.ContinuousRange{Min: 0, Max: nMax + padTop}
+		ticks = niceTicks(0, nMax, 6)
+		return rng, ticks
+	}
+	nMin, nMax := niceAxisBounds(minY, maxY)
+	pad := (nMax - nMin) * padPct
+	if pad <= 0 {
+		pad = math.Max(1, nMax*padPct)
+	}
+	rng = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
+	ticks = niceTicks(nMin, nMax, 6)
+	return rng, ticks
+}
+
+// computeYAxisRangeSigned is for signed metrics that may cross zero; in absolute mode we
+// ensure zero is included in the range even if the observed band is entirely above/below.
+func computeYAxisRangeSigned(minY, maxY float64, useRelative bool) (chart.Range, []chart.Tick) {
+	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
+	if !haveY {
+		return nil, nil
+	}
+	if useRelative {
+		if maxY <= minY {
+			maxY = minY + 1
+		}
+		nMin, nMax := niceAxisBounds(minY, maxY)
+		return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+	}
+	nMin, nMax := niceAxisBounds(minY, maxY)
+	if nMin > 0 {
+		nMin = 0
+	}
+	if nMax < 0 {
+		nMax = 0
+	}
+	return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+}
+
+// applyMedianOnlyAbsoluteOccupancyClamp enforces that in Absolute + median-only mode, when up to
+// two families are visible, the y-axis raw max (before range calculation) is clamped to at most
+// 2x the largest of {medianMax, p75Max} across visible families. This guarantees ≥50% occupancy.
+func applyMedianOnlyAbsoluteOccupancyClamp(maxY float64, state *uiState, ovMedMax, v4MedMax, v6MedMax, ovP75Max, v4P75Max, v6P75Max float64) float64 {
+	if state == nil {
+		return maxY
+	}
+	if state.useRelative {
+		return maxY
+	}
+	// median-only selected (no avg/min/max)
+	if !(state.showMedian && !state.showAvg && !state.showMin && !state.showMax) {
+		return maxY
+	}
+	famCount := 0
+	threshold := -math.MaxFloat64
+	if state.showOverall {
+		famCount++
+		threshold = math.Max(threshold, math.Max(ovMedMax, ovP75Max))
+	}
+	if state.showIPv4 {
+		famCount++
+		threshold = math.Max(threshold, math.Max(v4MedMax, v4P75Max))
+	}
+	if state.showIPv6 {
+		famCount++
+		threshold = math.Max(threshold, math.Max(v6MedMax, v6P75Max))
+	}
+	if famCount >= 1 && famCount <= 2 && threshold > 0 && maxY > 2*threshold {
+		return 2 * threshold
+	}
+	return maxY
+}
+
 // renderSelfTestChart plots the local loopback throughput baseline (from meta) per batch.
 func renderSelfTestChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -6382,25 +6572,8 @@ func renderSelfTestChart(state *uiState) image.Image {
 		}
 	}
 
-	// Y axis
-	var yAxisRange chart.Range = &chart.ContinuousRange{Min: 0, Max: 1}
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-		yTicks = nil
-	}
+	// Y axis unified
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -6442,12 +6615,14 @@ func renderTTFBChart(state *uiState) image.Image {
 		w, h := chartSize(state)
 		return blank(w, h)
 	}
+	// Build X axis according to mode
 	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	// Collect series and y-bounds
 	series := []chart.Series{}
 	minY := math.MaxFloat64
 	maxY := -math.MaxFloat64
-	// helper similar to speed chart
 	statStyle := func(base drawing.Color, role string, emphasize bool) chart.Style {
+		// role: avg, median, min, max
 		col := base
 		width := 4
 		switch role {
@@ -6465,6 +6640,7 @@ func renderTTFBChart(state *uiState) image.Image {
 		return chart.Style{StrokeWidth: 0, DotWidth: float64(width), DotColor: col}
 	}
 	addSeries := func(name string, vals []float64, base drawing.Color, role string, timeMode bool) {
+		// track y bounds and build appropriate series type
 		valid := 0
 		ys := make([]float64, len(vals))
 		copy(ys, vals)
@@ -6498,10 +6674,16 @@ func renderTTFBChart(state *uiState) image.Image {
 			}
 		}
 	}
+
+	// Hold P25/P75 for optional IQR bands per family
 	var ovP25, ovP75 []float64
 	var v4P25, v4P75 []float64
 	var v6P25, v6P75 []float64
+	// Track family-specific maxima for median and P75 to enforce single-family occupancy
+	ovMedMax, v4MedMax, v6MedMax := -math.MaxFloat64, -math.MaxFloat64, -math.MaxFloat64
+	ovP75Max, v4P75Max, v6P75Max := -math.MaxFloat64, -math.MaxFloat64, -math.MaxFloat64
 	if state.showOverall {
+		// Build values for avg/median/min/max (Overall)
 		avgVals := make([]float64, len(rows))
 		medVals := make([]float64, len(rows))
 		minVals := make([]float64, len(rows))
@@ -6517,16 +6699,46 @@ func renderTTFBChart(state *uiState) image.Image {
 			} else {
 				minVals[i] = math.NaN()
 			}
+			for _, v := range medVals {
+				if !math.IsNaN(v) && v > ovMedMax {
+					ovMedMax = v
+				}
+			}
+			for _, v := range p75Vals {
+				if !math.IsNaN(v) && v > ovP75Max {
+					ovP75Max = v
+				}
+			}
 			// Include zero as valid for Max, only drop negative/NaN
 			if !math.IsNaN(r.MaxTTFBMs) && r.MaxTTFBMs >= 0 {
 				maxVals[i] = r.MaxTTFBMs
 			} else {
 				maxVals[i] = math.NaN()
 			}
+			for _, v := range medVals {
+				if !math.IsNaN(v) && v > v4MedMax {
+					v4MedMax = v
+				}
+			}
+			for _, v := range p75Vals {
+				if !math.IsNaN(v) && v > v4P75Max {
+					v4P75Max = v
+				}
+			}
 			if r.AvgP25TTFBMs > 0 {
 				p25Vals[i] = r.AvgP25TTFBMs
 			} else {
 				p25Vals[i] = math.NaN()
+			}
+			for _, v := range medVals {
+				if !math.IsNaN(v) && v > v6MedMax {
+					v6MedMax = v
+				}
+			}
+			for _, v := range p75Vals {
+				if !math.IsNaN(v) && v > v6P75Max {
+					v6P75Max = v
+				}
 			}
 			if r.AvgP75TTFBMs > 0 {
 				p75Vals[i] = r.AvgP75TTFBMs
@@ -6661,47 +6873,139 @@ func renderTTFBChart(state *uiState) image.Image {
 		v6P25, v6P75 = p25Vals, p75Vals
 	}
 
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		// Add a small margin to avoid dots touching edges
-		pad := (nMax - nMin) * 0.06
-		if pad <= 0 {
-			pad = math.Max(1, nMax*0.05)
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		// Absolute mode with auto-fit: if data sits high above zero, zoom to data range
-		if maxY <= 0 {
-			maxY = 1
-		}
-		// Decide whether to anchor at 0 or zoom to [min,max]
-		anchorZero := true
-		// If the minimum is at least 20% of the maximum, prefer zooming to [min,max].
-		if minY > 0 && (minY/maxY) >= 0.2 {
-			anchorZero = false
-		}
-		if anchorZero {
-			_, nMax := niceAxisBounds(0, maxY)
-			yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-			// Provide nice ticks when anchored at zero as well
-			yTicks = niceTicks(0, nMax, 6)
-		} else {
-			nMin, nMax := niceAxisBounds(minY, maxY)
-			pad := (nMax - nMin) * 0.06
-			if pad <= 0 {
-				pad = math.Max(1, nMax*0.05)
+	// Ensure axis min/max consider P25/P75 when IQR is shown, and also when median-only variant
+	if state.showIQR || (state.showMedian && !state.showAvg && !state.showMin && !state.showMax) {
+		updateRangeFrom := func(vals []float64) {
+			for _, v := range vals {
+				if math.IsNaN(v) {
+					continue
+				}
+				if v < minY {
+					minY = v
+				}
+				if v > maxY {
+					maxY = v
+				}
 			}
-			yAxisRange = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-			yTicks = niceTicks(nMin, nMax, 6)
+		}
+		if ovP25 != nil && ovP75 != nil {
+			updateRangeFrom(ovP25)
+			updateRangeFrom(ovP75)
+		}
+		if v4P25 != nil && v4P75 != nil {
+			updateRangeFrom(v4P25)
+			updateRangeFrom(v4P75)
+		}
+		if v6P25 != nil && v6P75 != nil {
+			updateRangeFrom(v6P25)
+			updateRangeFrom(v6P75)
 		}
 	}
+
+	// Include rolling overlay extremes to avoid clipping when overlays exceed the median series
+	if state.showRolling && len(rows) >= 2 && state.rollingWindow >= 2 {
+		build := func(sel func(analysis.BatchSummary) (float64, bool)) ([]float64, []bool) {
+			ys := make([]float64, len(rows))
+			ok := make([]bool, len(rows))
+			for i, r := range rows {
+				v, valid := sel(r)
+				if valid && !math.IsNaN(v) && v > 0 {
+					ys[i] = v
+					ok[i] = true
+				}
+			}
+			return ys, ok
+		}
+		rolling := func(vals []float64, oks []bool, win int) ([]float64, []float64) {
+			n := len(vals)
+			if win > n {
+				win = n
+			}
+			m := make([]float64, n)
+			s := make([]float64, n)
+			var sum, sumsq float64
+			count := 0
+			for i := 0; i < n; i++ {
+				if oks[i] {
+					sum += vals[i]
+					sumsq += vals[i] * vals[i]
+					count++
+				}
+				if i >= win {
+					j := i - win
+					if oks[j] {
+						sum -= vals[j]
+						sumsq -= vals[j] * vals[j]
+						count--
+					}
+				}
+				if count >= 2 {
+					mu := sum / float64(count)
+					v := sumsq/float64(count) - mu*mu
+					if v < 0 {
+						v = 0
+					}
+					m[i] = mu
+					s[i] = math.Sqrt(v)
+				} else {
+					m[i] = math.NaN()
+					s[i] = math.NaN()
+				}
+			}
+			return m, s
+		}
+		extendFromBand := func(m, s []float64) {
+			for i := range m {
+				if !math.IsNaN(m[i]) {
+					if m[i] < minY {
+						minY = m[i]
+					}
+					if m[i] > maxY {
+						maxY = m[i]
+					}
+				}
+				if state.showRollingBand && !math.IsNaN(m[i]) && !math.IsNaN(s[i]) {
+					low := m[i] - s[i]
+					high := m[i] + s[i]
+					if low < minY {
+						minY = low
+					}
+					if high > maxY {
+						maxY = high
+					}
+				}
+			}
+		}
+		if state.showOverall {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) { return b.AvgTTFB, b.AvgTTFB > 0 })
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+		if state.showIPv4 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv4 == nil {
+					return 0, false
+				}
+				return b.IPv4.AvgTTFB, b.IPv4.AvgTTFB > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+		if state.showIPv6 {
+			ys, ok := build(func(b analysis.BatchSummary) (float64, bool) {
+				if b.IPv6 == nil {
+					return 0, false
+				}
+				return b.IPv6.AvgTTFB, b.IPv6.AvgTTFB > 0
+			})
+			m, s := rolling(ys, ok, state.rollingWindow)
+			extendFromBand(m, s)
+		}
+	}
+
+	// Clamp for median-only Absolute with up to two visible families to ensure ≥50% occupancy
+	maxY = applyMedianOnlyAbsoluteOccupancyClamp(maxY, state, ovMedMax, v4MedMax, v6MedMax, ovP75Max, v4P75Max, v6P75Max)
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, state.showMedian && !state.showAvg && !state.showMin && !state.showMax)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -7227,23 +7531,8 @@ func renderStallCountChart(state *uiState) image.Image {
 			return val, true
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	// Unified Y-axis handling (non-percent count metric)
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -7661,23 +7950,7 @@ func renderDNSLookupChart(state *uiState) image.Image {
 			}, chart.ColorGreen)
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -7776,23 +8049,7 @@ func renderTCPConnectChart(state *uiState) image.Image {
 			return b.IPv6.AvgConnectMs
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -7891,23 +8148,7 @@ func renderTLSHandshakeChart(state *uiState) image.Image {
 			return b.IPv6.AvgTLSHandshake
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY < 1 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -8093,23 +8334,7 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 0 {
-			maxY = 1
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9049,24 +9274,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 			return b.IPv6.AvgPlateauCount
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		// baseline at 0 with a nice rounded max
-		if maxY <= 1 {
-			maxY = 2
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9169,23 +9377,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 			return b.IPv6.AvgLongestPlateau
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 10 {
-			maxY = 10
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9411,23 +9603,7 @@ func renderTailHeavinessChart(state *uiState) image.Image {
 			return b.IPv6.AvgP99P50Ratio
 		}, chart.ColorGreen)
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if state.useRelative && haveY {
-		if maxY <= minY {
-			maxY = minY + 0.1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	} else if !state.useRelative && haveY {
-		if maxY <= 1 {
-			maxY = 2
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9501,23 +9677,8 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6−IPv4", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	// Axis symmetric around 0 when absolute mode
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	// Signed delta: ensure zero included in Absolute mode
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9590,22 +9751,8 @@ func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv4−IPv6", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	// Signed delta: ensure zero included in Absolute mode
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9678,22 +9825,8 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	// Signed percent delta: ensure zero included in Absolute mode
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9766,22 +9899,7 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6 vs IPv4 %", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9856,22 +9974,7 @@ func renderSLASpeedDeltaChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9946,22 +10049,7 @@ func renderSLATTFBDeltaChart(state *uiState) image.Image {
 			series = chart.ContinuousSeries{Name: "IPv6−IPv4 pp", XValues: xs, YValues: ys, Style: st}
 		}
 	}
-	var yAxisRange chart.Range
-	var yTicks []chart.Tick
-	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
-	if haveY {
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		if !state.useRelative {
-			if nMin > 0 {
-				nMin = 0
-			}
-			if nMax < 0 {
-				nMax = 0
-			}
-		}
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
-	}
+	yAxisRange, yTicks := computeYAxisRangeSigned(minY, maxY, state.useRelative)
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10567,7 +10655,118 @@ func xCentersIndexMode(n int, imgW, imgH, viewW, viewH float32) []float32 {
 }
 
 // indexFromMouseIndexMode returns the nearest batch index for a given mouseX in view space.
-// (removed unused crosshair helpers; crosshair uses alternate path)
+func indexFromMouseIndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) int {
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	if len(centers) == 0 {
+		return 0
+	}
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, c := range centers {
+		d := float32(math.Abs(float64(mouseX - c)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	if best < 0 {
+		best = 0
+	}
+	if best >= len(centers) {
+		best = len(centers) - 1
+	}
+	return best
+}
+
+// nearestIndexAndLineXFromCenters picks nearest index to mouseX given precomputed centers.
+func nearestIndexAndLineXFromCenters(centers []float32, mouseX float32) (int, float32) {
+	if len(centers) == 0 {
+		return 0, 0
+	}
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, c := range centers {
+		d := float32(math.Abs(float64(mouseX - c)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best, centers[best]
+}
+
+// snappedIndexAndLineX_IndexMode returns nearest index and its snapped X line coordinate.
+func snappedIndexAndLineX_IndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	return nearestIndexAndLineXFromCenters(centers, mouseX)
+}
+
+// xCentersTimeMode computes pixel x positions for time-based x-axis, proportional to time span.
+func xCentersTimeMode(times []time.Time, imgW, imgH, viewW, viewH float32) []float32 {
+	n := len(times)
+	if n == 0 {
+		return nil
+	}
+	drawX, _, _, _, scale := computeContainRect(imgW, imgH, viewW, viewH)
+	leftPadImg := float32(16) + axisLeftGutterPx
+	rightPadImg := float32(12) + axisRightGutterPx
+	plotWImg := imgW - leftPadImg - rightPadImg
+	if plotWImg < 1 {
+		plotWImg = imgW
+	}
+	tmin := times[0]
+	tmax := times[0]
+	for _, t := range times {
+		if t.Before(tmin) {
+			tmin = t
+		}
+		if t.After(tmax) {
+			tmax = t
+		}
+	}
+	span := tmax.Sub(tmin).Seconds()
+	if span <= 0 {
+		// fallback to equal spacing
+		return xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	}
+	px := make([]float32, n)
+	for i, t := range times {
+		dx := float32(t.Sub(tmin).Seconds() / span)
+		pxImg := leftPadImg + plotWImg*dx
+		px[i] = drawX + pxImg*scale
+	}
+	return px
+}
+
+// snappedIndexAndLineX_TimeMode returns nearest index and snapped X for time-based axis.
+func snappedIndexAndLineX_TimeMode(times []time.Time, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	centers := xCentersTimeMode(times, imgW, imgH, viewW, viewH)
+	return nearestIndexAndLineXFromCenters(centers, mouseX)
+}
+
+// labelForIndex returns the display label for a given index per x-axis mode.
+func labelForIndex(rows []analysis.BatchSummary, xAxisMode string, idx int) string {
+	if idx < 0 || idx >= len(rows) {
+		return ""
+	}
+	switch xAxisMode {
+	case "run_tag":
+		return rows[idx].RunTag
+	case "time":
+		// RunTag uses 20060102_150405; convert to 01-02 15:04:05 if parseable
+		rt := rows[idx].RunTag
+		// Accept both YYYYmmdd_HHMMSS and RFC3339
+		if t, err := time.Parse("20060102_150405", rt); err == nil {
+			return t.Format("01-02 15:04:05")
+		}
+		if t, err := time.Parse(time.RFC3339, rt); err == nil {
+			return t.Format("01-02 15:04:05")
+		}
+		return rt
+	default:
+		return rows[idx].RunTag
+	}
+}
 
 // drawHint draws a small hint string onto the provided image near the bottom-left.
 func drawHint(img image.Image, text string) image.Image {
