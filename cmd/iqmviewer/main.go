@@ -998,7 +998,19 @@ func main() {
 	a := app.NewWithID("com.iqm.viewer")
 	a.Settings().SetTheme(&darkTheme{})
 	w := a.NewWindow("IQM Viewer")
-	w.Resize(fyne.NewSize(1100, 800))
+	// Main window sizing: enforce a sensible minimum, and restore last size if available.
+	const minMainW, minMainH = float32(1100), float32(750)
+	// Bigger default to show more detail on first launch
+	defW, defH := 1400, 950
+	prefW := a.Preferences().IntWithFallback("mainWindowW", defW)
+	prefH := a.Preferences().IntWithFallback("mainWindowH", defH)
+	if float32(prefW) < minMainW {
+		prefW = int(minMainW)
+	}
+	if float32(prefH) < minMainH {
+		prefH = int(minMainH)
+	}
+	w.Resize(fyne.NewSize(float32(prefW), float32(prefH)))
 
 	state := &uiState{
 		app:             a,
@@ -1785,12 +1797,19 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 	// Redraw charts on window resize so they scale with width
 	if w.Canvas() != nil {
 		prevW := int(w.Canvas().Size().Width)
+		prevH := int(w.Canvas().Size().Height)
 		// Minimum pixel delta to consider as a real resize. Avoids redraw loops from tiny width jitters.
 		const minWidthDelta = 8
 		done := make(chan struct{})
 		w.SetOnClosed(func() {
 			// ensure latest UI state (including crosshair) is persisted
 			savePrefs(state)
+			// persist last window size for next launch
+			if c := w.Canvas(); c != nil {
+				sz := c.Size()
+				state.app.Preferences().SetInt("mainWindowW", int(sz.Width))
+				state.app.Preferences().SetInt("mainWindowH", int(sz.Height))
+			}
 			close(done)
 		})
 		go func() {
@@ -1807,12 +1826,30 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 					}
 					sz := c.Size()
 					curW := int(sz.Width)
-					if curW != prevW {
-						if curW > prevW+minWidthDelta || curW < prevW-minWidthDelta {
-							prevW = curW
-							fyne.Do(func() {
-								redrawCharts(state)
-							})
+					curH := int(sz.Height)
+					// Enforce a minimum window size
+					if sz.Width < minMainW || sz.Height < minMainH {
+						wW := sz.Width
+						wH := sz.Height
+						if wW < minMainW {
+							wW = minMainW
+						}
+						if wH < minMainH {
+							wH = minMainH
+						}
+						fyne.Do(func() { w.Resize(fyne.NewSize(wW, wH)) })
+						continue
+					}
+
+					widthChanged := curW > prevW+minWidthDelta || curW < prevW-minWidthDelta
+					heightChanged := curH > prevH+minWidthDelta || curH < prevH-minWidthDelta
+					if widthChanged || heightChanged {
+						prevW, prevH = curW, curH
+						// Persist latest window size periodically as user resizes
+						state.app.Preferences().SetInt("mainWindowW", curW)
+						state.app.Preferences().SetInt("mainWindowH", curH)
+						if widthChanged {
+							fyne.Do(func() { redrawCharts(state) })
 						}
 					}
 				}
