@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,6 +144,9 @@ func main() {
 	// Self-test flags (default-on)
 	selfTest := flag.Bool("selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
 	selfTestDur := flag.Duration("selftest-duration", 300*time.Millisecond, "Duration for local throughput self-test")
+	calib := flag.Bool("calibrate", false, "Run local speed calibration at startup and embed results into metadata")
+	calibTargetsCSV := flag.String("calibrate-targets", "250,1000,10000", "Comma-separated target speeds in kbps for calibration (0 means skip; always measures max)")
+	calibDur := flag.Duration("calibrate-duration", 500*time.Millisecond, "Duration per calibration target")
 	flag.Parse()
 
 	if *selfTest {
@@ -151,6 +155,29 @@ func main() {
 			monitor.SetLocalSelfTestKbps(kbps)
 		} else {
 			fmt.Printf("[selftest] local throughput probe error: %v\n", err)
+		}
+	}
+
+	if *calib {
+		// parse targets
+		var targets []float64
+		for _, tok := range strings.Split(*calibTargetsCSV, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			if v, err := strconv.ParseFloat(tok, 64); err == nil && v >= 0 {
+				if v > 0 {
+					targets = append(targets, v)
+				}
+			}
+		}
+		cal, err := monitor.RunLocalSpeedCalibration(targets, *calibDur)
+		if err != nil {
+			fmt.Printf("[calibration] error: %v\n", err)
+		} else {
+			monitor.SetCalibration(cal)
+			fmt.Printf("[calibration] max=%.0f kbps, %d targets\n", cal.MaxKbps, len(cal.Ranges))
 		}
 	}
 

@@ -147,9 +147,44 @@ func buildDiagnosticsText(bs analysis.BatchSummary) string {
 		b.WriteString("\n")
 	}
 
-	// Local baseline
-	if bs.LocalSelfTestKbps > 0 {
-		b.WriteString(fmt.Sprintf("Local self-test baseline: %.0f kbps\n\n", bs.LocalSelfTestKbps))
+	// Local baseline and calibration
+	if bs.LocalSelfTestKbps > 0 || bs.CalibrationMaxKbps > 0 {
+		b.WriteString("Local calibration\n")
+		if bs.LocalSelfTestKbps > 0 {
+			b.WriteString(fmt.Sprintf("  Self-test (max): %.0f kbps\n", bs.LocalSelfTestKbps))
+		}
+		if bs.CalibrationMaxKbps > 0 {
+			b.WriteString(fmt.Sprintf("  Calibration (max): %.0f kbps\n", bs.CalibrationMaxKbps))
+		}
+		if len(bs.CalibrationRangesTarget) > 0 && len(bs.CalibrationRangesObs) == len(bs.CalibrationRangesTarget) {
+			b.WriteString("  Targets -> Observed (error)\n")
+			for i := range bs.CalibrationRangesTarget {
+				errPct := 0.0
+				if i < len(bs.CalibrationRangesErrPct) {
+					errPct = bs.CalibrationRangesErrPct[i]
+				}
+				b.WriteString(fmt.Sprintf("    %.0f -> %.0f kbps (%.1f%%)\n", bs.CalibrationRangesTarget[i], bs.CalibrationRangesObs[i], errPct))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Host/system snapshot
+	if bs.Hostname != "" || bs.MemTotalBytes > 0 || bs.DiskRootTotalBytes > 0 || bs.LoadAvg1 > 0 {
+		b.WriteString("Host snapshot\n")
+		if bs.Hostname != "" {
+			b.WriteString(fmt.Sprintf("  Host: %s  (CPU: %d)\n", bs.Hostname, bs.NumCPU))
+		}
+		if bs.LoadAvg1 > 0 {
+			b.WriteString(fmt.Sprintf("  Load: %.2f / %.2f / %.2f\n", bs.LoadAvg1, bs.LoadAvg5, bs.LoadAvg15))
+		}
+		if bs.MemTotalBytes > 0 {
+			b.WriteString(fmt.Sprintf("  Memory: %.1f / %.1f GB free\n", bs.MemFreeOrAvailable/1e9, bs.MemTotalBytes/1e9))
+		}
+		if bs.DiskRootTotalBytes > 0 {
+			b.WriteString(fmt.Sprintf("  Disk /: %.1f / %.1f GB free\n", bs.DiskRootFreeBytes/1e9, bs.DiskRootTotalBytes/1e9))
+		}
+		b.WriteString("\n")
 	}
 
 	// Proxy hints
@@ -230,25 +265,37 @@ func buildDiagnosticsText(bs analysis.BatchSummary) string {
 // buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
 func buildDiagnosticsJSON(bs analysis.BatchSummary) string {
 	payload := map[string]any{
-		"run_tag":            bs.RunTag,
-		"dns_server":         emptyDash(bs.DNSServer),
-		"dns_network":        emptyDash(bs.DNSServerNetwork),
-		"next_hop":           emptyDash(bs.NextHop),
-		"next_hop_source":    emptyDash(bs.NextHopSource),
-		"avg_dns_ms":         bs.AvgDNSMs,
-		"avg_connect_ms":     bs.AvgConnectMs,
-		"avg_tls_ms":         bs.AvgTLSHandshake,
-		"baseline_kbps":      bs.LocalSelfTestKbps,
-		"stall_rate_pct":     bs.StallRatePct,
-		"transient_rate_pct": bs.MicroStallRatePct,
-		"low_speed_pct":      bs.LowSpeedTimeSharePct,
-		"pretffb_rate_pct":   bs.PreTTFBStallRatePct,
-		"cache_hit_pct":      bs.CacheHitRatePct,
-		"warm_cache_pct":     bs.WarmCacheSuspectedRatePct,
-		"prefetch_pct":       bs.PrefetchSuspectedRatePct,
-		"ip_mismatch_pct":    bs.IPMismatchRatePct,
-		"conn_reuse_pct":     bs.ConnReuseRatePct,
-		"chunked_pct":        bs.ChunkedRatePct,
+		"run_tag":              bs.RunTag,
+		"dns_server":           emptyDash(bs.DNSServer),
+		"dns_network":          emptyDash(bs.DNSServerNetwork),
+		"next_hop":             emptyDash(bs.NextHop),
+		"next_hop_source":      emptyDash(bs.NextHopSource),
+		"avg_dns_ms":           bs.AvgDNSMs,
+		"avg_connect_ms":       bs.AvgConnectMs,
+		"avg_tls_ms":           bs.AvgTLSHandshake,
+		"baseline_kbps":        bs.LocalSelfTestKbps,
+		"calibration_max_kbps": bs.CalibrationMaxKbps,
+		"calibration_targets":  bs.CalibrationRangesTarget,
+		"calibration_observed": bs.CalibrationRangesObs,
+		"stall_rate_pct":       bs.StallRatePct,
+		"transient_rate_pct":   bs.MicroStallRatePct,
+		"low_speed_pct":        bs.LowSpeedTimeSharePct,
+		"pretffb_rate_pct":     bs.PreTTFBStallRatePct,
+		"cache_hit_pct":        bs.CacheHitRatePct,
+		"warm_cache_pct":       bs.WarmCacheSuspectedRatePct,
+		"prefetch_pct":         bs.PrefetchSuspectedRatePct,
+		"ip_mismatch_pct":      bs.IPMismatchRatePct,
+		"conn_reuse_pct":       bs.ConnReuseRatePct,
+		"chunked_pct":          bs.ChunkedRatePct,
+		"hostname":             bs.Hostname,
+		"num_cpu":              bs.NumCPU,
+		"load_1":               bs.LoadAvg1,
+		"load_5":               bs.LoadAvg5,
+		"load_15":              bs.LoadAvg15,
+		"mem_total_bytes":      bs.MemTotalBytes,
+		"mem_free_bytes":       bs.MemFreeOrAvailable,
+		"disk_total_bytes":     bs.DiskRootTotalBytes,
+		"disk_free_bytes":      bs.DiskRootFreeBytes,
 	}
 	if k, _, ok := topK(bs.TLSVersionRatePct); ok {
 		payload["tls_majority"] = k

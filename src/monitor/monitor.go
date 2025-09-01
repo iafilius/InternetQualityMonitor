@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/iafilius/InternetQualityMonitor/src/types"
@@ -299,7 +300,14 @@ type Meta struct {
 	HomeOfficeEstimate   string   `json:"home_office_estimate,omitempty"`
 	// LocalSelfTestKbps captures the local loopback throughput self-test result (kbps) if measured this run.
 	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
-	SchemaVersion     int     `json:"schema_version"`
+	// Optional: local speed calibration results (ranges and max) to assess measurement fidelity
+	Calibration *Calibration `json:"calibration,omitempty"`
+	// Optional: memory and disk stats to assess resource pressure
+	MemTotalBytes      uint64 `json:"mem_total_bytes,omitempty"`
+	MemFreeOrAvailable uint64 `json:"mem_free_or_available_bytes,omitempty"`
+	DiskRootTotalBytes uint64 `json:"disk_root_total_bytes,omitempty"`
+	DiskRootFreeBytes  uint64 `json:"disk_root_free_bytes,omitempty"`
+	SchemaVersion      int    `json:"schema_version"`
 }
 
 type ResultEnvelope struct {
@@ -1932,6 +1940,10 @@ var processStart = time.Now()
 // localSelfTestKbps holds the most recent self-test result set by the host process.
 var localSelfTestKbps float64
 
+// calibrationOnce protects calibration metadata updates that may run early at startup
+var calibrationOnce sync.Once
+var cachedCalibration *Calibration
+
 // SetLocalSelfTestKbps records the local throughput self-test (kbps) to be embedded in meta for each line.
 func SetLocalSelfTestKbps(kbps float64) {
 	if kbps <= 0 {
@@ -1942,6 +1954,126 @@ func SetLocalSelfTestKbps(kbps float64) {
 	if cachedBaseMeta != nil {
 		cachedBaseMeta.LocalSelfTestKbps = kbps
 	}
+}
+
+// CalibrationPoint captures the observed throughput versus a target rate.
+type CalibrationPoint struct {
+	TargetKbps   float64 `json:"target_kbps"`
+	ObservedKbps float64 `json:"observed_kbps"`
+	ErrorPct     float64 `json:"error_pct"`
+}
+
+// Calibration summarizes local measurement fidelity across a few target rates and the maximum sustainable speed.
+type Calibration struct {
+	CalibratedUTC   string             `json:"calibrated_utc"`
+	ProbeDurationMs int                `json:"probe_duration_ms,omitempty"`
+	MaxKbps         float64            `json:"max_kbps,omitempty"`
+	Ranges          []CalibrationPoint `json:"ranges,omitempty"`
+}
+
+// SetCalibration stores calibration results to embed in subsequent meta copies.
+func SetCalibration(c *Calibration) {
+	if c == nil {
+		return
+	}
+	cachedCalibration = c
+	if cachedBaseMeta != nil {
+		cachedBaseMeta.Calibration = c
+	}
+}
+
+// RunLocalSpeedCalibration runs a local calibration across target rates (kbps). target of 0 means unlimited (max probe).
+// It returns a Calibration struct with observed kbps for each target and a separate max measurement.
+func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*Calibration, error) {
+	if perTargetDur <= 0 {
+		perTargetDur = 500 * time.Millisecond
+	}
+	cal := &Calibration{CalibratedUTC: time.Now().UTC().Format(time.RFC3339Nano), ProbeDurationMs: int(perTargetDur / time.Millisecond)}
+	// Measure unlimited/max first for a stable reference
+	if kbps, err := LocalMaxSpeedProbe(perTargetDur); err == nil {
+		cal.MaxKbps = kbps
+	}
+	// For each target, spin a rate-limited httptest server and measure observed throughput
+	for _, tgt := range targets {
+		if tgt <= 0 {
+			// skip explicit 0 target here; max already recorded
+			continue
+		}
+		// create a server that writes at approximately tgt kbps
+		targetKbps := tgt
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Determine bytes per second
+			bytesPerSec := (targetKbps * 1000.0) / 8.0
+			if bytesPerSec <= 0 {
+				bytesPerSec = 1
+			}
+			// Choose chunk size and sleep per chunk
+			const chunkSize = 32 * 1024 // 32KB
+			buf := make([]byte, chunkSize)
+			for i := range buf {
+				buf[i] = 0x5A
+			}
+			sleepPerChunk := time.Duration(float64(chunkSize) / bytesPerSec * float64(time.Second))
+			if sleepPerChunk < time.Microsecond {
+				sleepPerChunk = time.Microsecond
+			}
+			deadline := time.Now().Add(perTargetDur + 50*time.Millisecond)
+			for time.Now().Before(deadline) {
+				if _, err := w.Write(buf); err != nil {
+					return
+				}
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(sleepPerChunk)
+			}
+		}))
+		// client reads for perTargetDur and computes observed throughput
+		func() {
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), perTargetDur)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+			tr := &http.Transport{DisableCompression: true}
+			client := &http.Client{Transport: tr}
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil {
+				cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: 0, ErrorPct: 100})
+				return
+			}
+			defer resp.Body.Close()
+			var nBytes int64
+			buf := make([]byte, 64*1024)
+			for {
+				if time.Since(start) >= perTargetDur {
+					break
+				}
+				nr, er := resp.Body.Read(buf)
+				if nr > 0 {
+					nBytes += int64(nr)
+				}
+				if er != nil {
+					if errors.Is(er, io.EOF) {
+						break
+					}
+					break
+				}
+			}
+			elapsed := time.Since(start).Seconds()
+			var obsKbps float64
+			if elapsed > 0 {
+				obsKbps = (float64(nBytes) * 8.0 / 1000.0) / elapsed
+			}
+			errPct := 0.0
+			if targetKbps > 0 {
+				errPct = math.Abs(obsKbps-targetKbps) / targetKbps * 100.0
+			}
+			cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: obsKbps, ErrorPct: errPct})
+		}()
+	}
+	SetCalibration(cal)
+	return cal, nil
 }
 
 // wrapRoot can accept either a typed *SiteResult plus supplemental map fields, or a legacy map.
@@ -2028,10 +2160,22 @@ func gatherBaseMeta() *Meta {
 		}
 		m.ConnectionType = detectConnectionType()
 		m.Containerized = detectContainer()
+		// Attempt to populate memory and disk stats (best-effort)
+		if tot, free, err := readMem(); err == nil {
+			m.MemTotalBytes = tot
+			m.MemFreeOrAvailable = free
+		}
+		if dtot, dfree, err := readDisk("/"); err == nil {
+			m.DiskRootTotalBytes = dtot
+			m.DiskRootFreeBytes = dfree
+		}
 		m.SchemaVersion = SchemaVersion
 		m.Situation = currentSituation
 		if localSelfTestKbps > 0 {
 			m.LocalSelfTestKbps = localSelfTestKbps
+		}
+		if cachedCalibration != nil {
+			m.Calibration = cachedCalibration
 		}
 		cachedBaseMeta = m
 	})
@@ -2041,6 +2185,9 @@ func gatherBaseMeta() *Meta {
 	// Ensure the latest self-test value is reflected even if set after base init.
 	if localSelfTestKbps > 0 {
 		cp.LocalSelfTestKbps = localSelfTestKbps
+	}
+	if cachedCalibration != nil {
+		cp.Calibration = cachedCalibration
 	}
 	return &cp
 }
@@ -2080,6 +2227,83 @@ func readUptime() (float64, error) {
 	}
 	f, err := strconv.ParseFloat(parts[0], 64)
 	return f, err
+}
+
+// readMem attempts to return total and free/available memory in bytes on Linux and macOS. Best-effort.
+func readMem() (uint64, uint64, error) {
+	switch runtime.GOOS {
+	case "linux":
+		b, err := os.ReadFile("/proc/meminfo")
+		if err != nil {
+			return 0, 0, err
+		}
+		// Parse MemTotal and MemAvailable in kB
+		var totKB, availKB uint64
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fmt.Sscanf(line, "MemTotal: %d kB", &totKB)
+			} else if strings.HasPrefix(line, "MemAvailable:") {
+				fmt.Sscanf(line, "MemAvailable: %d kB", &availKB)
+			}
+		}
+		if totKB == 0 {
+			return 0, 0, fmt.Errorf("meminfo parse")
+		}
+		return totKB * 1024, availKB * 1024, nil
+	case "darwin":
+		// total: sysctl hw.memsize
+		out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0, 0, err
+		}
+		var tot uint64
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &tot)
+		// available: vm_stat free + inactive pages
+		vmOut, err := exec.Command("/usr/bin/vm_stat").Output()
+		if err != nil {
+			return tot, 0, nil
+		}
+		var pageSize uint64 = 4096 // default; vm_stat header may tell the true size
+		lines := strings.Split(string(vmOut), "\n")
+		if len(lines) > 0 && strings.Contains(lines[0], "page size of") {
+			// e.g., Mach Virtual Memory Statistics: (page size of 16384 bytes)
+			var ps uint64
+			if _, err := fmt.Sscanf(lines[0], "Mach Virtual Memory Statistics: (page size of %d bytes)", &ps); err == nil && ps > 0 {
+				pageSize = ps
+			}
+		}
+		var freePages, inactivePages uint64
+		for _, ln := range lines {
+			if strings.HasPrefix(strings.TrimSpace(ln), "Pages free:") {
+				fmt.Sscanf(ln, "Pages free: %d.", &freePages)
+			}
+			if strings.HasPrefix(strings.TrimSpace(ln), "Pages inactive:") {
+				fmt.Sscanf(ln, "Pages inactive: %d.", &inactivePages)
+			}
+		}
+		avail := (freePages + inactivePages) * pageSize
+		return tot, avail, nil
+	default:
+		return 0, 0, fmt.Errorf("unsupported")
+	}
+}
+
+// readDisk returns total and free bytes for the given mount path (best-effort; Unix only)
+func readDisk(path string) (uint64, uint64, error) {
+	// syscall is deprecated but sufficient here and avoids external deps
+	type statfsT struct {
+		// placeholder type to avoid import alias churn in patch header; we'll use syscall.Statfs directly below
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, err
+	}
+	// Prefer Bavail for free bytes available to non-root
+	total := uint64(st.Blocks) * uint64(st.Bsize)
+	var bavail uint64
+	// Some platforms use different field names; protect with conversion
+	bavail = uint64(st.Bavail) * uint64(st.Bsize)
+	return total, bavail, nil
 }
 func readKernelVersion() (string, error) {
 	if runtime.GOOS != "linux" {

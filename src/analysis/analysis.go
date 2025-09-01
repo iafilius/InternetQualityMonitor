@@ -104,6 +104,21 @@ type BatchSummary struct {
 	AvgP99TTFBMs float64 `json:"avg_ttfb_p99_ms,omitempty"`
 	// Local environment baseline (from meta; reflects latest seen in the batch)
 	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
+	// Host and system diagnostics (best-effort; latest seen in batch)
+	Hostname           string  `json:"hostname,omitempty"`
+	NumCPU             int     `json:"num_cpu,omitempty"`
+	LoadAvg1           float64 `json:"load_avg_1,omitempty"`
+	LoadAvg5           float64 `json:"load_avg_5,omitempty"`
+	LoadAvg15          float64 `json:"load_avg_15,omitempty"`
+	MemTotalBytes      float64 `json:"mem_total_bytes,omitempty"`
+	MemFreeOrAvailable float64 `json:"mem_free_or_available_bytes,omitempty"`
+	DiskRootTotalBytes float64 `json:"disk_root_total_bytes,omitempty"`
+	DiskRootFreeBytes  float64 `json:"disk_root_free_bytes,omitempty"`
+	// Calibration rollup
+	CalibrationMaxKbps      float64   `json:"calibration_max_kbps,omitempty"`
+	CalibrationRangesTarget []float64 `json:"calibration_ranges_target_kbps,omitempty"`
+	CalibrationRangesObs    []float64 `json:"calibration_ranges_observed_kbps,omitempty"`
+	CalibrationRangesErrPct []float64 `json:"calibration_ranges_error_pct,omitempty"`
 	// Network diagnostics (best-effort): reflect the most recent non-empty values within the batch
 	DNSServer        string `json:"dns_server,omitempty"`
 	DNSServerNetwork string `json:"dns_server_network,omitempty"`
@@ -281,6 +296,19 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		partialBody        bool
 		// meta
 		localSelfKbps float64
+		hostname      string
+		numCPU        int
+		load1         float64
+		load5         float64
+		load15        float64
+		memTotal      float64
+		memFree       float64
+		diskTotal     float64
+		diskFree      float64
+		calibMax      float64
+		calibTargets  []float64
+		calibObserved []float64
+		calibErrPct   []float64
 		// protocol/tls/encoding
 		httpProto string
 		tlsVer    string
@@ -369,6 +397,43 @@ readLoop:
 		// capture meta self-test baseline if present
 		if env.Meta.LocalSelfTestKbps > 0 {
 			bs.localSelfKbps = env.Meta.LocalSelfTestKbps
+		}
+		// capture host/system diagnostics (latest wins later)
+		if env.Meta.Hostname != "" {
+			bs.hostname = env.Meta.Hostname
+		}
+		if env.Meta.NumCPU > 0 {
+			bs.numCPU = env.Meta.NumCPU
+		}
+		if env.Meta.LoadAvg1 > 0 {
+			bs.load1 = env.Meta.LoadAvg1
+			bs.load5 = env.Meta.LoadAvg5
+			bs.load15 = env.Meta.LoadAvg15
+		}
+		if env.Meta.MemTotalBytes > 0 {
+			bs.memTotal = float64(env.Meta.MemTotalBytes)
+		}
+		if env.Meta.MemFreeOrAvailable > 0 {
+			bs.memFree = float64(env.Meta.MemFreeOrAvailable)
+		}
+		if env.Meta.DiskRootTotalBytes > 0 {
+			bs.diskTotal = float64(env.Meta.DiskRootTotalBytes)
+		}
+		if env.Meta.DiskRootFreeBytes > 0 {
+			bs.diskFree = float64(env.Meta.DiskRootFreeBytes)
+		}
+		// capture calibration if present
+		if env.Meta.Calibration != nil {
+			if env.Meta.Calibration.MaxKbps > 0 {
+				bs.calibMax = env.Meta.Calibration.MaxKbps
+			}
+			if len(env.Meta.Calibration.Ranges) > 0 {
+				for _, p := range env.Meta.Calibration.Ranges {
+					bs.calibTargets = append(bs.calibTargets, p.TargetKbps)
+					bs.calibObserved = append(bs.calibObserved, p.ObservedKbps)
+					bs.calibErrPct = append(bs.calibErrPct, p.ErrorPct)
+				}
+			}
 		}
 		// Track error presence without storing the raw line to reduce memory usage.
 		if bytes.Contains(line, []byte("tcp_error")) || bytes.Contains(line, []byte("http_error")) {
@@ -1178,6 +1243,34 @@ readLoop:
 		for i := len(recs) - 1; i >= 0; i-- {
 			if recs[i].localSelfKbps > 0 {
 				summary.LocalSelfTestKbps = recs[i].localSelfKbps
+				break
+			}
+		}
+		// Attach calibration & system metrics from the most recent record carrying them
+		for i := len(recs) - 1; i >= 0; i-- {
+			r := recs[i]
+			if r.hostname != "" {
+				summary.Hostname = r.hostname
+				summary.NumCPU = r.numCPU
+				summary.LoadAvg1 = r.load1
+				summary.LoadAvg5 = r.load5
+				summary.LoadAvg15 = r.load15
+			}
+			if r.memTotal > 0 {
+				summary.MemTotalBytes = r.memTotal
+				summary.MemFreeOrAvailable = r.memFree
+			}
+			if r.diskTotal > 0 {
+				summary.DiskRootTotalBytes = r.diskTotal
+				summary.DiskRootFreeBytes = r.diskFree
+			}
+			if r.calibMax > 0 || len(r.calibTargets) > 0 {
+				summary.CalibrationMaxKbps = r.calibMax
+				if len(r.calibTargets) > 0 {
+					summary.CalibrationRangesTarget = append([]float64(nil), r.calibTargets...)
+					summary.CalibrationRangesObs = append([]float64(nil), r.calibObserved...)
+					summary.CalibrationRangesErrPct = append([]float64(nil), r.calibErrPct...)
+				}
 				break
 			}
 		}
