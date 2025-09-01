@@ -2,7 +2,6 @@ package analysis
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,6 +169,20 @@ type BatchSummary struct {
 	ALPNCounts                       map[string]int     `json:"alpn_counts,omitempty"`
 	ALPNRatePct                      map[string]float64 `json:"alpn_rate_pct,omitempty"`
 	ChunkedRatePct                   float64            `json:"chunked_rate_pct,omitempty"`
+	// Error type breakdowns
+	// ErrorRateByTypePct is the percentage of all requests in the batch that failed for a given error type.
+	// Keys use short labels: dns, tcp, tls, head, http, range
+	ErrorRateByTypePct map[string]float64 `json:"error_rate_by_type_pct,omitempty"`
+	// ErrorShareByTypePct is the share of all errors attributed to each error type (sums to ~100% when there are errors).
+	ErrorShareByTypePct map[string]float64 `json:"error_share_by_type_pct,omitempty"`
+	// Error reason breakdowns (normalized subcategories like timeout, conn_refused, tls_cert, partial_body, http_5xx, etc.)
+	ErrorRateByReasonPct  map[string]float64 `json:"error_rate_by_reason_pct,omitempty"`
+	ErrorShareByReasonPct map[string]float64 `json:"error_share_by_reason_pct,omitempty"`
+	// Detailed error reason breakdowns (more granular buckets; additive and optional)
+	// Examples: http_404, http_429, http_503, tls_cert_expired, tls_cert_untrusted, tls_cert_hostname,
+	// tls_alert_handshake_failure, timeout_connect, timeout_tls, timeout_ttfb, timeout_read, other_eof, etc.
+	ErrorRateByReasonDetailedPct  map[string]float64 `json:"error_rate_by_reason_detailed_pct,omitempty"`
+	ErrorShareByReasonDetailedPct map[string]float64 `json:"error_share_by_reason_detailed_pct,omitempty"`
 }
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
@@ -256,6 +269,234 @@ type AnalyzeOptions struct {
 	MicroStallMinGapMs int64
 }
 
+// normalizeErrorReason maps a free-form error string to a compact normalized reason label.
+// The goal is to group similar root causes across TCP/TLS/HTTP/Range errors.
+// Returned keys are short, stable identifiers suitable for UI legends.
+func normalizeErrorReason(err string) string {
+	e := strings.ToLower(strings.TrimSpace(err))
+	if e == "" {
+		return ""
+	}
+	// DNS-related
+	if strings.Contains(e, "no such host") || strings.Contains(e, "server misbehaving") || strings.Contains(e, "dns") {
+		return "dns_failure"
+	}
+	// Timeouts
+	if strings.Contains(e, "timeout") || strings.Contains(e, "deadline exceeded") {
+		return "timeout"
+	}
+	// Connection refused / unreachable / resets
+	if strings.Contains(e, "refused") || strings.Contains(e, "econnrefused") {
+		return "conn_refused"
+	}
+	if strings.Contains(e, "reset") || strings.Contains(e, "econnreset") || strings.Contains(e, "rst_stream") {
+		return "conn_reset"
+	}
+	if strings.Contains(e, "network is unreachable") || strings.Contains(e, "no route to host") || strings.Contains(e, "host is down") {
+		return "unreachable"
+	}
+	// TLS / certificate
+	if strings.Contains(e, "x509:") || strings.Contains(e, "certificate") || strings.Contains(e, "unknown authority") {
+		return "tls_cert"
+	}
+	if strings.Contains(e, "tls") || strings.Contains(e, "ssl") {
+		return "tls_handshake"
+	}
+	// Proxy-specific errors
+	if strings.Contains(e, "proxyconnect") || strings.Contains(e, "proxy ") || strings.Contains(e, " via proxy") {
+		return "proxy"
+	}
+	// Stalls (generic)
+	if strings.Contains(e, "stall_") {
+		if strings.Contains(e, "stall_pre_ttfb") {
+			return "stall_pre_ttfb"
+		}
+		if strings.Contains(e, "stall_abort") {
+			return "stall_abort"
+		}
+		return "stall"
+	}
+	// Partial bodies (sometimes bubbled up as an HTTP error string)
+	if strings.Contains(e, "partial_body") || strings.Contains(e, "unexpected eof") {
+		return "partial_body"
+	}
+	// Fallback
+	return "other"
+}
+
+// normalizeHTTPReason refines HTTP errors, recognizing special markers and HTTP status buckets.
+func normalizeHTTPReason(err string, headStatus int) string {
+	e := strings.ToLower(strings.TrimSpace(err))
+	if e == "" {
+		return ""
+	}
+	if strings.Contains(e, "partial_body") {
+		return "partial_body"
+	}
+	if strings.Contains(e, "stall_pre_ttfb") {
+		return "stall_pre_ttfb"
+	}
+	if strings.Contains(e, "stall_abort") {
+		return "stall_abort"
+	}
+	// If HEAD surfaced an explicit 4xx/5xx, reflect that as the reason for the overall error context.
+	if headStatus >= 500 {
+		return "http_5xx"
+	}
+	if headStatus >= 400 {
+		return "http_4xx"
+	}
+	// Otherwise, fall back to generic normalization (timeouts/resets/etc.).
+	return normalizeErrorReason(e)
+}
+
+// normalizeErrorReasonDetailed returns a more granular label based on the free-form error string and context.
+// The returned string is stable and suitable for UI legends. It refines timeouts by stage, HTTP by status,
+// and TLS cert/alert causes where possible. Falls back to the coarse normalizeErrorReason.
+func normalizeErrorReasonDetailed(err string, headStatus int, typed string) string {
+	e := strings.ToLower(strings.TrimSpace(err))
+	// Precedence: explicit stall/partial markers first (they may be carried in HTTPError)
+	if strings.Contains(e, "partial_body") {
+		return "partial_body"
+	}
+	if strings.Contains(e, "stall_pre_ttfb") {
+		return "stall_pre_ttfb"
+	}
+	if strings.Contains(e, "stall_abort") {
+		return "stall_abort"
+	}
+	// HTTP specifics via explicit status if present
+	if headStatus >= 400 {
+		hs := headStatus
+		switch hs {
+		case 401, 403, 404, 407, 408, 409, 410, 412, 413, 414, 415, 416, 418, 429:
+			return fmt.Sprintf("http_%d", hs)
+		}
+		if hs >= 400 && hs < 500 {
+			return "http_4xx_other"
+		}
+	}
+	if headStatus >= 500 {
+		switch headStatus {
+		case 500, 501, 502, 503, 504:
+			return fmt.Sprintf("http_%d", headStatus)
+		}
+		return "http_5xx_other"
+	}
+	// If we have an HTTP-like literal in the error string, try to extract code
+	if strings.Contains(e, " http/") || strings.Contains(e, "status code") || strings.Contains(e, "http ") {
+		// naive pick of common codes
+		for _, code := range []string{"401", "403", "404", "407", "408", "409", "410", "412", "413", "414", "415", "416", "418", "429", "500", "501", "502", "503", "504"} {
+			if strings.Contains(e, code) {
+				return "http_" + code
+			}
+		}
+		// generic buckets
+		if strings.Contains(e, "4") && strings.Contains(e, "xx") { // “4xx” text
+			return "http_4xx_other"
+		}
+		if strings.Contains(e, "5") && strings.Contains(e, "xx") {
+			return "http_5xx_other"
+		}
+	}
+	// Timeouts refined by stage using the typed error hint
+	if strings.Contains(e, "timeout") || strings.Contains(e, "deadline exceeded") || strings.Contains(e, "i/o timeout") {
+		switch typed { // which stage surfaced the error first
+		case "tcp":
+			return "timeout_connect"
+		case "tls":
+			return "timeout_tls"
+		case "head", "http":
+			// Try to disambiguate waiting-for-headers vs body read
+			if strings.Contains(e, "awaiting headers") || strings.Contains(e, "while awaiting headers") || strings.Contains(e, "ttfb") {
+				return "timeout_ttfb"
+			}
+			if strings.Contains(e, "read") || strings.Contains(e, "body") || strings.Contains(e, "transfer") {
+				return "timeout_read"
+			}
+			return "timeout_http"
+		default:
+			return "timeout"
+		}
+	}
+	// TLS certificate / handshake specifics
+	if strings.Contains(e, "x509:") || strings.Contains(e, "certificate") || strings.Contains(e, "tls:") || strings.Contains(e, "ssl") {
+		// certificate buckets
+		if strings.Contains(e, "expired") {
+			return "tls_cert_expired"
+		}
+		if strings.Contains(e, "unknown authority") || strings.Contains(e, "signed by unknown") || strings.Contains(e, "self-signed") || strings.Contains(e, "self signed") {
+			return "tls_cert_untrusted"
+		}
+		if strings.Contains(e, "is not valid for") || strings.Contains(e, "hostname mismatch") || strings.Contains(e, "certificate is valid for") {
+			return "tls_cert_hostname"
+		}
+		if strings.Contains(e, "not yet valid") {
+			return "tls_cert_not_yet_valid"
+		}
+		if strings.Contains(e, "handshake failure") || strings.Contains(e, "alert handshake failure") {
+			return "tls_alert_handshake_failure"
+		}
+		if strings.Contains(e, "protocol version") || strings.Contains(e, "no renegotiation") || strings.Contains(e, "inappropriate fallback") {
+			return "tls_protocol_mismatch"
+		}
+		// generic TLS
+		if strings.Contains(e, "tls") || strings.Contains(e, "ssl") || strings.Contains(e, "x509:") {
+			// Map to coarse label for share consistency
+			return "tls_handshake"
+		}
+	}
+	// DNS subtypes (best-effort heuristics; often we don't carry raw DNS error text)
+	if strings.Contains(e, "no such host") {
+		return "dns_no_such_host"
+	}
+	if strings.Contains(e, "server misbehaving") {
+		return "dns_server_misbehaving"
+	}
+	if strings.Contains(e, "dns") && strings.Contains(e, "timeout") {
+		return "dns_timeout"
+	}
+	if strings.Contains(e, "proxyconnect") || strings.Contains(e, " via proxy") || strings.Contains(e, "proxy ") {
+		return "proxy"
+	}
+	// Transport specifics
+	if strings.Contains(e, "refused") || strings.Contains(e, "econnrefused") {
+		return "conn_refused"
+	}
+	if strings.Contains(e, "reset") || strings.Contains(e, "econnreset") || strings.Contains(e, "rst_stream") {
+		return "conn_reset"
+	}
+	if strings.Contains(e, "network is unreachable") || strings.Contains(e, "no route to host") || strings.Contains(e, "host is down") {
+		return "unreachable"
+	}
+	// Provide a slightly more informative other_* bucket for common cases
+	if strings.Contains(e, "unexpected eof") || strings.Contains(e, "unexpected end of file") || strings.Contains(e, "io: unexpected eof") {
+		return "other_unexpected_eof"
+	}
+	if strings.Contains(e, "context canceled") || strings.Contains(e, "context cancelled") {
+		return "other_context_canceled"
+	}
+	if strings.Contains(e, "eof") {
+		return "other_eof"
+	}
+	// Fallback to coarse
+	coarse := normalizeErrorReason(e)
+	if coarse == "other" && e != "" {
+		// try to extract a short token to reduce plain "other"
+		// pick first word without spaces
+		parts := strings.Fields(e)
+		if len(parts) > 0 {
+			token := parts[0]
+			token = strings.Trim(token, ":,;()[]")
+			token = strings.ReplaceAll(token, "/", "_")
+			if token != "" {
+				return "other_" + token
+			}
+		}
+	}
+	return coarse
+}
+
 // AnalyzeRecentResultsFullWithOptions parses results and computes extended batch metrics with options.
 func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches int, opts AnalyzeOptions) ([]BatchSummary, error) {
 	f, err := os.Open(path)
@@ -337,11 +578,16 @@ func AnalyzeRecentResultsFullWithOptions(path string, schemaVersion, MaxBatches 
 		connMs      float64
 		tlsMs       float64
 		// network diagnostics
+		// normalized error reason
+		errorReason         string
+		errorReasonDetailed string
 		// measurement quality (from SpeedAnalysis)
 		mqSampleCount int
 		mqCI95RelMoE  float64
 		mqReqN10Pct   int
 		mqGood        bool
+		// error classification (single primary type per line)
+		errorType string // dns|tcp|tls|head|http|range|""
 		// network diagnostics
 		dnsServer  string
 		dnsNet     string
@@ -449,9 +695,45 @@ readLoop:
 				}
 			}
 		}
-		// Track error presence without storing the raw line to reduce memory usage.
-		if bytes.Contains(line, []byte("tcp_error")) || bytes.Contains(line, []byte("http_error")) {
-			bs.hasError = true
+		// Track error presence and classify primary error type without storing the full struct.
+		// Ordering reflects typical pipeline: DNS -> TCP -> TLS -> HEAD -> HTTP -> RANGE(second_get)
+		{
+			var et string
+			// DNS failure inference: monitor emits a minimal SiteResult then returns (no TCP/TLS/HTTP fields, no IPs).
+			// If we see DNSTimeMs>0 with no resolved IP and no typed errors populated, treat as a DNS error.
+			if et == "" {
+				if sr.DNSTimeMs > 0 && sr.ResolvedIP == "" && len(sr.DNSIPs) == 0 && sr.TCPError == "" && sr.SSLError == "" && sr.HeadError == "" && sr.HTTPError == "" && sr.SecondGetError == "" {
+					et = "dns"
+					bs.errorReason = "dns_failure"
+					bs.errorReasonDetailed = "dns_failure"
+				}
+			}
+			// Prefer explicit typed errors where available.
+			if sr.TCPError != "" {
+				et = "tcp"
+				bs.errorReason = normalizeErrorReason(sr.TCPError)
+				bs.errorReasonDetailed = normalizeErrorReasonDetailed(sr.TCPError, sr.HeadStatus, et)
+			} else if sr.SSLError != "" {
+				et = "tls"
+				bs.errorReason = normalizeErrorReason(sr.SSLError)
+				bs.errorReasonDetailed = normalizeErrorReasonDetailed(sr.SSLError, sr.HeadStatus, et)
+			} else if sr.HeadError != "" {
+				et = "head"
+				bs.errorReason = normalizeErrorReason(sr.HeadError)
+				bs.errorReasonDetailed = normalizeErrorReasonDetailed(sr.HeadError, sr.HeadStatus, et)
+			} else if sr.HTTPError != "" {
+				et = "http"
+				bs.errorReason = normalizeHTTPReason(sr.HTTPError, sr.HeadStatus)
+				bs.errorReasonDetailed = normalizeErrorReasonDetailed(sr.HTTPError, sr.HeadStatus, et)
+			} else if sr.SecondGetError != "" {
+				et = "range"
+				bs.errorReason = normalizeErrorReason(sr.SecondGetError)
+				bs.errorReasonDetailed = normalizeErrorReasonDetailed(sr.SecondGetError, sr.HeadStatus, et)
+			}
+			if et != "" {
+				bs.hasError = true
+				bs.errorType = et
+			}
 		}
 		// detect partial body/incomplete transfers independent of SpeedAnalysis presence
 		if sr.ContentLengthMismatch {
@@ -977,6 +1259,12 @@ readLoop:
 		var dnsTimesAll, dnsLegacyTimesAll, connTimesAll, tlsTimesAll []float64
 		var cacheCnt, proxyCnt, entProxyCntAll, srvProxyCntAll, ipMismatchCnt, prefetchCnt, warmCacheCnt, reuseCnt, plateauStableCnt int
 		var errorLines int
+		// error type counters for this batch
+		errTypeCounts := map[string]int{}
+		// error reason counters for this batch (normalized)
+		errReasonCounts := map[string]int{}
+		// detailed error reason counters (more granular)
+		errReasonDetailedCounts := map[string]int{}
 		var lowMsSumAll, totalMsSumAll int64
 		var stallCntAll int
 		var preTTFBCntAll int
@@ -1127,6 +1415,15 @@ readLoop:
 			}
 			if r.hasError {
 				errorLines++
+				if r.errorType != "" {
+					errTypeCounts[r.errorType]++
+				}
+				if reason := strings.TrimSpace(r.errorReason); reason != "" {
+					errReasonCounts[reason]++
+				}
+				if dreason := strings.TrimSpace(r.errorReasonDetailed); dreason != "" {
+					errReasonDetailedCounts[dreason]++
+				}
 			}
 			// stability accumulators (overall)
 			if r.sampleTotalMs > 0 {
@@ -1259,6 +1556,33 @@ readLoop:
 				}
 				return float64(preTTFBCntAll) / float64(recCount) * 100
 			}(),
+		}
+		// Error type breakdowns (overall)
+		if errorLines > 0 && len(errTypeCounts) > 0 {
+			summary.ErrorRateByTypePct = map[string]float64{}
+			summary.ErrorShareByTypePct = map[string]float64{}
+			for k, c := range errTypeCounts {
+				summary.ErrorRateByTypePct[k] = float64(c) / float64(recCount) * 100
+				summary.ErrorShareByTypePct[k] = float64(c) / float64(errorLines) * 100
+			}
+		}
+		// Error reason breakdowns (overall)
+		if errorLines > 0 && len(errReasonCounts) > 0 {
+			summary.ErrorRateByReasonPct = map[string]float64{}
+			summary.ErrorShareByReasonPct = map[string]float64{}
+			for k, c := range errReasonCounts {
+				summary.ErrorRateByReasonPct[k] = float64(c) / float64(recCount) * 100
+				summary.ErrorShareByReasonPct[k] = float64(c) / float64(errorLines) * 100
+			}
+		}
+		// Detailed error reason breakdowns (overall)
+		if errorLines > 0 && len(errReasonDetailedCounts) > 0 {
+			summary.ErrorRateByReasonDetailedPct = map[string]float64{}
+			summary.ErrorShareByReasonDetailedPct = map[string]float64{}
+			for k, c := range errReasonDetailedCounts {
+				summary.ErrorRateByReasonDetailedPct[k] = float64(c) / float64(recCount) * 100
+				summary.ErrorShareByReasonDetailedPct[k] = float64(c) / float64(errorLines) * 100
+			}
 		}
 		// Attach diagnostics
 		summary.DNSServer = latestDNS

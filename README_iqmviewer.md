@@ -36,6 +36,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
+ - Error analytics: “Error Types (%)” composition chart showing share of total errors by type (DNS, TCP, TLS, HEAD, HTTP, Range) per batch; complements per‑protocol error charts.
 - Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
  - Info popups follow consistent design criteria; see `docs/ui/info_popup_design_criteria.md`.
 
@@ -54,6 +55,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 	- Cache and path indicators: cache‑hit rate, warm‑cache suspected rate, prefetch suspected rate, IP mismatch rate, connection reuse rate, and chunked transfer rate.
 	- Stability highlights: stall rate, transient (micro‑stall) rate, Low‑Speed Time Share, Pre‑TTFB stall rate.
 	- Setup timing averages: DNS, TCP connect, and TLS handshake means for the batch.
+	- Error reasons (share): normalized breakdown of the most common error reasons in the batch (e.g., timeout, conn_refused, conn_reset, tls_cert, stall_pre_ttfb, stall_abort, http_4xx, http_5xx, partial_body, dns_failure). Useful to understand root causes at a glance.
 - Notes:
 	- Values are batch aggregates or “latest observed” within the batch where applicable (e.g., DNS server, Next Hop).
 	- DNS/Next‑hop are best‑effort: availability depends on OS and resolver/routing introspection.
@@ -61,6 +63,9 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
  - Copy options:
 	- Copy copies the human‑readable diagnostics text.
 	- Copy JSON copies a compact JSON blob with key diagnostics for sharing or filing issues. Includes calibration fields: calibration_max_kbps, calibration_ranges_target_kbps, calibration_ranges_observed_kbps, calibration_ranges_error_pct, and calibration_samples (array of ints). The alias key speed_targets is also recognized on input.
+		- JSON also includes error analytics maps when present:
+			- error_rate_by_type_pct, error_share_by_type_pct
+			- error_rate_by_reason_pct, error_share_by_reason_pct
 	- Copy traceroute copies an OS‑appropriate traceroute command prefilled with the batch’s next hop (disabled if next hop is unknown).
 	- Copy ping copies a quick ping command targeting the next hop (disabled if next hop is unknown).
 	- Copy mtr copies an mtr report command when available on macOS/Linux (disabled if mtr is not installed or on Windows).
@@ -258,6 +263,7 @@ Examples:
 - Stall Share by HTTP Protocol (%): share of total stalled requests by protocol. Bars typically sum to ~100% (across protocols with stalls).
 - Error Rate by HTTP Protocol (%): per-protocol error prevalence (normalized by that protocol’s request count). Does not add to 100% by design.
 - Error Share by HTTP Protocol (%): share of total errors attributed to each protocol. Bars typically sum to ~100% (across protocols with errors).
+- Error Types (share of errors, %): composition by error type across DNS/TCP/TLS/HEAD/HTTP/Range. Stacks typically sum to ~100% of errors per batch. Read alongside per‑protocol charts for full context.
 - Partial Body Rate by HTTP Protocol (%): percent of partial responses by protocol. Does not add to 100% (per‑protocol normalization).
 - Partial Share by HTTP Protocol (%): share of total partial responses by protocol. Bars typically sum to ~100% (across protocols with partials).
 - TLS Version Mix (%): share of requests by negotiated TLS version. Sums to ~100% across versions.
@@ -270,6 +276,7 @@ All are crosshair-enabled, theme-aware, and available in combined exports.
 
 - “Rate by …” charts are normalized within each category (per protocol). They do not add up to 100% across categories. Use them to compare how problematic a protocol is relative to its own volume (e.g., how often HTTP/2 stalls among HTTP/2 requests).
 - “Share by …” and “Mix (%)” charts are normalized across categories and therefore typically sum to about 100% across the shown categories. Use them to understand how the total of an outcome (stalls, errors, partials) is distributed among protocols.
+	- The “Error Types (%)” chart is also a share chart: it shows how total errors are distributed across error types (DNS, TCP, TLS, HEAD, HTTP, Range) for each batch.
 - When both exist, read them together: the “Rate by …” highlights per‑protocol propensity; the “Share by …” shows contribution to the overall problem.
 - Notes: Unknown values (e.g., protocol ‘(unknown)’) are included when present. Minor rounding can make totals slightly off 100%.
 
@@ -368,6 +375,7 @@ Additional protocol/error screenshots:
 - `error_share_by_http_protocol.png`
 - `stall_share_by_http_protocol.png`
 - `partial_share_by_http_protocol.png`
+- `error_types.png`
 
 SLA examples:
 

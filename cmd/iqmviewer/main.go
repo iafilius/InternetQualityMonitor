@@ -288,6 +288,29 @@ func buildDiagnosticsText(bs analysis.BatchSummary, tolPct int) string {
 		b.WriteString("\n")
 	}
 
+	// Error reasons (top contributors)
+	if len(bs.ErrorShareByReasonPct) > 0 {
+		b.WriteString("Error reasons (share)\n")
+		// sort reasons by share desc and show top 5
+		type kv struct {
+			k string
+			v float64
+		}
+		pairs := make([]kv, 0, len(bs.ErrorShareByReasonPct))
+		for k, v := range bs.ErrorShareByReasonPct {
+			pairs = append(pairs, kv{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
+		limit := 5
+		if len(pairs) < limit {
+			limit = len(pairs)
+		}
+		for i := 0; i < limit; i++ {
+			b.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pairs[i].k, pairs[i].v))
+		}
+		b.WriteString("\n")
+	}
+
 	// Measurement quality (if present)
 	if bs.SampleCount > 0 || bs.CI95RelMoEPct > 0 || bs.RequiredSamplesFor10Pct95CI > 0 {
 		b.WriteString("Measurement quality\n")
@@ -317,39 +340,43 @@ func buildDiagnosticsText(bs analysis.BatchSummary, tolPct int) string {
 // Includes calibration tolerance and per-target pass/fail when tolPct>0.
 func buildDiagnosticsJSON(bs analysis.BatchSummary, tolPct int) string {
 	payload := map[string]any{
-		"run_tag":              bs.RunTag,
-		"dns_server":           emptyDash(bs.DNSServer),
-		"dns_network":          emptyDash(bs.DNSServerNetwork),
-		"next_hop":             emptyDash(bs.NextHop),
-		"next_hop_source":      emptyDash(bs.NextHopSource),
-		"avg_dns_ms":           bs.AvgDNSMs,
-		"avg_connect_ms":       bs.AvgConnectMs,
-		"avg_tls_ms":           bs.AvgTLSHandshake,
-		"baseline_kbps":        bs.LocalSelfTestKbps,
-		"calibration_max_kbps": bs.CalibrationMaxKbps,
-		"calibration_targets":  bs.CalibrationRangesTarget, // legacy name
-		"speed_targets":        bs.CalibrationRangesTarget, // alias for clarity
-		"calibration_observed": bs.CalibrationRangesObs,
-		"calibration_samples":  bs.CalibrationSamples,
-		"stall_rate_pct":       bs.StallRatePct,
-		"transient_rate_pct":   bs.MicroStallRatePct,
-		"low_speed_pct":        bs.LowSpeedTimeSharePct,
-		"pretffb_rate_pct":     bs.PreTTFBStallRatePct,
-		"cache_hit_pct":        bs.CacheHitRatePct,
-		"warm_cache_pct":       bs.WarmCacheSuspectedRatePct,
-		"prefetch_pct":         bs.PrefetchSuspectedRatePct,
-		"ip_mismatch_pct":      bs.IPMismatchRatePct,
-		"conn_reuse_pct":       bs.ConnReuseRatePct,
-		"chunked_pct":          bs.ChunkedRatePct,
-		"hostname":             bs.Hostname,
-		"num_cpu":              bs.NumCPU,
-		"load_1":               bs.LoadAvg1,
-		"load_5":               bs.LoadAvg5,
-		"load_15":              bs.LoadAvg15,
-		"mem_total_bytes":      bs.MemTotalBytes,
-		"mem_free_bytes":       bs.MemFreeOrAvailable,
-		"disk_total_bytes":     bs.DiskRootTotalBytes,
-		"disk_free_bytes":      bs.DiskRootFreeBytes,
+		"run_tag":                   bs.RunTag,
+		"dns_server":                emptyDash(bs.DNSServer),
+		"dns_network":               emptyDash(bs.DNSServerNetwork),
+		"next_hop":                  emptyDash(bs.NextHop),
+		"next_hop_source":           emptyDash(bs.NextHopSource),
+		"avg_dns_ms":                bs.AvgDNSMs,
+		"avg_connect_ms":            bs.AvgConnectMs,
+		"avg_tls_ms":                bs.AvgTLSHandshake,
+		"baseline_kbps":             bs.LocalSelfTestKbps,
+		"calibration_max_kbps":      bs.CalibrationMaxKbps,
+		"calibration_targets":       bs.CalibrationRangesTarget, // legacy name
+		"speed_targets":             bs.CalibrationRangesTarget, // alias for clarity
+		"calibration_observed":      bs.CalibrationRangesObs,
+		"calibration_samples":       bs.CalibrationSamples,
+		"stall_rate_pct":            bs.StallRatePct,
+		"transient_rate_pct":        bs.MicroStallRatePct,
+		"low_speed_pct":             bs.LowSpeedTimeSharePct,
+		"pretffb_rate_pct":          bs.PreTTFBStallRatePct,
+		"cache_hit_pct":             bs.CacheHitRatePct,
+		"warm_cache_pct":            bs.WarmCacheSuspectedRatePct,
+		"prefetch_pct":              bs.PrefetchSuspectedRatePct,
+		"ip_mismatch_pct":           bs.IPMismatchRatePct,
+		"conn_reuse_pct":            bs.ConnReuseRatePct,
+		"chunked_pct":               bs.ChunkedRatePct,
+		"error_rate_by_type_pct":    bs.ErrorRateByTypePct,
+		"error_share_by_type_pct":   bs.ErrorShareByTypePct,
+		"error_rate_by_reason_pct":  bs.ErrorRateByReasonPct,
+		"error_share_by_reason_pct": bs.ErrorShareByReasonPct,
+		"hostname":                  bs.Hostname,
+		"num_cpu":                   bs.NumCPU,
+		"load_1":                    bs.LoadAvg1,
+		"load_5":                    bs.LoadAvg5,
+		"load_15":                   bs.LoadAvg15,
+		"mem_total_bytes":           bs.MemTotalBytes,
+		"mem_free_bytes":            bs.MemFreeOrAvailable,
+		"disk_total_bytes":          bs.DiskRootTotalBytes,
+		"disk_free_bytes":           bs.DiskRootFreeBytes,
 	}
 	// Measurement quality
 	if bs.SampleCount > 0 {
@@ -705,11 +732,17 @@ type uiState struct {
 	warmCacheImgCanvas       *canvas.Image
 
 	// transport/protocol charts
-	protocolMixImgCanvas          *canvas.Image // HTTP protocol mix (%)
-	protocolAvgSpeedImgCanvas     *canvas.Image // Avg speed by HTTP protocol
-	protocolStallRateImgCanvas    *canvas.Image // Stall rate by HTTP protocol (%)
-	protocolErrorRateImgCanvas    *canvas.Image // Error rate by HTTP protocol (%)
-	protocolErrorShareImgCanvas   *canvas.Image // Error share by HTTP protocol (%) – sums to ~100%
+	protocolMixImgCanvas        *canvas.Image // HTTP protocol mix (%)
+	protocolAvgSpeedImgCanvas   *canvas.Image // Avg speed by HTTP protocol
+	protocolStallRateImgCanvas  *canvas.Image // Stall rate by HTTP protocol (%)
+	protocolErrorRateImgCanvas  *canvas.Image // Error rate by HTTP protocol (%)
+	protocolErrorShareImgCanvas *canvas.Image // Error share by HTTP protocol (%) – sums to ~100%
+	// Error types chart (stacked by error type)
+	errorTypesImgCanvas *canvas.Image // Error Types composition (%)
+	// Error reasons chart (stacked by normalized reason)
+	errorReasonsImgCanvas *canvas.Image // Error Reasons composition (%)
+	// Error reasons (detailed) chart
+	errorReasonsDetailedImgCanvas *canvas.Image // Error Reasons (detailed) composition (%)
 	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
 	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
@@ -770,11 +803,15 @@ type uiState struct {
 	serverProxyOverlay     *crosshairOverlay
 	warmCacheOverlay       *crosshairOverlay
 	// overlays for transport/protocol charts
-	protocolMixOverlay          *crosshairOverlay
-	protocolAvgSpeedOverlay     *crosshairOverlay
-	protocolStallRateOverlay    *crosshairOverlay
-	protocolErrorRateOverlay    *crosshairOverlay
-	protocolErrorShareOverlay   *crosshairOverlay
+	protocolMixOverlay        *crosshairOverlay
+	protocolAvgSpeedOverlay   *crosshairOverlay
+	protocolStallRateOverlay  *crosshairOverlay
+	protocolErrorRateOverlay  *crosshairOverlay
+	protocolErrorShareOverlay *crosshairOverlay
+	// error analytics overlays
+	errorTypesOverlay           *crosshairOverlay
+	errorReasonsOverlay         *crosshairOverlay
+	errorReasonsDetailedOverlay *crosshairOverlay
 	protocolStallShareOverlay   *crosshairOverlay
 	protocolPartialRateOverlay  *crosshairOverlay
 	protocolPartialShareOverlay *crosshairOverlay
@@ -1586,6 +1623,9 @@ func main() {
 	state.protocolStallRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolErrorRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolErrorShareImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.errorTypesImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.errorReasonsImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.errorReasonsDetailedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolStallShareImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolPartialRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolPartialShareImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -1599,6 +1639,9 @@ func main() {
 	state.protocolStallRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolErrorRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolErrorShareImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.errorTypesImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.errorReasonsImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.errorReasonsDetailedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolStallShareImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolPartialRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolPartialShareImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
@@ -1612,6 +1655,10 @@ func main() {
 	state.protocolStallRateOverlay = newCrosshairOverlay(state, "protocol_stall_rate")
 	state.protocolErrorRateOverlay = newCrosshairOverlay(state, "protocol_error_rate")
 	state.protocolErrorShareOverlay = newCrosshairOverlay(state, "protocol_error_share")
+	// New: overlays for Error Types and Error Reasons charts
+	state.errorTypesOverlay = newCrosshairOverlay(state, "error_types")
+	state.errorReasonsOverlay = newCrosshairOverlay(state, "error_reasons")
+	state.errorReasonsDetailedOverlay = newCrosshairOverlay(state, "error_reasons_detailed")
 	state.protocolStallShareOverlay = newCrosshairOverlay(state, "protocol_stall_share")
 	state.protocolPartialRateOverlay = newCrosshairOverlay(state, "protocol_partial_rate")
 	state.protocolPartialShareOverlay = newCrosshairOverlay(state, "protocol_partial_share")
@@ -1897,6 +1944,9 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		widget.NewSeparator(),
 		makeChartSection(state, "Error Rate by HTTP Protocol (%)", "Per‑protocol error prevalence: for each HTTP protocol, the fraction of that protocol’s requests that errored.\n\nNote: These values do not add up to 100% because each bar is normalized by its own protocol’s volume, not the total errors across all protocols. Missing percentage is therefore expected. (Unknown protocol is counted as ‘(unknown)’ if present).\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorRateImgCanvas, state.protocolErrorRateOverlay)),
 		makeChartSection(state, "Error Share by HTTP Protocol (%)", "Share of total errors attributed to each HTTP protocol. Bars typically sum to about 100% (across protocols with errors). This complements ‘Error Rate by HTTP Protocol’, which normalizes by each protocol’s request volume and therefore does not sum to 100%.\nReferences: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"+axesTip, container.NewStack(state.protocolErrorShareImgCanvas, state.protocolErrorShareOverlay)),
+		makeChartSection(state, "Error Types (%)", "Share of total errors by error type (DNS, TCP, TLS, HEAD, HTTP, Range). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorTypesImgCanvas, state.errorTypesOverlay)),
+		makeChartSection(state, "Error Reasons (%)", "Share of total errors by normalized reason (e.g., timeout, conn_refused, conn_reset, tls_cert, stall_pre_ttfb, stall_abort, http_4xx, http_5xx, partial_body, dns_failure). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorReasonsImgCanvas, state.errorReasonsOverlay)),
+		makeChartSection(state, "Error Reasons (detailed) (%)", "Share of total errors by detailed reason (e.g., http_404, http_503, tls_cert_expired, tls_cert_untrusted, timeout_connect, timeout_ttfb, timeout_read, conn_reset, dns_no_such_host, other_…). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorReasonsDetailedImgCanvas, state.errorReasonsDetailedOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc8446"+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
 		widget.NewSeparator(),
@@ -2196,6 +2246,18 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 	if state.protocolErrorShareOverlay != nil {
 		state.protocolErrorShareOverlay.enabled = state.crosshairEnabled
 		state.protocolErrorShareOverlay.Refresh()
+	}
+	if state.errorTypesOverlay != nil {
+		state.errorTypesOverlay.enabled = state.crosshairEnabled
+		state.errorTypesOverlay.Refresh()
+	}
+	if state.errorReasonsOverlay != nil {
+		state.errorReasonsOverlay.enabled = state.crosshairEnabled
+		state.errorReasonsOverlay.Refresh()
+	}
+	if state.errorReasonsDetailedOverlay != nil {
+		state.errorReasonsDetailedOverlay.enabled = state.crosshairEnabled
+		state.errorReasonsDetailedOverlay.Refresh()
 	}
 	if state.protocolErrorShareOverlay != nil {
 		state.protocolErrorShareOverlay.enabled = state.crosshairEnabled
@@ -3987,6 +4049,30 @@ func redrawCharts(state *uiState) {
 			if state.protocolErrorShareOverlay != nil {
 				state.protocolErrorShareOverlay.Refresh()
 			}
+		}
+		// Error Types composition chart
+		etImg := renderErrorTypesChart(state)
+		if etImg != nil {
+			state.errorTypesImgCanvas.Image = etImg
+			_, chh := chartSize(state)
+			state.errorTypesImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.errorTypesImgCanvas.Refresh()
+		}
+		// Error Reasons composition chart
+		erImg := renderErrorReasonsChart(state)
+		if erImg != nil {
+			state.errorReasonsImgCanvas.Image = erImg
+			_, chh := chartSize(state)
+			state.errorReasonsImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.errorReasonsImgCanvas.Refresh()
+		}
+		// Error Reasons (detailed) composition chart
+		erdImg := renderErrorReasonsDetailedChart(state)
+		if erdImg != nil {
+			state.errorReasonsDetailedImgCanvas.Image = erdImg
+			_, chh := chartSize(state)
+			state.errorReasonsDetailedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.errorReasonsDetailedImgCanvas.Refresh()
 		}
 		ppImg := renderPartialBodyRateByHTTPProtocolChart(state)
 		if ppImg != nil {
@@ -8970,6 +9056,310 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderErrorTypesChart draws a stacked composition of error types per batch (% of all errors by type, per batch).
+func renderErrorTypesChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	// Collect keys present across batches
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.ErrorShareByTypePct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	// Stable ordering by known set
+	order := []string{"dns", "tcp", "tls", "head", "http", "range"}
+	for _, k := range order {
+		if _, ok := keySet[k]; ok {
+			keys = append(keys, k)
+			delete(keySet, k)
+		}
+	}
+	// Append any other keys (unexpected) to end, sorted
+	if len(keySet) > 0 {
+		extra := make([]string, 0, len(keySet))
+		for k := range keySet {
+			extra = append(extra, k)
+		}
+		sort.Strings(extra)
+		keys = append(keys, extra...)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			// Use share so stacks sum to ~100% per batch
+			ys[j] = r.ErrorShareByTypePct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := strings.ToUpper(k)
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Error Types (share of errors, %) ", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Composition of error types; stacks per batch typically sum to ~100% of errors.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderErrorReasonsChart draws a stacked composition of normalized error reasons per batch (% share of errors by reason).
+func renderErrorReasonsChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	// Collect keys across batches
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.ErrorShareByReasonPct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	// Prefer a stable, meaningful order; then append extras
+	preferred := []string{"timeout", "conn_refused", "conn_reset", "tls_cert", "tls_handshake", "stall_pre_ttfb", "stall_abort", "partial_body", "http_4xx", "http_5xx", "dns_failure", "proxy", "unreachable", "stall", "other"}
+	for _, k := range preferred {
+		if _, ok := keySet[k]; ok {
+			keys = append(keys, k)
+			delete(keySet, k)
+		}
+	}
+	if len(keySet) > 0 {
+		extra := make([]string, 0, len(keySet))
+		for k := range keySet {
+			extra = append(extra, k)
+		}
+		sort.Strings(extra)
+		keys = append(keys, extra...)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.ErrorShareByReasonPct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Error Reasons (share of errors, %)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Composition of error reasons; stacks per batch typically sum to ~100% of errors.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderErrorReasonsDetailedChart draws a stacked composition of detailed error reasons per batch (% share of errors by detailed reason).
+func renderErrorReasonsDetailedChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	// Collect keys across batches
+	keySet := map[string]struct{}{}
+	for _, r := range rows {
+		for k := range r.ErrorShareByReasonDetailedPct {
+			keySet[k] = struct{}{}
+		}
+	}
+	if len(keySet) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	keys := make([]string, 0, len(keySet))
+	// Preferred ordering: group by families
+	preferred := []string{
+		// HTTP specifics
+		"http_401", "http_403", "http_404", "http_407", "http_408", "http_409", "http_410", "http_412", "http_413", "http_414", "http_415", "http_416", "http_418", "http_429", "http_4xx_other",
+		"http_500", "http_501", "http_502", "http_503", "http_504", "http_5xx_other",
+		// TLS specifics
+		"tls_cert_expired", "tls_cert_untrusted", "tls_cert_hostname", "tls_cert_not_yet_valid", "tls_alert_handshake_failure", "tls_protocol_mismatch", "tls_handshake",
+		// timeouts refined
+		"timeout_connect", "timeout_tls", "timeout_ttfb", "timeout_read", "timeout_http", "timeout",
+		// transport and generic
+		"conn_refused", "conn_reset", "unreachable", "dns_no_such_host", "dns_server_misbehaving", "dns_timeout", "dns_failure", "proxy",
+		// stall/partial
+		"stall_pre_ttfb", "stall_abort", "partial_body", "stall",
+		// catch-alls
+		"other_unexpected_eof", "other_context_canceled", "other_eof", "other",
+	}
+	for _, k := range preferred {
+		if _, ok := keySet[k]; ok {
+			keys = append(keys, k)
+			delete(keySet, k)
+		}
+	}
+	if len(keySet) > 0 {
+		extra := make([]string, 0, len(keySet))
+		for k := range keySet {
+			extra = append(extra, k)
+		}
+		sort.Strings(extra)
+		keys = append(keys, extra...)
+	}
+	timeMode, times, xs, xAxis := buildXAxis(rows, state.xAxisMode)
+	var series []chart.Series
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange}
+	for i, k := range keys {
+		ys := make([]float64, len(rows))
+		for j, r := range rows {
+			ys[j] = r.ErrorShareByReasonDetailedPct[k]
+			if ys[j] < 0 {
+				ys[j] = math.NaN()
+			}
+		}
+		st := pointStyle(palette[i%len(palette)])
+		name := k
+		if timeMode {
+			if len(times) == 1 {
+				t2 := times[0].Add(1 * time.Second)
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.TimeSeries{Name: name, XValues: []time.Time{times[0], t2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.TimeSeries{Name: name, XValues: times, YValues: ys, Style: st})
+			}
+		} else {
+			if len(xs) == 1 {
+				x2 := xs[0] + 1
+				ys = append([]float64{ys[0]}, ys[0])
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: st})
+			} else {
+				series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: st})
+			}
+		}
+	}
+	padBottom := 28
+	switch state.xAxisMode {
+	case "run_tag":
+		padBottom = 90
+	case "time":
+		padBottom = 48
+	}
+	if state.showHints {
+		padBottom += 18
+	}
+	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
+	ch := chart.Chart{Title: "Error Reasons (detailed share of errors, %)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Detailed composition of error reasons; stacks per batch typically sum to ~100% of errors.")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
 // renderStallShareByHTTPProtocolChart draws share of total stalled requests by HTTP protocol.
 func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -11666,6 +12056,21 @@ func exportAllChartsCombined(state *uiState) {
 		renderers = append(renderers, renderErrorShareByHTTPProtocolChart)
 		labels = append(labels, "Error Share by HTTP Protocol (%)")
 	}
+	// Error Types composition
+	if state.errorTypesImgCanvas != nil && state.errorTypesImgCanvas.Image != nil {
+		renderers = append(renderers, renderErrorTypesChart)
+		labels = append(labels, "Error Types (%)")
+	}
+	// Error Reasons composition
+	if state.errorReasonsImgCanvas != nil && state.errorReasonsImgCanvas.Image != nil {
+		renderers = append(renderers, renderErrorReasonsChart)
+		labels = append(labels, "Error Reasons (%)")
+	}
+	// Error Reasons (detailed) composition
+	if state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil {
+		renderers = append(renderers, renderErrorReasonsDetailedChart)
+		labels = append(labels, "Error Reasons (detailed) (%)")
+	}
 	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil {
 		renderers = append(renderers, renderTLSVersionMixChart)
 		labels = append(labels, "TLS Version Mix (%)")
@@ -12056,6 +12461,12 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 		return renderErrorRateByHTTPProtocolChart
 	case state.protocolErrorShareImgCanvas:
 		return renderErrorShareByHTTPProtocolChart
+	case state.errorTypesImgCanvas:
+		return renderErrorTypesChart
+	case state.errorReasonsImgCanvas:
+		return renderErrorReasonsChart
+	case state.errorReasonsDetailedImgCanvas:
+		return renderErrorReasonsDetailedChart
 	case state.protocolStallShareImgCanvas:
 		return renderStallShareByHTTPProtocolChart
 	case state.protocolPartialRateImgCanvas:
@@ -12498,12 +12909,18 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.protocolStallRateImgCanvas
 		case "protocol_error_rate":
 			imgCanvas = r.c.state.protocolErrorRateImgCanvas
+		case "error_types":
+			imgCanvas = r.c.state.errorTypesImgCanvas
+		case "error_reasons":
+			imgCanvas = r.c.state.errorReasonsImgCanvas
 		case "tls_version_mix":
 			imgCanvas = r.c.state.tlsVersionMixImgCanvas
 		case "alpn_mix":
 			imgCanvas = r.c.state.alpnMixImgCanvas
 		case "chunked_rate":
 			imgCanvas = r.c.state.chunkedRateImgCanvas
+		case "error_reasons_detailed":
+			imgCanvas = r.c.state.errorReasonsDetailedImgCanvas
 		case "selftest_speed":
 			imgCanvas = r.c.state.selfTestImgCanvas
 		}
@@ -12630,12 +13047,18 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				imgCanvas = r.c.state.protocolStallRateImgCanvas
 			case "protocol_error_rate":
 				imgCanvas = r.c.state.protocolErrorRateImgCanvas
+			case "error_types":
+				imgCanvas = r.c.state.errorTypesImgCanvas
+			case "error_reasons":
+				imgCanvas = r.c.state.errorReasonsImgCanvas
 			case "tls_version_mix":
 				imgCanvas = r.c.state.tlsVersionMixImgCanvas
 			case "alpn_mix":
 				imgCanvas = r.c.state.alpnMixImgCanvas
 			case "chunked_rate":
 				imgCanvas = r.c.state.chunkedRateImgCanvas
+			case "error_reasons_detailed":
+				imgCanvas = r.c.state.errorReasonsDetailedImgCanvas
 			}
 			if imgCanvas != nil && imgCanvas.Image != nil {
 				centersImg := detectXGridlineCenters(imgCanvas.Image, isDark)
@@ -12794,12 +13217,18 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				imgCanvas = r.c.state.protocolStallRateImgCanvas
 			case "protocol_error_rate":
 				imgCanvas = r.c.state.protocolErrorRateImgCanvas
+			case "error_types":
+				imgCanvas = r.c.state.errorTypesImgCanvas
+			case "error_reasons":
+				imgCanvas = r.c.state.errorReasonsImgCanvas
 			case "tls_version_mix":
 				imgCanvas = r.c.state.tlsVersionMixImgCanvas
 			case "alpn_mix":
 				imgCanvas = r.c.state.alpnMixImgCanvas
 			case "chunked_rate":
 				imgCanvas = r.c.state.chunkedRateImgCanvas
+			case "error_reasons_detailed":
+				imgCanvas = r.c.state.errorReasonsDetailedImgCanvas
 			}
 			if imgCanvas != nil && imgCanvas.Image != nil {
 				centersImg := detectXGridlineCenters(imgCanvas.Image, isDark)
@@ -13260,6 +13689,45 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			sort.Strings(keys)
 			for _, k := range keys {
 				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorRateByHTTPProtocolPct[k]))
+			}
+		case "error_types":
+			if len(bs.ErrorShareByTypePct) == 0 {
+				lines = append(lines, "No error data")
+				break
+			}
+			keys := make([]string, 0, len(bs.ErrorShareByTypePct))
+			for k := range bs.ErrorShareByTypePct {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorShareByTypePct[k]))
+			}
+		case "error_reasons":
+			if len(bs.ErrorShareByReasonPct) == 0 {
+				lines = append(lines, "No error data")
+				break
+			}
+			keys := make([]string, 0, len(bs.ErrorShareByReasonPct))
+			for k := range bs.ErrorShareByReasonPct {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorShareByReasonPct[k]))
+			}
+		case "error_reasons_detailed":
+			if len(bs.ErrorShareByReasonDetailedPct) == 0 {
+				lines = append(lines, "No error data")
+				break
+			}
+			keys := make([]string, 0, len(bs.ErrorShareByReasonDetailedPct))
+			for k := range bs.ErrorShareByReasonDetailedPct {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				lines = append(lines, fmt.Sprintf("%s: %.1f%%", k, bs.ErrorShareByReasonDetailedPct[k]))
 			}
 		case "tls_version_mix":
 			if len(bs.TLSVersionRatePct) == 0 {
