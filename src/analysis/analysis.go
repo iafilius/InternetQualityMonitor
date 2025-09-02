@@ -378,7 +378,7 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	}
 	if headStatus >= 500 {
 		switch headStatus {
-		case 500, 501, 502, 503, 504, 505, 506, 507, 508, 510, 511:
+		case 500, 501, 502, 503, 504, 505, 506, 507, 508, 510, 511, 520, 521, 522, 523, 524, 525, 526, 529, 530, 598, 599:
 			return fmt.Sprintf("http_%d", headStatus)
 		}
 		return "http_5xx_other"
@@ -386,7 +386,7 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	// If we have an HTTP-like literal in the error string, try to extract code
 	if strings.Contains(e, " http/") || strings.Contains(e, "status code") || strings.Contains(e, "http ") {
 		// naive pick of common codes
-		for _, code := range []string{"400", "401", "402", "403", "404", "405", "406", "407", "408", "409", "410", "411", "412", "413", "414", "415", "416", "417", "418", "421", "422", "423", "424", "425", "426", "428", "431", "451", "429", "500", "501", "502", "503", "504", "505", "506", "507", "508", "510", "511", "520", "521", "522", "523", "524", "525", "526", "599"} {
+		for _, code := range []string{"400", "401", "402", "403", "404", "405", "406", "407", "408", "409", "410", "411", "412", "413", "414", "415", "416", "417", "418", "421", "422", "423", "424", "425", "426", "428", "431", "451", "429", "500", "501", "502", "503", "504", "505", "506", "507", "508", "510", "511", "520", "521", "522", "523", "524", "525", "526", "598", "599"} {
 			if strings.Contains(e, code) {
 				return "http_" + code
 			}
@@ -401,6 +401,10 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	}
 	// Timeouts refined by stage using the typed error hint
 	if strings.Contains(e, "timeout") || strings.Contains(e, "deadline exceeded") || strings.Contains(e, "i/o timeout") {
+		// Prioritize proxyconnect timeout classification if present
+		if strings.Contains(e, "proxyconnect") {
+			return "proxy_connect_timeout"
+		}
 		switch typed { // which stage surfaced the error first
 		case "tcp":
 			return "timeout_connect"
@@ -448,6 +452,10 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 				return "tls_alert_" + tok
 			}
 		}
+		// Common non-alert phrasing that implies an alert/token
+		if strings.Contains(e, "no application protocol") {
+			return "tls_alert_no_application_protocol"
+		}
 		// certificate buckets
 		if strings.Contains(e, "expired") {
 			return "tls_cert_expired"
@@ -483,10 +491,13 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 		}
 	}
 	// DNS subtypes (best-effort heuristics; often we don't carry raw DNS error text)
-	if strings.Contains(e, "no such host") {
+	if strings.Contains(e, "no such host") || strings.Contains(e, "name or service not known") || strings.Contains(e, "no address associated with hostname") || strings.Contains(e, "host not found") {
 		return "dns_no_such_host"
 	}
 	if strings.Contains(e, "temporary failure in name resolution") {
+		return "dns_temp_failure"
+	}
+	if strings.Contains(e, "try again") { // EAI_AGAIN
 		return "dns_temp_failure"
 	}
 	if strings.Contains(e, "nxdomain") {
@@ -508,20 +519,39 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 		return "dns_formerr"
 	}
 	if strings.Contains(e, "proxyconnect") || strings.Contains(e, " via proxy") || strings.Contains(e, "proxy ") {
+		// Try to refine common proxy connect failures
+		if strings.Contains(e, "proxyconnect") && (strings.Contains(e, "timeout") || strings.Contains(e, "timed out")) {
+			return "proxy_connect_timeout"
+		}
+		if strings.Contains(e, "proxyconnect") && (strings.Contains(e, "refused") || strings.Contains(e, "econnrefused")) {
+			return "proxy_connect_refused"
+		}
+		if strings.Contains(e, "proxy error") { // generic proxy error bucket
+			return "proxy_error"
+		}
 		return "proxy"
 	}
 	if strings.Contains(e, "proxy authentication required") {
 		return "proxy_auth_required"
 	}
 	// Transport specifics
+	if strings.Contains(e, "administratively prohibited") || strings.Contains(e, "admin prohibited") {
+		return "net_admin_prohibited"
+	}
 	if strings.Contains(e, "refused") || strings.Contains(e, "econnrefused") {
 		return "conn_refused"
 	}
-	if strings.Contains(e, "reset") || strings.Contains(e, "econnreset") || strings.Contains(e, "rst_stream") {
+	if strings.Contains(e, "software caused connection abort") || strings.Contains(e, "connection abort") {
+		return "conn_abort"
+	}
+	if strings.Contains(e, "reset") || strings.Contains(e, "econnreset") || strings.Contains(e, "rst_stream") || strings.Contains(e, "closed by peer") {
 		return "conn_reset"
 	}
-	if strings.Contains(e, "network is unreachable") || strings.Contains(e, "no route to host") || strings.Contains(e, "host is down") {
+	if strings.Contains(e, "network is unreachable") || strings.Contains(e, "no route to host") || strings.Contains(e, "host is down") || strings.Contains(e, "destination host unreachable") || strings.Contains(e, "destination unreachable") {
 		return "unreachable"
+	}
+	if (strings.Contains(e, "blocked") && (strings.Contains(e, "policy") || strings.Contains(e, "firewall"))) || strings.Contains(e, "blocked by firewall") {
+		return "firewall_blocked"
 	}
 	if strings.Contains(e, "http2") || strings.Contains(e, "h2") {
 		if strings.Contains(e, "stream error") || strings.Contains(e, "rst_stream") {

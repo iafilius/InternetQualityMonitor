@@ -71,6 +71,21 @@ Per batch (Overall/IPv4/IPv6 when available):
   - TLS/ALPN mixes (%), Chunked Transfer Rate (%).
   - Cache Hit Rate, Enterprise Proxy Rate, Server-side Proxy Rate, Warm Cache Suspected Rate.
 
+Error taxonomy (detailed)
+- In addition to a coarse error reason, summaries include a more granular reason under `error_rate_by_reason_detailed_pct` and `error_share_by_reason_detailed_pct` that powers the "Error Reasons (detailed) (%)" chart in the viewer.
+- Examples of detailed keys:
+  - HTTP: `http_4xx_other`, `http_404`, `http_503`, Cloudflare-style 5xx: `http_520`…`http_526`, upstream timeouts `http_598`, network read timeout `http_599`.
+  - Timeouts by stage: `timeout_connect`, `timeout_tls`, `timeout_ttfb`, `timeout_read`, `timeout_write`, generic `timeout_http`.
+  - DNS: `dns_no_such_host`, `dns_temp_failure` (e.g., “Try again”), `dns_timeout`, `dns_refused`, `dns_servfail`, `dns_formerr`, `dns_nxdomain`, `dns_server_misbehaving`.
+  - Proxy: `proxy_connect_timeout`, `proxy_connect_refused`, generic `proxy_error`, `proxy_auth_required`.
+  - TLS: cert issues `tls_cert_expired`, `tls_cert_untrusted`, `tls_cert_hostname`, and alerts like `tls_alert_handshake_failure`, `tls_alert_no_application_protocol`; generic `tls_handshake`.
+  - Transport/network: `conn_refused`, `conn_reset` (includes “closed by peer”), `conn_abort` (software caused abort), `unreachable` (no route/host down), administrative blocks `net_admin_prohibited`, policy blocks `firewall_blocked`.
+  - QUIC/HTTP2/3: `quic_handshake_error`, `quic_stream_error`, `quic_error`, `http2_stream_error`, `http2_protocol_error`, `http3_error`.
+
+Notes:
+- The taxonomy favors stable, human-readable keys to keep UI legends consistent. Unknowns fall back to a coarse bucket or an `other_*` token that carries a short hint.
+- As new real-world error strings are observed, mappings are extended with unit tests to keep regression safety.
+
 Note on deprecation and compatibility
 - The legacy combined Proxy Suspected Rate (`proxy_suspected_rate_pct`) is deprecated in the Viewer UI and replaced by split metrics for clearer attribution: `enterprise_proxy_rate_pct` and `server_proxy_rate_pct`.
 - For backward compatibility, the analysis still emits `proxy_suspected_rate_pct`. Downstream consumers are encouraged to migrate to the split fields.

@@ -32,6 +32,8 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
 - PNG export for each chart plus an "Export All (One Image)" that mirrors the on-screen order.
 	- After saving, the viewer confirms the export destination.
 	- Dedicated exports exist for each split averages chart: Speed – Average, Speed – Median, Speed – Min/Max; TTFB – Average, TTFB – Median, TTFB – Min/Max.
+	- Settings → Chart Options → "Export only visible charts" makes the combined export include only the charts currently visible on screen.
+	- Settings → Chart Options → "Hide 'Other' categories" removes generic catch‑all buckets from Error Reasons charts to reduce clutter.
 - Quick find: toolbar Find field filters by chart title and lets you jump Prev/Next between matches; count shows current/total.
 - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F).
  - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
@@ -115,6 +117,12 @@ Notes:
  - Averages visibility: Show Average, Show Median, Show Min, Show Max, Show IQR Band (P25–P75)
 	 - Defaults: Average and Median on; Min/Max/IQR off. Use these to reduce clutter when many series are visible.
 	 - When Min/Max is hidden, the Min/Max panels display a subtle inline hint explaining how to enable them.
+- Visible Charts: quickly show/hide individual charts. Your choices persist across sessions.
+- Visibility Presets:
+	- Built-in presets (Everything, Setup Timings, Errors Focus, etc.).
+	- Save current as custom preset… stores your current visible set (by stable chart IDs) with a name. Presets persist across restarts.
+	- Apply/Rename/Delete Custom Preset submenus appear when you have custom presets. The menu title shows the active preset name when your current visibility exactly matches a preset.
+	- Combined export can optionally include only visible charts via Chart Options → "Export only visible charts". You can also hide generic 'Other' categories from Error Reasons charts via Chart Options.
 
 ### Selection
 - Selection is session-only: the last clicked batch (RunTag) is remembered only within the current session and restored after reloads during the session. It is not persisted across app restarts.
