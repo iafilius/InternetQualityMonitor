@@ -369,7 +369,7 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	if headStatus >= 400 {
 		hs := headStatus
 		switch hs {
-		case 401, 403, 404, 407, 408, 409, 410, 412, 413, 414, 415, 416, 418, 429:
+		case 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 431, 451, 429:
 			return fmt.Sprintf("http_%d", hs)
 		}
 		if hs >= 400 && hs < 500 {
@@ -378,7 +378,7 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	}
 	if headStatus >= 500 {
 		switch headStatus {
-		case 500, 501, 502, 503, 504:
+		case 500, 501, 502, 503, 504, 505, 506, 507, 508, 510, 511:
 			return fmt.Sprintf("http_%d", headStatus)
 		}
 		return "http_5xx_other"
@@ -386,7 +386,7 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	// If we have an HTTP-like literal in the error string, try to extract code
 	if strings.Contains(e, " http/") || strings.Contains(e, "status code") || strings.Contains(e, "http ") {
 		// naive pick of common codes
-		for _, code := range []string{"401", "403", "404", "407", "408", "409", "410", "412", "413", "414", "415", "416", "418", "429", "500", "501", "502", "503", "504"} {
+		for _, code := range []string{"400", "401", "402", "403", "404", "405", "406", "407", "408", "409", "410", "411", "412", "413", "414", "415", "416", "417", "418", "421", "422", "423", "424", "425", "426", "428", "431", "451", "429", "500", "501", "502", "503", "504", "505", "506", "507", "508", "510", "511", "520", "521", "522", "523", "524", "525", "526", "599"} {
 			if strings.Contains(e, code) {
 				return "http_" + code
 			}
@@ -405,11 +405,18 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 		case "tcp":
 			return "timeout_connect"
 		case "tls":
+			// Special-case handshake timeout wording
+			if strings.Contains(e, "handshake") {
+				return "timeout_tls"
+			}
 			return "timeout_tls"
 		case "head", "http":
 			// Try to disambiguate waiting-for-headers vs body read
 			if strings.Contains(e, "awaiting headers") || strings.Contains(e, "while awaiting headers") || strings.Contains(e, "ttfb") {
 				return "timeout_ttfb"
+			}
+			if strings.Contains(e, "write") {
+				return "timeout_write"
 			}
 			if strings.Contains(e, "read") || strings.Contains(e, "body") || strings.Contains(e, "transfer") {
 				return "timeout_read"
@@ -421,6 +428,26 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	}
 	// TLS certificate / handshake specifics
 	if strings.Contains(e, "x509:") || strings.Contains(e, "certificate") || strings.Contains(e, "tls:") || strings.Contains(e, "ssl") {
+		// Map explicit TLS alerts to tls_alert_* where possible for extra granularity
+		// Examples: "remote error: tls: unknown certificate", "tls: alert handshake failure"
+		if i := strings.Index(e, "alert "); i >= 0 {
+			// take token(s) following "alert " up to punctuation/end
+			tok := e[i+len("alert "):]
+			// trim at common delimiters
+			for _, d := range []string{":", ")", ",", ";"} {
+				if j := strings.Index(tok, d); j >= 0 {
+					tok = tok[:j]
+				}
+			}
+			tok = strings.TrimSpace(tok)
+			if tok != "" {
+				// normalize token for key safety
+				tok = strings.ReplaceAll(tok, " ", "_")
+				tok = strings.ReplaceAll(tok, "/", "_")
+				tok = strings.ReplaceAll(tok, "-", "_")
+				return "tls_alert_" + tok
+			}
+		}
 		// certificate buckets
 		if strings.Contains(e, "expired") {
 			return "tls_cert_expired"
@@ -431,14 +458,23 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 		if strings.Contains(e, "is not valid for") || strings.Contains(e, "hostname mismatch") || strings.Contains(e, "certificate is valid for") {
 			return "tls_cert_hostname"
 		}
+		if strings.Contains(e, "revoked") {
+			return "tls_cert_revoked"
+		}
 		if strings.Contains(e, "not yet valid") {
 			return "tls_cert_not_yet_valid"
 		}
 		if strings.Contains(e, "handshake failure") || strings.Contains(e, "alert handshake failure") {
 			return "tls_alert_handshake_failure"
 		}
+		if strings.Contains(e, "bad record mac") {
+			return "tls_alert_bad_record_mac"
+		}
 		if strings.Contains(e, "protocol version") || strings.Contains(e, "no renegotiation") || strings.Contains(e, "inappropriate fallback") {
 			return "tls_protocol_mismatch"
+		}
+		if strings.Contains(e, "no shared cipher") {
+			return "tls_no_shared_cipher"
 		}
 		// generic TLS
 		if strings.Contains(e, "tls") || strings.Contains(e, "ssl") || strings.Contains(e, "x509:") {
@@ -450,14 +486,32 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	if strings.Contains(e, "no such host") {
 		return "dns_no_such_host"
 	}
+	if strings.Contains(e, "temporary failure in name resolution") {
+		return "dns_temp_failure"
+	}
+	if strings.Contains(e, "nxdomain") {
+		return "dns_nxdomain"
+	}
 	if strings.Contains(e, "server misbehaving") {
 		return "dns_server_misbehaving"
 	}
 	if strings.Contains(e, "dns") && strings.Contains(e, "timeout") {
 		return "dns_timeout"
 	}
+	if strings.Contains(e, "servfail") {
+		return "dns_servfail"
+	}
+	if strings.Contains(e, "refused") && strings.Contains(e, "dns") {
+		return "dns_refused"
+	}
+	if strings.Contains(e, "formerr") {
+		return "dns_formerr"
+	}
 	if strings.Contains(e, "proxyconnect") || strings.Contains(e, " via proxy") || strings.Contains(e, "proxy ") {
 		return "proxy"
+	}
+	if strings.Contains(e, "proxy authentication required") {
+		return "proxy_auth_required"
 	}
 	// Transport specifics
 	if strings.Contains(e, "refused") || strings.Contains(e, "econnrefused") {
@@ -469,6 +523,27 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	if strings.Contains(e, "network is unreachable") || strings.Contains(e, "no route to host") || strings.Contains(e, "host is down") {
 		return "unreachable"
 	}
+	if strings.Contains(e, "http2") || strings.Contains(e, "h2") {
+		if strings.Contains(e, "stream error") || strings.Contains(e, "rst_stream") {
+			return "http2_stream_error"
+		}
+		if strings.Contains(e, "protocol error") {
+			return "http2_protocol_error"
+		}
+	}
+	// QUIC / HTTP3 specifics
+	if strings.Contains(e, "quic") {
+		if strings.Contains(e, "handshake") {
+			return "quic_handshake_error"
+		}
+		if strings.Contains(e, "stream") || strings.Contains(e, "reset") || strings.Contains(e, "rst_stream") {
+			return "quic_stream_error"
+		}
+		return "quic_error"
+	}
+	if strings.Contains(e, "http3") || strings.Contains(e, " h3") {
+		return "http3_error"
+	}
 	// Provide a slightly more informative other_* bucket for common cases
 	if strings.Contains(e, "unexpected eof") || strings.Contains(e, "unexpected end of file") || strings.Contains(e, "io: unexpected eof") {
 		return "other_unexpected_eof"
@@ -478,6 +553,21 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 	}
 	if strings.Contains(e, "eof") {
 		return "other_eof"
+	}
+	if strings.Contains(e, "broken pipe") {
+		return "other_broken_pipe"
+	}
+	// A few additional generic timeout phrasings not caught above
+	if strings.Contains(e, "timed out") {
+		switch typed {
+		case "tcp":
+			return "timeout_connect"
+		case "tls":
+			return "timeout_tls"
+		case "head", "http":
+			return "timeout_http"
+		}
+		return "timeout"
 	}
 	// Fallback to coarse
 	coarse := normalizeErrorReason(e)
@@ -493,6 +583,12 @@ func normalizeErrorReasonDetailed(err string, headStatus int, typed string) stri
 				return "other_" + token
 			}
 		}
+	}
+	if coarse == "other" {
+		if typed != "" {
+			return typed + "_other"
+		}
+		return "unknown_other"
 	}
 	return coarse
 }

@@ -909,12 +909,91 @@ type uiState struct {
 
 	// Calibration tolerance (percent) for pass/fail in diagnostics
 	calibTolerancePct int // default 10
+
+	// per-chart visibility (persisted)
+	hiddenCharts map[string]bool // key: chart title from makeChartSection; true if hidden
 }
 
 // chartRef tracks a chart section for search/navigation
 type chartRef struct {
 	title   string
 	section *fyne.Container
+}
+
+// isChartVisible reports whether the named chart is currently intended to be visible
+// based on user preferences. This does not evaluate data-driven auto-hide rules.
+func (s *uiState) isChartVisible(title string) bool {
+	if s == nil {
+		return true
+	}
+	if s.hiddenCharts != nil && s.hiddenCharts[title] {
+		return false
+	}
+	// Special case: Pre‑TTFB chart has a wrapper block; honor the explicit show flag too
+	if title == "Pre‑TTFB Stall Rate" && !s.showPreTTFB {
+		return false
+	}
+	return true
+}
+
+// setChartVisible updates prefs and shows/hides the corresponding section and any wrapper.
+func (s *uiState) setChartVisible(title string, vis bool) {
+	if s.hiddenCharts == nil {
+		s.hiddenCharts = map[string]bool{}
+	}
+	s.hiddenCharts[title] = !vis
+	// Apply to the section if we can find it
+	for _, r := range s.chartRefs {
+		if r.title == title && r.section != nil {
+			if vis {
+				r.section.Show()
+			} else {
+				r.section.Hide()
+			}
+			break
+		}
+	}
+	// Pre‑TTFB also controls a wrapper block and separate preference
+	if title == "Pre‑TTFB Stall Rate" {
+		s.showPreTTFB = vis
+		if s.pretffbSection != nil {
+			if vis {
+				s.pretffbSection.Show()
+			} else {
+				s.pretffbSection.Hide()
+			}
+		}
+		if s.pretffbBlock != nil {
+			if vis {
+				s.pretffbBlock.Show()
+			} else {
+				s.pretffbBlock.Hide()
+			}
+		}
+	}
+}
+
+// applyChartVisibilityFromPrefs enforces hiddenCharts across all sections after initial layout.
+func (s *uiState) applyChartVisibilityFromPrefs() {
+	if s == nil || len(s.chartRefs) == 0 {
+		return
+	}
+	for _, r := range s.chartRefs {
+		vis := s.isChartVisible(r.title)
+		if vis {
+			r.section.Show()
+		} else {
+			r.section.Hide()
+		}
+	}
+	// Also control the Pre‑TTFB wrapper block consistently
+	if s.pretffbBlock != nil {
+		if s.isChartVisible("Pre‑TTFB Stall Rate") {
+			s.pretffbBlock.Show()
+		} else {
+			s.pretffbBlock.Hide()
+		}
+	}
 }
 
 // makeChartSection composes a header row (title + info button) and the stacked image+overlay
@@ -1046,6 +1125,10 @@ func updateFindMatches(state *uiState) {
 		return
 	}
 	for i, r := range state.chartRefs {
+		// Skip charts currently hidden by preferences
+		if !state.isChartVisible(r.title) {
+			continue
+		}
 		if strings.Contains(strings.ToLower(r.title), query) {
 			state.findMatches = append(state.findMatches, i)
 		}
@@ -2572,7 +2655,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { state.window.Close() }),
 	)
-	// Settings menu: includes Screenshot Theme (Auto/Dark/Light) and other toggles
+	// Settings menu structure
 	themeLabelFor := func(name string) string {
 		// name is one of Auto/Dark/Light
 		switch name {
@@ -2816,31 +2899,6 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			fyne.Do(func() { buildMenus(state, fileLabel) })
 		}()
 	})
-	// Pre‑TTFB chart toggle
-	pretffbLabel := func() string {
-		if state.showPreTTFB {
-			return "Pre‑TTFB Chart ✓"
-		}
-		return "Pre‑TTFB Chart"
-	}
-	pretffbToggle := fyne.NewMenuItem(pretffbLabel(), func() {
-		state.showPreTTFB = !state.showPreTTFB
-		savePrefs(state)
-		// Apply immediately
-		if state.pretffbBlock != nil {
-			if state.showPreTTFB {
-				state.pretffbBlock.Show()
-			} else {
-				state.pretffbBlock.Hide()
-			}
-			state.pretffbBlock.Refresh()
-		}
-		// Rebuild menus to update checkmark
-		go func() {
-			time.Sleep(40 * time.Millisecond)
-			fyne.Do(func() { buildMenus(state, fileLabel) })
-		}()
-	})
 	// Pre‑TTFB auto-hide toggle (only hide when metric is all zero)
 	autoHidePretffbLabel := func() string {
 		if state.autoHidePreTTFB {
@@ -3036,7 +3094,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}()
 	})
 
-	// Theme submenu under Settings
+	// Theme submenu under Settings (Appearance)
 	themeSub := fyne.NewMenu("Screenshot Theme", autoItem, darkItem, lightItem)
 	themeSubItem := fyne.NewMenuItem("Screenshot Theme", nil)
 	themeSubItem.ChildMenu = themeSub
@@ -3283,31 +3341,73 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		d.Show()
 	}
 
-	settingsMenu := fyne.NewMenu("Settings",
+	// Visible Charts submenu (dynamic)
+	visibleChartsMenu := fyne.NewMenu("Visible Charts")
+	// Build items in current on-screen order
+	for _, r := range state.chartRefs {
+		title := r.title
+		// label with checkmark when visible
+		lbl := title
+		if state.isChartVisible(title) {
+			lbl = title + " ✓"
+		}
+		t := title // capture
+		itm := fyne.NewMenuItem(lbl, func() {
+			newVis := !state.isChartVisible(t)
+			state.setChartVisible(t, newVis)
+			savePrefs(state)
+			// Redraw to account for layout changes and data-driven auto-hide
+			redrawCharts(state)
+			go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+		})
+		visibleChartsMenu.Items = append(visibleChartsMenu.Items, itm)
+	}
+	visibleChartsItem := fyne.NewMenuItem("Visible Charts", nil)
+	visibleChartsItem.ChildMenu = visibleChartsMenu
+
+	// Chart Options submenu: consolidate per-chart toggles
+	chartOptionsMenu := fyne.NewMenu("Chart Options",
 		crosshairToggle,
 		hintsToggle,
-		pretffbToggle,
 		autoHidePretffbToggle,
 		fyne.NewMenuItemSeparator(),
 		avgToggle, medToggle, minToggle, maxToggle, iqrToggle,
 		fyne.NewMenuItemSeparator(),
-		rollingToggle,
-		bandToggle,
-		qualityOnlyToggle,
-		qualColToggle,
+		rollingToggle, bandToggle,
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Calibration tolerance…", func() { openCalibTolDialog() }),
+		qualityOnlyToggle, qualColToggle,
 		fyne.NewMenuItemSeparator(),
 		dnsToggle,
+	)
+	chartOptionsItem := fyne.NewMenuItem("Chart Options", nil)
+	chartOptionsItem.ChildMenu = chartOptionsMenu
+
+	// Axes & Units submenu: X-Axis, Y-Scale, Speed Unit
+	axesUnitsMenu := fyne.NewMenu("Axes & Units", xAxisSubItem, yScaleSubItem, speedUnitSubItem)
+	axesUnitsItem := fyne.NewMenuItem("Axes & Units", nil)
+	axesUnitsItem.ChildMenu = axesUnitsMenu
+
+	// Thresholds submenu: SLA, Low-Speed, Rolling Window, Calibration tolerance
+	thresholdsMenu := fyne.NewMenu("Thresholds",
 		fyne.NewMenuItem("SLA Thresholds…", func() { openSLADialog() }),
 		fyne.NewMenuItem("Low-Speed Threshold…", func() { openLowSpeedDialog() }),
 		fyne.NewMenuItem("Rolling Window…", func() { openRollingDialog() }),
-		fyne.NewMenuItemSeparator(),
-		xAxisSubItem,
-		yScaleSubItem,
-		fyne.NewMenuItem("Batches…", func() { openBatchesDialog() }),
-		fyne.NewMenuItemSeparator(),
-		speedUnitSubItem,
+		fyne.NewMenuItem("Calibration tolerance…", func() { openCalibTolDialog() }),
+	)
+	thresholdsItem := fyne.NewMenuItem("Thresholds", nil)
+	thresholdsItem.ChildMenu = thresholdsMenu
+
+	// Data Scope submenu: batches
+	dataScopeMenu := fyne.NewMenu("Data Scope", fyne.NewMenuItem("Batches…", func() { openBatchesDialog() }))
+	dataScopeItem := fyne.NewMenuItem("Data Scope", nil)
+	dataScopeItem.ChildMenu = dataScopeMenu
+
+	settingsMenu := fyne.NewMenu("Settings",
+		visibleChartsItem,
+		chartOptionsItem,
+		axesUnitsItem,
+		thresholdsItem,
+		dataScopeItem,
 		fyne.NewMenuItemSeparator(),
 		themeSubItem,
 	)
@@ -9272,18 +9372,28 @@ func renderErrorReasonsDetailedChart(state *uiState) image.Image {
 	// Preferred ordering: group by families
 	preferred := []string{
 		// HTTP specifics
-		"http_401", "http_403", "http_404", "http_407", "http_408", "http_409", "http_410", "http_412", "http_413", "http_414", "http_415", "http_416", "http_418", "http_429", "http_4xx_other",
-		"http_500", "http_501", "http_502", "http_503", "http_504", "http_5xx_other",
+		"http_400", "http_401", "http_402", "http_403", "http_404", "http_405", "http_406", "http_407", "http_408", "http_409", "http_410", "http_411", "http_412", "http_413", "http_414", "http_415", "http_416", "http_417", "http_418", "http_421", "http_422", "http_423", "http_424", "http_425", "http_426", "http_428", "http_431", "http_451", "http_429", "http_4xx_other",
+		"http_500", "http_501", "http_502", "http_503", "http_504", "http_505", "http_506", "http_507", "http_508", "http_510", "http_511", "http_520", "http_521", "http_522", "http_523", "http_524", "http_525", "http_526", "http_599", "http_5xx_other",
 		// TLS specifics
-		"tls_cert_expired", "tls_cert_untrusted", "tls_cert_hostname", "tls_cert_not_yet_valid", "tls_alert_handshake_failure", "tls_protocol_mismatch", "tls_handshake",
+		"tls_cert_expired", "tls_cert_untrusted", "tls_cert_hostname", "tls_cert_not_yet_valid", "tls_cert_revoked", "tls_alert_handshake_failure", "tls_protocol_mismatch", "tls_no_shared_cipher", "tls_handshake",
 		// timeouts refined
-		"timeout_connect", "timeout_tls", "timeout_ttfb", "timeout_read", "timeout_http", "timeout",
+		"timeout_connect", "timeout_tls", "timeout_ttfb", "timeout_read", "timeout_write", "timeout_http", "timeout",
 		// transport and generic
-		"conn_refused", "conn_reset", "unreachable", "dns_no_such_host", "dns_server_misbehaving", "dns_timeout", "dns_failure", "proxy",
+		"conn_refused", "conn_reset", "unreachable",
+		// DNS families
+		"dns_no_such_host", "dns_nxdomain", "dns_server_misbehaving", "dns_timeout", "dns_servfail", "dns_refused", "dns_formerr", "dns_failure",
+		// proxy families
+		"proxy", "proxy_auth_required",
 		// stall/partial
 		"stall_pre_ttfb", "stall_abort", "partial_body", "stall",
-		// catch-alls
-		"other_unexpected_eof", "other_context_canceled", "other_eof", "other",
+		// HTTP/2 specifics
+		"http2_stream_error", "http2_protocol_error",
+		// QUIC/HTTP3 specifics
+		"quic_handshake_error", "quic_stream_error", "quic_error", "http3_error",
+		// catch-alls (order near the end)
+		"other_unexpected_eof", "other_context_canceled", "other_eof", "other_broken_pipe",
+		// final unknown bucket
+		"unknown_other",
 	}
 	for _, k := range preferred {
 		if _, ok := keySet[k]; ok {
@@ -12010,242 +12120,242 @@ func exportAllChartsCombined(state *uiState) {
 	labels := []string{}
 	renderers := []func(*uiState) image.Image{}
 	// Setup timings first
-	if state.setupDNSImgCanvas != nil && state.setupDNSImgCanvas.Image != nil {
+	if state.setupDNSImgCanvas != nil && state.setupDNSImgCanvas.Image != nil && state.isChartVisible("DNS Lookup Time (ms)") {
 		renderers = append(renderers, renderDNSLookupChart)
 		labels = append(labels, "DNS Lookup Time (ms)")
 	}
-	if state.setupConnImgCanvas != nil && state.setupConnImgCanvas.Image != nil {
+	if state.setupConnImgCanvas != nil && state.setupConnImgCanvas.Image != nil && state.isChartVisible("TCP Connect Time (ms)") {
 		renderers = append(renderers, renderTCPConnectChart)
 		labels = append(labels, "TCP Connect Time (ms)")
 	}
-	if state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil {
+	if state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil && state.isChartVisible("TLS Handshake Time (ms)") {
 		renderers = append(renderers, renderTLSHandshakeChart)
 		labels = append(labels, "TLS Handshake Time (ms)")
 	}
 	// Then averages and the rest
 	// Transport/Protocol block (appears before Speed on-screen)
-	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil {
+	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil && state.isChartVisible("HTTP Protocol Mix (%)") {
 		renderers = append(renderers, renderHTTPProtocolMixChart)
 		labels = append(labels, "HTTP Protocol Mix (%)")
 	}
-	if state.protocolAvgSpeedImgCanvas != nil && state.protocolAvgSpeedImgCanvas.Image != nil {
+	if state.protocolAvgSpeedImgCanvas != nil && state.protocolAvgSpeedImgCanvas.Image != nil && state.isChartVisible("Avg Speed by HTTP Protocol") {
 		renderers = append(renderers, renderAvgSpeedByHTTPProtocolChart)
 		labels = append(labels, "Avg Speed by HTTP Protocol")
 	}
-	if state.protocolStallRateImgCanvas != nil && state.protocolStallRateImgCanvas.Image != nil {
+	if state.protocolStallRateImgCanvas != nil && state.protocolStallRateImgCanvas.Image != nil && state.isChartVisible("Stall Rate by HTTP Protocol (%)") {
 		renderers = append(renderers, renderStallRateByHTTPProtocolChart)
 		labels = append(labels, "Stall Rate by HTTP Protocol (%)")
 	}
-	if state.protocolStallShareImgCanvas != nil && state.protocolStallShareImgCanvas.Image != nil {
+	if state.protocolStallShareImgCanvas != nil && state.protocolStallShareImgCanvas.Image != nil && state.isChartVisible("Stall Share by HTTP Protocol (%)") {
 		renderers = append(renderers, renderStallShareByHTTPProtocolChart)
 		labels = append(labels, "Stall Share by HTTP Protocol (%)")
 	}
-	if state.protocolPartialRateImgCanvas != nil && state.protocolPartialRateImgCanvas.Image != nil {
+	if state.protocolPartialRateImgCanvas != nil && state.protocolPartialRateImgCanvas.Image != nil && state.isChartVisible("Partial Body Rate by HTTP Protocol (%)") {
 		renderers = append(renderers, renderPartialBodyRateByHTTPProtocolChart)
 		labels = append(labels, "Partial Body Rate by HTTP Protocol (%)")
 	}
-	if state.protocolPartialShareImgCanvas != nil && state.protocolPartialShareImgCanvas.Image != nil {
+	if state.protocolPartialShareImgCanvas != nil && state.protocolPartialShareImgCanvas.Image != nil && state.isChartVisible("Partial Share by HTTP Protocol (%)") {
 		renderers = append(renderers, renderPartialShareByHTTPProtocolChart)
 		labels = append(labels, "Partial Share by HTTP Protocol (%)")
 	}
-	if state.protocolErrorRateImgCanvas != nil && state.protocolErrorRateImgCanvas.Image != nil {
+	if state.protocolErrorRateImgCanvas != nil && state.protocolErrorRateImgCanvas.Image != nil && state.isChartVisible("Error Rate by HTTP Protocol (%)") {
 		renderers = append(renderers, renderErrorRateByHTTPProtocolChart)
 		labels = append(labels, "Error Rate by HTTP Protocol (%)")
 	}
-	if state.protocolErrorShareImgCanvas != nil && state.protocolErrorShareImgCanvas.Image != nil {
+	if state.protocolErrorShareImgCanvas != nil && state.protocolErrorShareImgCanvas.Image != nil && state.isChartVisible("Error Share by HTTP Protocol (%)") {
 		renderers = append(renderers, renderErrorShareByHTTPProtocolChart)
 		labels = append(labels, "Error Share by HTTP Protocol (%)")
 	}
 	// Error Types composition
-	if state.errorTypesImgCanvas != nil && state.errorTypesImgCanvas.Image != nil {
+	if state.errorTypesImgCanvas != nil && state.errorTypesImgCanvas.Image != nil && state.isChartVisible("Error Types (%)") {
 		renderers = append(renderers, renderErrorTypesChart)
 		labels = append(labels, "Error Types (%)")
 	}
 	// Error Reasons composition
-	if state.errorReasonsImgCanvas != nil && state.errorReasonsImgCanvas.Image != nil {
+	if state.errorReasonsImgCanvas != nil && state.errorReasonsImgCanvas.Image != nil && state.isChartVisible("Error Reasons (%)") {
 		renderers = append(renderers, renderErrorReasonsChart)
 		labels = append(labels, "Error Reasons (%)")
 	}
 	// Error Reasons (detailed) composition
-	if state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil {
+	if state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil && state.isChartVisible("Error Reasons (detailed) (%)") {
 		renderers = append(renderers, renderErrorReasonsDetailedChart)
 		labels = append(labels, "Error Reasons (detailed) (%)")
 	}
-	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil {
+	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil && state.isChartVisible("TLS Version Mix (%)") {
 		renderers = append(renderers, renderTLSVersionMixChart)
 		labels = append(labels, "TLS Version Mix (%)")
 	}
-	if state.alpnMixImgCanvas != nil && state.alpnMixImgCanvas.Image != nil {
+	if state.alpnMixImgCanvas != nil && state.alpnMixImgCanvas.Image != nil && state.isChartVisible("ALPN Mix (%)") {
 		renderers = append(renderers, renderALPNMixChart)
 		labels = append(labels, "ALPN Mix (%)")
 	}
-	if state.chunkedRateImgCanvas != nil && state.chunkedRateImgCanvas.Image != nil {
+	if state.chunkedRateImgCanvas != nil && state.chunkedRateImgCanvas.Image != nil && state.isChartVisible("Chunked Transfer Rate (%)") {
 		renderers = append(renderers, renderChunkedTransferRateChart)
 		labels = append(labels, "Chunked Transfer Rate (%)")
 	}
 
 	// Split charts in on-screen order: Speed Avg/Median/Min/Max, then Self-test, then Percentiles, then TTFB Avg/Median/Min/Max
-	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil && state.showAvg {
+	if state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil && state.showAvg && state.isChartVisible("Speed – Average") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "avg") })
 		labels = append(labels, "Speed – Average")
 	}
-	if state.speedMedianImgCanvas != nil && state.speedMedianImgCanvas.Image != nil && state.showMedian {
+	if state.speedMedianImgCanvas != nil && state.speedMedianImgCanvas.Image != nil && state.showMedian && state.isChartVisible("Speed – Median") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "median") })
 		labels = append(labels, "Speed – Median")
 	}
-	if state.speedMinMaxImgCanvas != nil && state.speedMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) {
+	if state.speedMinMaxImgCanvas != nil && state.speedMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) && state.isChartVisible("Speed – Min/Max") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderSpeedChartVariant(s, "minmax") })
 		labels = append(labels, "Speed – Min/Max")
 	}
 	// Self-test baseline
-	if state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil {
+	if state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil && state.isChartVisible("Local Throughput Self-Test") {
 		renderers = append(renderers, renderSelfTestChart)
 		labels = append(labels, "Local Throughput Self-Test")
 	}
 	// Speed percentiles panels
-	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil {
+	if state.pctlOverallImg != nil && state.pctlOverallImg.Visible() && state.pctlOverallImg.Image != nil && state.isChartVisible("Speed Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "overall") })
 		labels = append(labels, "Speed Percentiles – Overall")
 	}
-	if state.pctlIPv4Img != nil && state.pctlIPv4Img.Visible() && state.pctlIPv4Img.Image != nil {
+	if state.pctlIPv4Img != nil && state.pctlIPv4Img.Visible() && state.pctlIPv4Img.Image != nil && state.isChartVisible("Speed Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv4") })
 		labels = append(labels, "Speed Percentiles – IPv4")
 	}
-	if state.pctlIPv6Img != nil && state.pctlIPv6Img.Visible() && state.pctlIPv6Img.Image != nil {
+	if state.pctlIPv6Img != nil && state.pctlIPv6Img.Visible() && state.pctlIPv6Img.Image != nil && state.isChartVisible("Speed Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderPercentilesChartWithFamily(s, "ipv6") })
 		labels = append(labels, "Speed Percentiles – IPv6")
 	}
 	// TTFB split charts
-	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil && state.showAvg {
+	if state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil && state.showAvg && state.isChartVisible("TTFB – Average") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "avg") })
 		labels = append(labels, "TTFB – Average")
 	}
-	if state.ttfbMedianImgCanvas != nil && state.ttfbMedianImgCanvas.Image != nil && state.showMedian {
+	if state.ttfbMedianImgCanvas != nil && state.ttfbMedianImgCanvas.Image != nil && state.showMedian && state.isChartVisible("TTFB – Median") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "median") })
 		labels = append(labels, "TTFB – Median")
 	}
-	if state.ttfbMinMaxImgCanvas != nil && state.ttfbMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) {
+	if state.ttfbMinMaxImgCanvas != nil && state.ttfbMinMaxImgCanvas.Image != nil && (state.showMin || state.showMax) && state.isChartVisible("TTFB – Min/Max") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBChartVariant(s, "minmax") })
 		labels = append(labels, "TTFB – Min/Max")
 	}
 	// TTFB percentiles panels based on visibility
-	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil {
+	if state.tpctlOverallImg != nil && state.tpctlOverallImg.Visible() && state.tpctlOverallImg.Image != nil && state.isChartVisible("TTFB Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "overall") })
 		labels = append(labels, "TTFB Percentiles – Overall")
 	}
-	if state.tpctlIPv4Img != nil && state.tpctlIPv4Img.Visible() && state.tpctlIPv4Img.Image != nil {
+	if state.tpctlIPv4Img != nil && state.tpctlIPv4Img.Visible() && state.tpctlIPv4Img.Image != nil && state.isChartVisible("TTFB Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv4") })
 		labels = append(labels, "TTFB Percentiles – IPv4")
 	}
-	if state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Visible() && state.tpctlIPv6Img.Image != nil {
+	if state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Visible() && state.tpctlIPv6Img.Image != nil && state.isChartVisible("TTFB Percentiles") {
 		renderers = append(renderers, func(s *uiState) image.Image { return renderTTFBPercentilesChartWithFamily(s, "ipv6") })
 		labels = append(labels, "TTFB Percentiles – IPv6")
 	}
 	// New diagnostics in on-screen order
-	if state.tailRatioImgCanvas != nil && state.tailRatioImgCanvas.Image != nil {
+	if state.tailRatioImgCanvas != nil && state.tailRatioImgCanvas.Image != nil && state.isChartVisible("Tail Heaviness (P99/P50 Speed)") {
 		renderers = append(renderers, renderTailHeavinessChart)
 		labels = append(labels, "Tail Heaviness (P99/P50 Speed)")
 	}
-	if state.ttfbTailRatioImgCanvas != nil && state.ttfbTailRatioImgCanvas.Image != nil {
+	if state.ttfbTailRatioImgCanvas != nil && state.ttfbTailRatioImgCanvas.Image != nil && state.isChartVisible("TTFB Tail Heaviness (P95/P50)") {
 		renderers = append(renderers, renderTTFBTailHeavinessChart)
 		labels = append(labels, "TTFB Tail Heaviness (P95/P50)")
 	}
-	if state.speedDeltaImgCanvas != nil && state.speedDeltaImgCanvas.Image != nil {
+	if state.speedDeltaImgCanvas != nil && state.speedDeltaImgCanvas.Image != nil && state.isChartVisible("Family Delta – Speed (IPv6−IPv4)") {
 		renderers = append(renderers, renderFamilyDeltaSpeedChart)
 		labels = append(labels, "Family Delta – Speed (IPv6−IPv4)")
 	}
-	if state.ttfbDeltaImgCanvas != nil && state.ttfbDeltaImgCanvas.Image != nil {
+	if state.ttfbDeltaImgCanvas != nil && state.ttfbDeltaImgCanvas.Image != nil && state.isChartVisible("Family Delta – TTFB (IPv4−IPv6)") {
 		renderers = append(renderers, renderFamilyDeltaTTFBChart)
 		labels = append(labels, "Family Delta – TTFB (IPv4−IPv6)")
 	}
-	if state.speedDeltaPctImgCanvas != nil && state.speedDeltaPctImgCanvas.Image != nil {
+	if state.speedDeltaPctImgCanvas != nil && state.speedDeltaPctImgCanvas.Image != nil && state.isChartVisible("Family Delta – Speed % (IPv6 vs IPv4)") {
 		renderers = append(renderers, renderFamilyDeltaSpeedPctChart)
 		labels = append(labels, "Family Delta – Speed % (IPv6 vs IPv4)")
 	}
-	if state.ttfbDeltaPctImgCanvas != nil && state.ttfbDeltaPctImgCanvas.Image != nil {
+	if state.ttfbDeltaPctImgCanvas != nil && state.ttfbDeltaPctImgCanvas.Image != nil && state.isChartVisible("Family Delta – TTFB % (IPv6 vs IPv4)") {
 		renderers = append(renderers, renderFamilyDeltaTTFBPctChart)
 		labels = append(labels, "Family Delta – TTFB % (IPv6 vs IPv4)")
 	}
-	if state.slaSpeedImgCanvas != nil && state.slaSpeedImgCanvas.Image != nil {
+	if state.slaSpeedImgCanvas != nil && state.slaSpeedImgCanvas.Image != nil && state.isChartVisible("SLA Compliance – Speed") {
 		renderers = append(renderers, renderSLASpeedChart)
 		labels = append(labels, "SLA Compliance – Speed")
 	}
-	if state.slaTTFBImgCanvas != nil && state.slaTTFBImgCanvas.Image != nil {
+	if state.slaTTFBImgCanvas != nil && state.slaTTFBImgCanvas.Image != nil && state.isChartVisible("SLA Compliance – TTFB") {
 		renderers = append(renderers, renderSLATTFBChart)
 		labels = append(labels, "SLA Compliance – TTFB")
 	}
-	if state.slaSpeedDeltaImgCanvas != nil && state.slaSpeedDeltaImgCanvas.Image != nil {
+	if state.slaSpeedDeltaImgCanvas != nil && state.slaSpeedDeltaImgCanvas.Image != nil && state.isChartVisible("SLA Compliance Delta – Speed (pp)") {
 		renderers = append(renderers, renderSLASpeedDeltaChart)
 		labels = append(labels, "SLA Compliance Delta – Speed (pp)")
 	}
-	if state.slaTTFBDeltaImgCanvas != nil && state.slaTTFBDeltaImgCanvas.Image != nil {
+	if state.slaTTFBDeltaImgCanvas != nil && state.slaTTFBDeltaImgCanvas.Image != nil && state.isChartVisible("SLA Compliance Delta – TTFB (pp)") {
 		renderers = append(renderers, renderSLATTFBDeltaChart)
 		labels = append(labels, "SLA Compliance Delta – TTFB (pp)")
 	}
 	// TTFB P95−P50 Gap
-	if state.tpctlP95GapImgCanvas != nil && state.tpctlP95GapImgCanvas.Image != nil {
+	if state.tpctlP95GapImgCanvas != nil && state.tpctlP95GapImgCanvas.Image != nil && state.isChartVisible("TTFB P95−P50 Gap") {
 		renderers = append(renderers, renderTTFBP95GapChart)
 		labels = append(labels, "TTFB P95−P50 Gap")
 	}
-	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil {
+	if state.errImgCanvas != nil && state.errImgCanvas.Image != nil && state.isChartVisible("Error Rate") {
 		renderers = append(renderers, renderErrorRateChart)
 		labels = append(labels, "Error Rate")
 	}
-	if state.jitterImgCanvas != nil && state.jitterImgCanvas.Image != nil {
+	if state.jitterImgCanvas != nil && state.jitterImgCanvas.Image != nil && state.isChartVisible("Jitter") {
 		renderers = append(renderers, renderJitterChart)
 		labels = append(labels, "Jitter")
 	}
-	if state.covImgCanvas != nil && state.covImgCanvas.Image != nil {
+	if state.covImgCanvas != nil && state.covImgCanvas.Image != nil && state.isChartVisible("Coefficient of Variation") {
 		renderers = append(renderers, renderCoVChart)
 		labels = append(labels, "Coefficient of Variation")
 	}
 	// Stability & quality
-	if state.lowSpeedImgCanvas != nil && state.lowSpeedImgCanvas.Image != nil {
+	if state.lowSpeedImgCanvas != nil && state.lowSpeedImgCanvas.Image != nil && state.isChartVisible("Low-Speed Time Share") {
 		renderers = append(renderers, renderLowSpeedShareChart)
 		labels = append(labels, "Low-Speed Time Share")
 	}
-	if state.stallRateImgCanvas != nil && state.stallRateImgCanvas.Image != nil {
+	if state.stallRateImgCanvas != nil && state.stallRateImgCanvas.Image != nil && state.isChartVisible("Stall Rate") {
 		renderers = append(renderers, renderStallRateChart)
 		labels = append(labels, "Stall Rate")
 	}
-	if state.pretffbBlock != nil && state.pretffbBlock.Visible() && state.pretffbImgCanvas != nil && state.pretffbImgCanvas.Image != nil {
+	if state.pretffbBlock != nil && state.pretffbBlock.Visible() && state.pretffbImgCanvas != nil && state.pretffbImgCanvas.Image != nil && state.isChartVisible("Pre‑TTFB Stall Rate") {
 		renderers = append(renderers, renderPreTTFBStallRateChart)
 		labels = append(labels, "Pre‑TTFB Stall Rate")
 	}
-	if state.partialBodyImgCanvas != nil && state.partialBodyImgCanvas.Image != nil {
+	if state.partialBodyImgCanvas != nil && state.partialBodyImgCanvas.Image != nil && state.isChartVisible("Partial Body Rate") {
 		renderers = append(renderers, renderPartialBodyRateChart)
 		labels = append(labels, "Partial Body Rate")
 	}
-	if state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil {
+	if state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil && state.isChartVisible("Stalled Requests Count") {
 		renderers = append(renderers, renderStallCountChart)
 		labels = append(labels, "Stalled Requests Count")
 	}
-	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil {
+	if state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil && state.isChartVisible("Avg Stall Time") {
 		renderers = append(renderers, renderStallTimeChart)
 		labels = append(labels, "Avg Stall Time")
 	}
 	// Transient/Micro‑Stalls
-	if state.microStallRateImgCanvas != nil && state.microStallRateImgCanvas.Image != nil {
+	if state.microStallRateImgCanvas != nil && state.microStallRateImgCanvas.Image != nil && state.isChartVisible("Transient Stall Rate (%)") {
 		renderers = append(renderers, renderMicroStallRateChart)
 		labels = append(labels, "Transient Stall Rate (%)")
 	}
-	if state.microStallTimeImgCanvas != nil && state.microStallTimeImgCanvas.Image != nil {
+	if state.microStallTimeImgCanvas != nil && state.microStallTimeImgCanvas.Image != nil && state.isChartVisible("Avg Transient Stall Time (ms)") {
 		renderers = append(renderers, renderMicroStallTimeChart)
 		labels = append(labels, "Avg Transient Stall Time (ms)")
 	}
-	if state.microStallCountImgCanvas != nil && state.microStallCountImgCanvas.Image != nil {
+	if state.microStallCountImgCanvas != nil && state.microStallCountImgCanvas.Image != nil && state.isChartVisible("Avg Transient Stall Count") {
 		renderers = append(renderers, renderMicroStallCountChart)
 		labels = append(labels, "Avg Transient Stall Count")
 	}
-	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil {
+	if state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil && state.isChartVisible("Cache Hit Rate") {
 		renderers = append(renderers, renderCacheHitRateChart)
 		labels = append(labels, "Cache Hit Rate")
 	}
-	if state.enterpriseProxyImgCanvas != nil && state.enterpriseProxyImgCanvas.Image != nil {
+	if state.enterpriseProxyImgCanvas != nil && state.enterpriseProxyImgCanvas.Image != nil && state.isChartVisible("Enterprise Proxy Rate") {
 		renderers = append(renderers, renderEnterpriseProxyRateChart)
 		labels = append(labels, "Enterprise Proxy Rate")
 	}
-	if state.serverProxyImgCanvas != nil && state.serverProxyImgCanvas.Image != nil {
+	if state.serverProxyImgCanvas != nil && state.serverProxyImgCanvas.Image != nil && state.isChartVisible("Server-side Proxy Rate") {
 		renderers = append(renderers, renderServerProxyRateChart)
 		labels = append(labels, "Server-side Proxy Rate")
 	}
@@ -12574,6 +12684,18 @@ func savePrefs(state *uiState) {
 	// (removed: pctl prefs)
 	// Calibration tolerance
 	prefs.SetInt("calibTolerancePct", state.calibTolerancePct)
+	// Persist hidden charts as JSON array of titles
+	if state.hiddenCharts != nil {
+		hidden := make([]string, 0, len(state.hiddenCharts))
+		for title, hiddenFlag := range state.hiddenCharts {
+			if hiddenFlag {
+				hidden = append(hidden, title)
+			}
+		}
+		if data, err := json.Marshal(hidden); err == nil {
+			prefs.SetString("hiddenChartsJSON", string(data))
+		}
+	}
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, tabs *container.AppTabs) {
@@ -12671,6 +12793,30 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	// Table columns
 	state.showQualColumn = prefs.BoolWithFallback("showQualColumn", state.showQualColumn)
 	// (removed: pctl prefs)
+	// Hidden charts (persisted as JSON array of titles)
+	if raw := strings.TrimSpace(prefs.StringWithFallback("hiddenChartsJSON", "")); raw != "" {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			if state.hiddenCharts == nil {
+				state.hiddenCharts = map[string]bool{}
+			}
+			// reset then apply
+			for k := range state.hiddenCharts {
+				delete(state.hiddenCharts, k)
+			}
+			for _, t := range arr {
+				if t = strings.TrimSpace(t); t != "" {
+					state.hiddenCharts[t] = true
+				}
+			}
+		}
+	}
+	// Apply chart visibility after chartRefs are registered
+	state.applyChartVisibilityFromPrefs()
+	// Rebuild menus so Visible Charts checkmarks reflect loaded prefs
+	if state.window != nil {
+		buildMenus(state, fileLabel)
+	}
 }
 
 // utils
