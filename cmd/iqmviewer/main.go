@@ -887,6 +887,8 @@ type uiState struct {
 	// data cleanup toggles
 	// When enabled, hide generic 'other' buckets from error reason charts to reduce clutter
 	hideOtherCategories bool
+	// When enabled, hide '(unknown)' protocol buckets from protocol charts
+	hideUnknownProtocols bool
 
 	// prefs
 	speedUnit string // "kbps", "kBps", "Mbps", "MBps", "Gbps", "GBps"
@@ -3788,6 +3790,17 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 			redrawCharts(state)
 			go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
 		}),
+		fyne.NewMenuItem(func() string {
+			if state.hideUnknownProtocols {
+				return "Hide '(unknown)' protocols ✓"
+			}
+			return "Hide '(unknown)' protocols"
+		}(), func() {
+			state.hideUnknownProtocols = !state.hideUnknownProtocols
+			savePrefs(state)
+			redrawCharts(state)
+			go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem(func() string {
 			if state.exportRespectVisibility {
@@ -5080,6 +5093,125 @@ func redrawCharts(state *uiState) {
 				state.plStableOverlay.Refresh()
 			}
 		}
+	}
+
+	// When filtering results down to a single batch, some canvases may not visually update
+	// despite Image/Refresh calls (likely a repaint/caching edge when dimensions don't change).
+	// As a low-impact safeguard, nudge chart canvases' MinSize by +1px and back to force a repaint.
+	forceRepaintOnSingleBatch(state)
+}
+
+// chartImageCanvases returns all chart image canvases we render into. Used for repaint nudging.
+func chartImageCanvases(state *uiState) []*canvas.Image {
+	if state == nil {
+		return nil
+	}
+	return []*canvas.Image{
+		// Speed / TTFB families
+		state.speedImgCanvas,
+		state.speedMedianImgCanvas,
+		state.speedMinMaxImgCanvas,
+		state.ttfbImgCanvas,
+		state.ttfbMedianImgCanvas,
+		state.ttfbMinMaxImgCanvas,
+		// Percentiles
+		state.pctlOverallImg,
+		state.pctlIPv4Img,
+		state.pctlIPv6Img,
+		state.tpctlOverallImg,
+		state.tpctlIPv4Img,
+		state.tpctlIPv6Img,
+		// Ratios / Deltas
+		state.tailRatioImgCanvas,
+		state.ttfbTailRatioImgCanvas,
+		state.speedDeltaImgCanvas,
+		state.ttfbDeltaImgCanvas,
+		state.speedDeltaPctImgCanvas,
+		state.ttfbDeltaPctImgCanvas,
+		// SLA
+		state.slaSpeedImgCanvas,
+		state.slaTTFBImgCanvas,
+		state.slaSpeedDeltaImgCanvas,
+		state.slaTTFBDeltaImgCanvas,
+		// Gaps
+		state.tpctlP95GapImgCanvas,
+		// Error / Variability
+		state.errImgCanvas,
+		state.jitterImgCanvas,
+		state.covImgCanvas,
+		// Setup breakdown
+		state.setupDNSImgCanvas,
+		state.setupConnImgCanvas,
+		state.setupTLSImgCanvas,
+		// Protocol charts
+		state.protocolMixImgCanvas,
+		state.protocolAvgSpeedImgCanvas,
+		state.protocolStallRateImgCanvas,
+		state.protocolStallShareImgCanvas,
+		state.protocolErrorRateImgCanvas,
+		state.protocolErrorShareImgCanvas,
+		state.protocolPartialRateImgCanvas,
+		state.protocolPartialShareImgCanvas,
+		state.tlsVersionMixImgCanvas,
+		state.alpnMixImgCanvas,
+		// Error compositions
+		state.errorTypesImgCanvas,
+		state.errorReasonsImgCanvas,
+		state.errorReasonsDetailedImgCanvas,
+		// Transfer/other
+		state.chunkedRateImgCanvas,
+		state.cacheImgCanvas,
+		state.enterpriseProxyImgCanvas,
+		state.serverProxyImgCanvas,
+		state.warmCacheImgCanvas,
+		// Low speed / stalls
+		state.lowSpeedImgCanvas,
+		state.stallRateImgCanvas,
+		state.pretffbImgCanvas,
+		state.stallTimeImgCanvas,
+		state.stallCountImgCanvas,
+		// Micro‑stalls
+		state.microStallRateImgCanvas,
+		state.microStallTimeImgCanvas,
+		state.microStallCountImgCanvas,
+		// Plateaus
+		state.plCountImgCanvas,
+		state.plLongestImgCanvas,
+		state.plStableImgCanvas,
+		// Self test
+		state.selfTestImgCanvas,
+	}
+}
+
+// forceRepaintOnSingleBatch nudges MinSize of canvases when filtered rows == 1 to defeat any
+// repaint caching edge-cases where the image content changes but size does not.
+func forceRepaintOnSingleBatch(state *uiState) {
+	if state == nil {
+		return
+	}
+	rows := filteredSummaries(state)
+	if len(rows) != 1 {
+		return
+	}
+	// Chart height is uniform across charts; use it to make a tiny nudge.
+	_, chh := chartSize(state)
+	canvases := chartImageCanvases(state)
+	// Apply a tiny size perturbation and refresh to force a repaint, then restore.
+	for _, img := range canvases {
+		if img == nil {
+			continue
+		}
+		// Nudge up by 1px
+		img.SetMinSize(fyne.NewSize(0, float32(chh+1)))
+		img.Refresh()
+		// Restore
+		img.SetMinSize(fyne.NewSize(0, float32(chh)))
+		img.Refresh()
+	}
+	// Also refresh overlays if present to ensure they track the repaint.
+	// We can't iterate overlays generically without reflection; refreshing the scroll helps.
+	if state.chartsScroll != nil {
+		state.chartsScroll.Refresh()
 	}
 }
 
@@ -9333,6 +9465,9 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.HTTPProtocolRatePct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -9420,6 +9555,9 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.AvgSpeedByHTTPProtocolKbps {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -9517,6 +9655,9 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.StallRateByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -9599,6 +9740,9 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.ErrorRateByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -9682,6 +9826,9 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.ErrorShareByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -10096,6 +10243,9 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.StallShareByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -10179,6 +10329,9 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.PartialShareByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -10262,6 +10415,9 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.PartialBodyRateByHTTPProtocolPct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -10344,6 +10500,9 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.TLSVersionRatePct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -10426,6 +10585,9 @@ func renderALPNMixChart(state *uiState) image.Image {
 	keySet := map[string]struct{}{}
 	for _, r := range rows {
 		for k := range r.ALPNRatePct {
+			if state.hideUnknownProtocols && k == "(unknown)" {
+				continue
+			}
 			keySet[k] = struct{}{}
 		}
 	}
@@ -13332,6 +13494,8 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showDNSLegacy", state.showDNSLegacy)
 	// Hide 'Other' buckets
 	prefs.SetBool("hideOtherCategories", state.hideOtherCategories)
+	// Hide '(unknown)' protocol buckets
+	prefs.SetBool("hideUnknownProtocols", state.hideUnknownProtocols)
 	// Pre‑TTFB chart visibility
 	prefs.SetBool("showPreTTFB", state.showPreTTFB)
 	// Pre‑TTFB auto-hide when all-zero
@@ -13415,6 +13579,7 @@ func resetViewerDefaults(state *uiState) {
 	state.showHints = false
 	state.showDNSLegacy = false
 	state.hideOtherCategories = false
+	state.hideUnknownProtocols = false
 	state.showRolling = true
 	state.showRollingBand = true
 	state.rollingWindow = 7
@@ -13520,6 +13685,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showHints = prefs.BoolWithFallback("showHints", state.showHints)
 	state.showDNSLegacy = prefs.BoolWithFallback("showDNSLegacy", state.showDNSLegacy)
 	state.hideOtherCategories = prefs.BoolWithFallback("hideOtherCategories", state.hideOtherCategories)
+	state.hideUnknownProtocols = prefs.BoolWithFallback("hideUnknownProtocols", state.hideUnknownProtocols)
 	// SLA thresholds (persisted)
 	if v := prefs.IntWithFallback("slaSpeedThresholdKbps", state.slaSpeedThresholdKbps); v > 0 {
 		state.slaSpeedThresholdKbps = v
