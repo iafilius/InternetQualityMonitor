@@ -911,7 +911,8 @@ type uiState struct {
 	calibTolerancePct int // default 10
 
 	// per-chart visibility (persisted)
-	hiddenCharts map[string]bool // key: chart title from makeChartSection; true if hidden
+	hiddenCharts   map[string]bool // legacy: key by chart title; true if hidden
+	hiddenChartIDs map[string]bool // new: key by stable chart id; true if hidden
 }
 
 // chartRef tracks a chart section for search/navigation
@@ -926,6 +927,11 @@ func (s *uiState) isChartVisible(title string) bool {
 	if s == nil {
 		return true
 	}
+	id := chartTitleToID(title)
+	if id != "" && s.hiddenChartIDs != nil && s.hiddenChartIDs[id] {
+		return false
+	}
+	// Back-compat: fall back to legacy title-based persistence
 	if s.hiddenCharts != nil && s.hiddenCharts[title] {
 		return false
 	}
@@ -941,7 +947,13 @@ func (s *uiState) setChartVisible(title string, vis bool) {
 	if s.hiddenCharts == nil {
 		s.hiddenCharts = map[string]bool{}
 	}
-	s.hiddenCharts[title] = !vis
+	if s.hiddenChartIDs == nil {
+		s.hiddenChartIDs = map[string]bool{}
+	}
+	s.hiddenCharts[title] = !vis // keep legacy in sync
+	if id := chartTitleToID(title); id != "" {
+		s.hiddenChartIDs[id] = !vis
+	}
 	// Apply to the section if we can find it
 	for _, r := range s.chartRefs {
 		if r.title == title && r.section != nil {
@@ -993,6 +1005,263 @@ func (s *uiState) applyChartVisibilityFromPrefs() {
 		} else {
 			s.pretffbBlock.Hide()
 		}
+	}
+}
+
+// chartTitleToID maps human-readable titles to stable IDs (do not change IDs once published)
+func chartTitleToID(title string) string {
+	switch title {
+	case "DNS Lookup Time (ms)":
+		return "setup_dns"
+	case "TCP Connect Time (ms)":
+		return "setup_connect"
+	case "TLS Handshake Time (ms)":
+		return "setup_tls"
+	case "HTTP Protocol Mix (%)":
+		return "http_protocol_mix"
+	case "Avg Speed by HTTP Protocol":
+		return "proto_avg_speed"
+	case "Stall Rate by HTTP Protocol (%)":
+		return "proto_stall_rate"
+	case "Stall Share by HTTP Protocol (%)":
+		return "proto_stall_share"
+	case "Partial Body Rate by HTTP Protocol (%)":
+		return "proto_partial_rate"
+	case "Partial Share by HTTP Protocol (%)":
+		return "proto_partial_share"
+	case "Error Rate by HTTP Protocol (%)":
+		return "proto_error_rate"
+	case "Error Share by HTTP Protocol (%)":
+		return "proto_error_share"
+	case "Error Types (%)":
+		return "error_types"
+	case "Error Reasons (%)":
+		return "error_reasons"
+	case "Error Reasons (detailed) (%)":
+		return "error_reasons_detailed"
+	case "TLS Version Mix (%)":
+		return "tls_version_mix"
+	case "ALPN Mix (%)":
+		return "alpn_mix"
+	case "Chunked Transfer Rate (%)":
+		return "chunked_rate"
+	case "Speed – Average":
+		return "speed_avg"
+	case "Speed – Median":
+		return "speed_median"
+	case "Speed – Min/Max":
+		return "speed_minmax"
+	case "Speed Percentiles":
+		return "speed_percentiles"
+	case "Local Throughput Self-Test":
+		return "self_test"
+	case "TTFB – Average":
+		return "ttfb_avg"
+	case "TTFB – Median":
+		return "ttfb_median"
+	case "TTFB – Min/Max":
+		return "ttfb_minmax"
+	case "TTFB Percentiles":
+		return "ttfb_percentiles"
+	case "Tail Heaviness (P99/P50 Speed)":
+		return "tail_speed_ratio"
+	case "TTFB Tail Heaviness (P95/P50)":
+		return "tail_ttfb_ratio"
+	case "Family Delta – Speed (IPv6−IPv4)":
+		return "delta_speed_abs"
+	case "Family Delta – TTFB (IPv4−IPv6)":
+		return "delta_ttfb_abs"
+	case "Family Delta – Speed % (IPv6 vs IPv4)":
+		return "delta_speed_pct"
+	case "Family Delta – TTFB % (IPv6 vs IPv4)":
+		return "delta_ttfb_pct"
+	case "SLA Compliance – Speed":
+		return "sla_speed"
+	case "SLA Compliance – TTFB":
+		return "sla_ttfb"
+	case "SLA Compliance Delta – Speed (pp)":
+		return "sla_speed_delta"
+	case "SLA Compliance Delta – TTFB (pp)":
+		return "sla_ttfb_delta"
+	case "TTFB P95−P50 Gap":
+		return "ttfb_p95_p50_gap"
+	case "Error Rate":
+		return "error_rate"
+	case "Jitter":
+		return "jitter"
+	case "Coefficient of Variation":
+		return "cov"
+	case "Low-Speed Time Share":
+		return "low_speed_share"
+	case "Stall Rate":
+		return "stall_rate"
+	case "Pre‑TTFB Stall Rate":
+		return "pre_ttfb_stall"
+	case "Partial Body Rate":
+		return "partial_body_rate"
+	case "Stalled Requests Count":
+		return "stall_count"
+	case "Avg Stall Time":
+		return "stall_time"
+	case "Transient Stall Rate":
+		return "micro_stall_rate"
+	case "Avg Transient Stall Count":
+		return "micro_stall_count"
+	case "Avg Transient Stall Time":
+		return "micro_stall_time"
+	case "Cache Hit Rate":
+		return "cache_hit_rate"
+	case "Enterprise Proxy Rate":
+		return "enterprise_proxy_rate"
+	case "Server-side Proxy Rate":
+		return "server_proxy_rate"
+	case "Warm Cache Suspected Rate":
+		return "warm_cache_rate"
+	case "Plateau Count":
+		return "plateau_count"
+	case "Longest Plateau":
+		return "plateau_longest"
+	case "Plateau Stable Rate":
+		return "plateau_stable_rate"
+	default:
+		// fallback: slugify
+		t := strings.ToLower(title)
+		t = strings.ReplaceAll(t, " ", "_")
+		t = strings.ReplaceAll(t, "–", "-")
+		t = strings.ReplaceAll(t, "—", "-")
+		t = strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+				return r
+			}
+			return -1
+		}, t)
+		if t == "" {
+			return "chart"
+		}
+		return t
+	}
+}
+
+// chartHasData returns whether the current state has an image/data for the chart title
+func chartHasData(state *uiState, title string) bool {
+	if state == nil {
+		return false
+	}
+	switch title {
+	case "DNS Lookup Time (ms)":
+		return state.setupDNSImgCanvas != nil && state.setupDNSImgCanvas.Image != nil
+	case "TCP Connect Time (ms)":
+		return state.setupConnImgCanvas != nil && state.setupConnImgCanvas.Image != nil
+	case "TLS Handshake Time (ms)":
+		return state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil
+	case "HTTP Protocol Mix (%)":
+		return state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil
+	case "Avg Speed by HTTP Protocol":
+		return state.protocolAvgSpeedImgCanvas != nil && state.protocolAvgSpeedImgCanvas.Image != nil
+	case "Stall Rate by HTTP Protocol (%)":
+		return state.protocolStallRateImgCanvas != nil && state.protocolStallRateImgCanvas.Image != nil
+	case "Stall Share by HTTP Protocol (%)":
+		return state.protocolStallShareImgCanvas != nil && state.protocolStallShareImgCanvas.Image != nil
+	case "Partial Body Rate by HTTP Protocol (%)":
+		return state.protocolPartialRateImgCanvas != nil && state.protocolPartialRateImgCanvas.Image != nil
+	case "Partial Share by HTTP Protocol (%)":
+		return state.protocolPartialShareImgCanvas != nil && state.protocolPartialShareImgCanvas.Image != nil
+	case "Error Rate by HTTP Protocol (%)":
+		return state.protocolErrorRateImgCanvas != nil && state.protocolErrorRateImgCanvas.Image != nil
+	case "Error Share by HTTP Protocol (%)":
+		return state.protocolErrorShareImgCanvas != nil && state.protocolErrorShareImgCanvas.Image != nil
+	case "Error Types (%)":
+		return state.errorTypesImgCanvas != nil && state.errorTypesImgCanvas.Image != nil
+	case "Error Reasons (%)":
+		return state.errorReasonsImgCanvas != nil && state.errorReasonsImgCanvas.Image != nil
+	case "Error Reasons (detailed) (%)":
+		return state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil
+	case "TLS Version Mix (%)":
+		return state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil
+	case "ALPN Mix (%)":
+		return state.alpnMixImgCanvas != nil && state.alpnMixImgCanvas.Image != nil
+	case "Chunked Transfer Rate (%)":
+		return state.chunkedRateImgCanvas != nil && state.chunkedRateImgCanvas.Image != nil
+	case "Speed – Average":
+		return state.speedImgCanvas != nil && state.speedImgCanvas.Image != nil
+	case "Speed – Median":
+		return state.speedMedianImgCanvas != nil && state.speedMedianImgCanvas.Image != nil
+	case "Speed – Min/Max":
+		return state.speedMinMaxImgCanvas != nil && state.speedMinMaxImgCanvas.Image != nil
+	case "Local Throughput Self-Test":
+		return state.selfTestImgCanvas != nil && state.selfTestImgCanvas.Image != nil
+	case "Speed Percentiles":
+		return (state.pctlOverallImg != nil && state.pctlOverallImg.Image != nil) || (state.pctlIPv4Img != nil && state.pctlIPv4Img.Image != nil) || (state.pctlIPv6Img != nil && state.pctlIPv6Img.Image != nil)
+	case "TTFB – Average":
+		return state.ttfbImgCanvas != nil && state.ttfbImgCanvas.Image != nil
+	case "TTFB – Median":
+		return state.ttfbMedianImgCanvas != nil && state.ttfbMedianImgCanvas.Image != nil
+	case "TTFB – Min/Max":
+		return state.ttfbMinMaxImgCanvas != nil && state.ttfbMinMaxImgCanvas.Image != nil
+	case "TTFB Percentiles":
+		return (state.tpctlOverallImg != nil && state.tpctlOverallImg.Image != nil) || (state.tpctlIPv4Img != nil && state.tpctlIPv4Img.Image != nil) || (state.tpctlIPv6Img != nil && state.tpctlIPv6Img.Image != nil)
+	case "Tail Heaviness (P99/P50 Speed)":
+		return state.tailRatioImgCanvas != nil && state.tailRatioImgCanvas.Image != nil
+	case "TTFB Tail Heaviness (P95/P50)":
+		return state.ttfbTailRatioImgCanvas != nil && state.ttfbTailRatioImgCanvas.Image != nil
+	case "Family Delta – Speed (IPv6−IPv4)":
+		return state.speedDeltaImgCanvas != nil && state.speedDeltaImgCanvas.Image != nil
+	case "Family Delta – TTFB (IPv4−IPv6)":
+		return state.ttfbDeltaImgCanvas != nil && state.ttfbDeltaImgCanvas.Image != nil
+	case "Family Delta – Speed % (IPv6 vs IPv4)":
+		return state.speedDeltaPctImgCanvas != nil && state.speedDeltaPctImgCanvas.Image != nil
+	case "Family Delta – TTFB % (IPv6 vs IPv4)":
+		return state.ttfbDeltaPctImgCanvas != nil && state.ttfbDeltaPctImgCanvas.Image != nil
+	case "SLA Compliance – Speed":
+		return state.slaSpeedImgCanvas != nil && state.slaSpeedImgCanvas.Image != nil
+	case "SLA Compliance – TTFB":
+		return state.slaTTFBImgCanvas != nil && state.slaTTFBImgCanvas.Image != nil
+	case "SLA Compliance Delta – Speed (pp)":
+		return state.slaSpeedDeltaImgCanvas != nil && state.slaSpeedDeltaImgCanvas.Image != nil
+	case "SLA Compliance Delta – TTFB (pp)":
+		return state.slaTTFBDeltaImgCanvas != nil && state.slaTTFBDeltaImgCanvas.Image != nil
+	case "TTFB P95−P50 Gap":
+		return state.tpctlP95GapImgCanvas != nil && state.tpctlP95GapImgCanvas.Image != nil
+	case "Error Rate":
+		return state.errImgCanvas != nil && state.errImgCanvas.Image != nil
+	case "Jitter":
+		return state.jitterImgCanvas != nil && state.jitterImgCanvas.Image != nil
+	case "Coefficient of Variation":
+		return state.covImgCanvas != nil && state.covImgCanvas.Image != nil
+	case "Low-Speed Time Share":
+		return state.lowSpeedImgCanvas != nil && state.lowSpeedImgCanvas.Image != nil
+	case "Stall Rate":
+		return state.stallRateImgCanvas != nil && state.stallRateImgCanvas.Image != nil
+	case "Pre‑TTFB Stall Rate":
+		return state.pretffbImgCanvas != nil && state.pretffbImgCanvas.Image != nil
+	case "Partial Body Rate":
+		return state.partialBodyImgCanvas != nil && state.partialBodyImgCanvas.Image != nil
+	case "Stalled Requests Count":
+		return state.stallCountImgCanvas != nil && state.stallCountImgCanvas.Image != nil
+	case "Avg Stall Time":
+		return state.stallTimeImgCanvas != nil && state.stallTimeImgCanvas.Image != nil
+	case "Transient Stall Rate":
+		return state.microStallRateImgCanvas != nil && state.microStallRateImgCanvas.Image != nil
+	case "Avg Transient Stall Count":
+		return state.microStallCountImgCanvas != nil && state.microStallCountImgCanvas.Image != nil
+	case "Avg Transient Stall Time":
+		return state.microStallTimeImgCanvas != nil && state.microStallTimeImgCanvas.Image != nil
+	case "Cache Hit Rate":
+		return state.cacheImgCanvas != nil && state.cacheImgCanvas.Image != nil
+	case "Enterprise Proxy Rate":
+		return state.enterpriseProxyImgCanvas != nil && state.enterpriseProxyImgCanvas.Image != nil
+	case "Server-side Proxy Rate":
+		return state.serverProxyImgCanvas != nil && state.serverProxyImgCanvas.Image != nil
+	case "Warm Cache Suspected Rate":
+		return state.warmCacheImgCanvas != nil && state.warmCacheImgCanvas.Image != nil
+	case "Plateau Count":
+		return state.plCountImgCanvas != nil && state.plCountImgCanvas.Image != nil
+	case "Longest Plateau":
+		return state.plLongestImgCanvas != nil && state.plLongestImgCanvas.Image != nil
+	case "Plateau Stable Rate":
+		return state.plStableImgCanvas != nil && state.plStableImgCanvas.Image != nil
+	default:
+		return true
 	}
 }
 
@@ -2218,9 +2487,9 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 
 	// (removed duplicate wiring block)
 
-	// menus, prefs, initial load
-	buildMenus(state, fileLabel)
+	// prefs, menus, initial load (load prefs first to avoid menu flicker)
 	loadPrefs(state, overallChk, ipv4Chk, ipv6Chk, fileLabel, tabs)
+	buildMenus(state, fileLabel)
 	// Pre-populate Situation selector to reflect saved preference immediately (no save on init)
 	if state.situationSelect != nil {
 		if strings.TrimSpace(state.situation) == "" || strings.EqualFold(state.situation, "All") {
@@ -3343,6 +3612,38 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 
 	// Visible Charts submenu (dynamic)
 	visibleChartsMenu := fyne.NewMenu("Visible Charts")
+	// Management actions
+	visibleChartsMenu.Items = append(visibleChartsMenu.Items,
+		fyne.NewMenuItem("Reset visibility (show all)", func() {
+			if state.hiddenCharts != nil {
+				for k := range state.hiddenCharts {
+					state.hiddenCharts[k] = false
+				}
+			}
+			if state.hiddenChartIDs != nil {
+				for k := range state.hiddenChartIDs {
+					state.hiddenChartIDs[k] = false
+				}
+			}
+			savePrefs(state)
+			state.applyChartVisibilityFromPrefs()
+			redrawCharts(state)
+			go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+		}),
+		fyne.NewMenuItem("Show only charts with data", func() {
+			// Hide charts that currently have no data
+			for _, r := range state.chartRefs {
+				if !chartHasData(state, r.title) {
+					state.setChartVisible(r.title, false)
+				}
+			}
+			savePrefs(state)
+			state.applyChartVisibilityFromPrefs()
+			redrawCharts(state)
+			go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+		}),
+		fyne.NewMenuItemSeparator(),
+	)
 	// Build items in current on-screen order
 	for _, r := range state.chartRefs {
 		title := r.title
@@ -12696,6 +12997,18 @@ func savePrefs(state *uiState) {
 			prefs.SetString("hiddenChartsJSON", string(data))
 		}
 	}
+	// Persist hidden charts by stable IDs (preferred)
+	if state.hiddenChartIDs != nil {
+		ids := make([]string, 0, len(state.hiddenChartIDs))
+		for id, hiddenFlag := range state.hiddenChartIDs {
+			if hiddenFlag {
+				ids = append(ids, id)
+			}
+		}
+		if data, err := json.Marshal(ids); err == nil {
+			prefs.SetString("hiddenChartIDsJSON", string(data))
+		}
+	}
 }
 
 func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.Check, fileLabel *widget.Label, tabs *container.AppTabs) {
@@ -12794,6 +13107,26 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showQualColumn = prefs.BoolWithFallback("showQualColumn", state.showQualColumn)
 	// (removed: pctl prefs)
 	// Hidden charts (persisted as JSON array of titles)
+	// Preferred: load hidden chart IDs first
+	if rawIDs := strings.TrimSpace(prefs.StringWithFallback("hiddenChartIDsJSON", "")); rawIDs != "" {
+		var ids []string
+		if err := json.Unmarshal([]byte(rawIDs), &ids); err == nil {
+			if state.hiddenChartIDs == nil {
+				state.hiddenChartIDs = map[string]bool{}
+			}
+			// reset then apply IDs
+			for k := range state.hiddenChartIDs {
+				delete(state.hiddenChartIDs, k)
+			}
+			for _, id := range ids {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					state.hiddenChartIDs[id] = true
+				}
+			}
+		}
+	}
+	// Legacy: load titles
 	if raw := strings.TrimSpace(prefs.StringWithFallback("hiddenChartsJSON", "")); raw != "" {
 		var arr []string
 		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
@@ -12807,16 +13140,19 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 			for _, t := range arr {
 				if t = strings.TrimSpace(t); t != "" {
 					state.hiddenCharts[t] = true
+					// Keep ID map in sync for legacy values
+					if state.hiddenChartIDs == nil {
+						state.hiddenChartIDs = map[string]bool{}
+					}
+					if id := chartTitleToID(t); id != "" {
+						state.hiddenChartIDs[id] = true
+					}
 				}
 			}
 		}
 	}
 	// Apply chart visibility after chartRefs are registered
 	state.applyChartVisibilityFromPrefs()
-	// Rebuild menus so Visible Charts checkmarks reflect loaded prefs
-	if state.window != nil {
-		buildMenus(state, fileLabel)
-	}
 }
 
 // utils
