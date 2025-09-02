@@ -9474,7 +9474,7 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 	if len(keySet) == 0 {
 		// No protocol data yet
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -9541,7 +9541,7 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Percentage of requests by negotiated HTTP protocol.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 // renderAvgSpeedByHTTPProtocolChart draws average speed by protocol.
@@ -9563,7 +9563,7 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -9643,7 +9643,7 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Average speed for requests negotiated with each protocol.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
@@ -9663,7 +9663,7 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -9728,7 +9728,7 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Percentage of stalled requests per protocol.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
@@ -9748,7 +9748,7 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -9813,7 +9813,7 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Error percentage per protocol. Spikes may indicate protocol-specific issues.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 // renderErrorShareByHTTPProtocolChart draws share of total errors by HTTP protocol.
@@ -9834,7 +9834,7 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -9899,7 +9899,7 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Share of total errors per protocol. This typically sums to ~100% across visible protocols.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 // renderErrorTypesChart draws a stacked composition of error types per batch (% of all errors by type, per batch).
@@ -10251,7 +10251,7 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -10316,7 +10316,7 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Share of total stalled requests per protocol. Typically sums to ~100% across visible protocols.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 // renderPartialShareByHTTPProtocolChart draws share of total partial responses by HTTP protocol.
@@ -10337,7 +10337,7 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -10402,7 +10402,7 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Share of total partial responses per protocol. Typically sums to ~100% across visible protocols.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 // renderPartialBodyRateByHTTPProtocolChart draws percentage of partial body requests by HTTP protocol.
@@ -10423,7 +10423,7 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -10488,7 +10488,7 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Percentage of incomplete (partial) responses per protocol.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 func renderTLSVersionMixChart(state *uiState) image.Image {
@@ -10508,7 +10508,7 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -10573,7 +10573,7 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Distribution of negotiated TLS versions.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 func renderALPNMixChart(state *uiState) image.Image {
@@ -10593,7 +10593,7 @@ func renderALPNMixChart(state *uiState) image.Image {
 	}
 	if len(keySet) == 0 {
 		cw, chh := chartSize(state)
-		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+		return drawWatermark(blank(cw, chh), noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 	}
 	keys := make([]string, 0, len(keySet))
 	for k := range keySet {
@@ -10658,7 +10658,7 @@ func renderALPNMixChart(state *uiState) image.Image {
 	if state.showHints {
 		img = drawHint(img, "Hint: Negotiated application protocols (ALPN). h2 indicates HTTP/2.")
 	}
-	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
 }
 
 func renderChunkedTransferRateChart(state *uiState) image.Image {
@@ -12515,6 +12515,25 @@ func drawWatermark(img image.Image, text string) image.Image {
 	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(yBase - desc)}}
 	dr.DrawString(text)
 	return rgba
+}
+
+// noteUnknownHidden appends a short note to the watermark when '(unknown)' protocols are hidden.
+func noteUnknownHidden(state *uiState, base string) string {
+	if state != nil && state.hideUnknownProtocols {
+		if strings.TrimSpace(base) == "" {
+			return "(unknown hidden)"
+		}
+		return base + "  •  (unknown hidden)"
+	}
+	return base
+}
+
+// titleUnknownHidden appends a short suffix to chart titles when '(unknown)' protocols are hidden.
+func titleUnknownHidden(state *uiState, base string) string {
+	if state != nil && state.hideUnknownProtocols {
+		return base + " — (unknown hidden)"
+	}
+	return base
 }
 
 // isRegionLight samples the average luminance of the given rectangle to determine if the region is light.
