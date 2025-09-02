@@ -41,6 +41,7 @@ func SetLogLevel(s string) {
 }
 
 func getLevel() LogLevel { return LogLevel(atomic.LoadInt32(&currentLevel)) }
+
 // GetLogLevel returns current global log level (exported for conditional debug logic outside package).
 func GetLogLevel() LogLevel { return getLevel() }
 
@@ -57,6 +58,12 @@ func logf(l LogLevel, format string, args ...interface{}) {
 	case LevelError:
 		prefix = "ERROR"
 	}
+	// Only format when there are args; otherwise treat the input as a plain message to avoid
+	// fmt parsing literal % characters in already formatted strings (which would yield %!x(MISSING)).
+	if len(args) == 0 {
+		baseLogger.Printf("[%s] %s", prefix, format)
+		return
+	}
 	baseLogger.Printf("[%s] %s", prefix, fmt.Sprintf(format, args...))
 }
 
@@ -70,4 +77,14 @@ func Errorf(format string, a ...interface{}) { logf(LevelError, format, a...) }
 func TimeTrack(start time.Time, label string) {
 	dur := time.Since(start)
 	Debugf("%s took %s", label, dur)
+}
+
+// formatPercentOf returns a snippet like " (100.0% of 104857600)" when total > 0,
+// otherwise returns an empty string. Keep here (package monitor) for reuse in status logs.
+func formatPercentOf(received, total int64) string {
+	if total <= 0 {
+		return ""
+	}
+	pct := (float64(received) * 100.0) / float64(total)
+	return fmt.Sprintf(" (%.1f%% of %d)", pct, total)
 }

@@ -6,19 +6,24 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/iafilius/InternetQualityMonitor/src/types"
@@ -68,28 +73,42 @@ type SiteResult struct {
 	SecondGetError        string `json:"second_get_error,omitempty"`
 	SecondGetCachePresent bool   `json:"second_get_cache_present,omitempty"`
 	// Warm HEAD / connection reuse
-	WarmHeadTimeMs         int64    `json:"warm_head_time_ms,omitempty"`
-	WarmHeadSpeedup        bool     `json:"warm_head_speedup,omitempty"`
-	WarmCacheSuspected     bool     `json:"warm_cache_suspected,omitempty"`
-	DialCount              int      `json:"dial_count,omitempty"`
-	ConnectionReusedSecond bool     `json:"connection_reused_second_get,omitempty"`
-	CountryConfigured      string   `json:"country_configured,omitempty"`
-	CountryGeoIP           string   `json:"country_geoip,omitempty"`
-	DNSIPs                 []string `json:"dns_ips,omitempty"`
-	DNSTimeMs              int64    `json:"dns_time_ms,omitempty"`
-	ResolvedIP             string   `json:"resolved_ip,omitempty"`
-	IPIndex                int      `json:"ip_index,omitempty"`
-	IPFamily               string   `json:"ip_family,omitempty"`
-	ASNNumber              uint     `json:"asn_number,omitempty"`
-	ASNOrg                 string   `json:"asn_org,omitempty"`
-	RemoteIP               string   `json:"remote_ip,omitempty"`
-	CachePresent           bool     `json:"cache_present,omitempty"`
-	IPMismatch             bool     `json:"ip_mismatch,omitempty"`
-	PrefetchSuspected      bool     `json:"prefetch_suspected,omitempty"`
-	ProxySuspected         bool     `json:"proxy_suspected,omitempty"`
-	ProbeHeaderValue       string   `json:"probe_header_value,omitempty"`
-	ProbeEchoed            bool     `json:"probe_echoed,omitempty"`
-	HeadGetTimeRatio       float64  `json:"head_get_time_ratio,omitempty"`
+	WarmHeadTimeMs         int64 `json:"warm_head_time_ms,omitempty"`
+	WarmHeadSpeedup        bool  `json:"warm_head_speedup,omitempty"`
+	WarmCacheSuspected     bool  `json:"warm_cache_suspected,omitempty"`
+	DialCount              int   `json:"dial_count,omitempty"`
+	ConnectionReusedSecond bool  `json:"connection_reused_second_get,omitempty"`
+	// Protocol/TLS/encoding telemetry (for diagnostics, esp. with proxies)
+	HTTPProtocol      string   `json:"http_protocol,omitempty"`     // e.g., HTTP/1.1, HTTP/2.0
+	TLSVersion        string   `json:"tls_version,omitempty"`       // e.g., TLS1.2, TLS1.3
+	TLSCipher         string   `json:"tls_cipher,omitempty"`        // e.g., TLS_AES_128_GCM_SHA256
+	ALPN              string   `json:"alpn,omitempty"`              // e.g., h2, http/1.1
+	TransferEncoding  string   `json:"transfer_encoding,omitempty"` // joined list, e.g., chunked
+	Chunked           bool     `json:"chunked,omitempty"`
+	CountryConfigured string   `json:"country_configured,omitempty"`
+	CountryGeoIP      string   `json:"country_geoip,omitempty"`
+	DNSIPs            []string `json:"dns_ips,omitempty"`
+	DNSTimeMs         int64    `json:"dns_time_ms,omitempty"`
+	ResolvedIP        string   `json:"resolved_ip,omitempty"`
+	IPIndex           int      `json:"ip_index,omitempty"`
+	IPFamily          string   `json:"ip_family,omitempty"`
+	DNSServer         string   `json:"dns_server,omitempty"`         // e.g., 192.0.2.53:53 (best-effort)
+	DNSServerNetwork  string   `json:"dns_server_network,omitempty"` // e.g., udp, tcp (best-effort)
+	ASNNumber         uint     `json:"asn_number,omitempty"`
+	ASNOrg            string   `json:"asn_org,omitempty"`
+	RemoteIP          string   `json:"remote_ip,omitempty"`
+	CachePresent      bool     `json:"cache_present,omitempty"`
+	IPMismatch        bool     `json:"ip_mismatch,omitempty"`
+	PrefetchSuspected bool     `json:"prefetch_suspected,omitempty"`
+	ProxySuspected    bool     `json:"proxy_suspected,omitempty"`
+	ProbeHeaderValue  string   `json:"probe_header_value,omitempty"`
+	ProbeEchoed       bool     `json:"probe_echoed,omitempty"`
+	HeadGetTimeRatio  float64  `json:"head_get_time_ratio,omitempty"`
+	// Control-plane flags
+	RetriedOnce  bool `json:"retried_once,omitempty"`
+	RetriedHead  bool `json:"retried_head,omitempty"`
+	RetriedGet   bool `json:"retried_get,omitempty"`
+	RetriedRange bool `json:"retried_range,omitempty"`
 	// Trace timings
 	TraceDNSMs        int64 `json:"trace_dns_ms,omitempty"`
 	TraceConnectMs    int64 `json:"trace_connect_ms,omitempty"`
@@ -125,6 +144,9 @@ type SiteResult struct {
 	// back to the first resolved DNS IP (if any) so downstream analysis can still reason about
 	// suspected origin location / ASN. It is best-effort and may be empty.
 	OriginIPCandidate string `json:"origin_ip_candidate,omitempty"`
+	// Layer-3 next hop (best-effort). On macOS/Linux, derived from routing table; empty when unknown or unsupported.
+	NextHop       string `json:"next_hop,omitempty"`
+	NextHopSource string `json:"next_hop_source,omitempty"` // e.g., iproute2, route, unknown
 	// TLS certificate subject / issuer (leaf). Included only when captured for potential
 	// corporate proxy MITM detection (Zscaler, Bluecoat, Palo Alto, Netskope, Forcepoint, etc.).
 	TLSCertSubject string `json:"tls_cert_subject,omitempty"`
@@ -145,6 +167,134 @@ type SpeedSample struct {
 	TimeMs int64   `json:"time_ms"`
 	Bytes  int64   `json:"bytes"`
 	Speed  float64 `json:"speed_kbps"`
+}
+
+// LocalMaxSpeedProbe runs a short loopback HTTP transfer to estimate the
+// maximum throughput this process + OS stack can sustain on this machine.
+// It returns kilobits per second (kbps) measured over the given duration.
+// Intended for quick self-tests in dev or optional startup checks in viewer/monitor.
+func LocalMaxSpeedProbe(d time.Duration) (float64, error) {
+	if d <= 0 {
+		d = 500 * time.Millisecond
+	}
+	// Server: stream bytes as fast as possible until client closes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Disable compression and buffering indicators; write large chunks.
+		// Use a fixed-size buffer reused in the loop.
+		buf := make([]byte, 64*1024)
+		for i := range buf {
+			buf[i] = 0xAA
+		}
+		// Flush in a loop; stop when client goes away.
+		for {
+			if _, err := w.Write(buf); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	// Client: read for 'd' and compute throughput.
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	// Simple transport without proxy/TLS to minimize overhead.
+	tr := &http.Transport{DisableCompression: true}
+	client := &http.Client{Transport: tr}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	// Read until context deadline.
+	var nBytes int64
+	buf := make([]byte, 64*1024)
+	for {
+		// Stop after requested duration; request context will also cancel reads.
+		if time.Since(start) >= d {
+			break
+		}
+		nr, er := resp.Body.Read(buf)
+		if nr > 0 {
+			nBytes += int64(nr)
+		}
+		if er != nil {
+			if errors.Is(er, io.EOF) {
+				break
+			}
+			// On timeout or other errors, stop and use what we have.
+			break
+		}
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		return 0, fmt.Errorf("elapsed=0")
+	}
+	kbps := (float64(nBytes) * 8.0 / 1000.0) / elapsed
+	return kbps, nil
+}
+
+// computeMeasurementQuality derives CI-based quality metrics from per-interval speeds.
+// It returns: sampleCount, ci95RelMoEPct, requiredSamplesFor10Pct95CI, qualityGood.
+// Guardrails:
+// - require at least 8 samples and >= 0.8s total duration to consider CI; else quality=false.
+// - MoE computed for the mean: 1.96 * (s/mean) / sqrt(n) expressed in percent.
+// - Required samples: ceil((1.96 * CV / 0.10)^2), where CV = s/mean (bounded to avoid inf when mean~0).
+func computeMeasurementQuality(samples []SpeedSample) (int, float64, int, bool) {
+	n := len(samples)
+	if n == 0 {
+		return 0, 0, 0, false
+	}
+	// duration from first to last sample time
+	durMs := int64(0)
+	if n > 1 {
+		durMs = samples[n-1].TimeMs - samples[0].TimeMs
+	}
+	// compute mean and stddev of speeds
+	var mean, ssd float64
+	for _, smp := range samples {
+		mean += smp.Speed
+	}
+	mean /= float64(n)
+	if mean <= 0 {
+		// degenerate; cannot compute relative metrics
+		return n, 0, 0, false
+	}
+	for _, smp := range samples {
+		d := smp.Speed - mean
+		ssd += d * d
+	}
+	std := 0.0
+	if n > 1 {
+		std = math.Sqrt(ssd / float64(n))
+	}
+	cv := 0.0
+	if mean > 0 {
+		cv = std / mean
+	}
+	// 95% CI MoE for mean with z=1.96
+	ci95 := 0.0
+	if n > 0 {
+		ci95 = 1.96 * cv / math.Sqrt(float64(n)) * 100.0
+	}
+	// required samples for <=10% MoE at 95% CI
+	required := 0
+	if cv > 0 {
+		required = int(math.Ceil(math.Pow(1.96*cv/0.10, 2)))
+	}
+	// guardrails
+	quality := false
+	if n >= 8 && durMs >= 800 {
+		// also require a minimum bytes progress indirectly via mean>0 already
+		if ci95 > 0 && ci95 <= 10.0 {
+			quality = true
+		}
+	}
+	return n, ci95, required, quality
 }
 
 // PlateauSegment captures a relatively stable throughput window.
@@ -173,7 +323,16 @@ type SpeedAnalysis struct {
 	LongestPlateauMs int64            `json:"longest_plateau_ms"`
 	PlateauStable    bool             `json:"plateau_stable"`
 	PlateauSegments  []PlateauSegment `json:"plateau_segments"`
-	Insights         []string         `json:"insights,omitempty"`
+	// Measurement quality (unknown true speed) based on intra-transfer samples
+	// - sample_count: number of intra-transfer throughput samples (100ms period)
+	// - ci95_rel_moe_pct: 95% CI relative margin-of-error (%) for mean speed
+	// - required_samples_for_10pct_95ci: N required to reach <=10% MoE at 95% CI
+	// - quality_good: whether this measurement meets guardrails and <=10% MoE
+	SampleCount                 int      `json:"sample_count,omitempty"`
+	CI95RelMoEPct               float64  `json:"ci95_rel_moe_pct,omitempty"`
+	RequiredSamplesFor10Pct95CI int      `json:"required_samples_for_10pct_95ci,omitempty"`
+	QualityGood                 bool     `json:"quality_good,omitempty"`
+	Insights                    []string `json:"insights,omitempty"`
 }
 
 // ResultEnvelope is the strongly-typed root object written as one JSONL line.
@@ -207,7 +366,16 @@ type Meta struct {
 	ConnectionType       string   `json:"connection_type,omitempty"`
 	Containerized        bool     `json:"containerized"`
 	HomeOfficeEstimate   string   `json:"home_office_estimate,omitempty"`
-	SchemaVersion        int      `json:"schema_version"`
+	// LocalSelfTestKbps captures the local loopback throughput self-test result (kbps) if measured this run.
+	LocalSelfTestKbps float64 `json:"local_selftest_kbps,omitempty"`
+	// Optional: local speed calibration results (ranges and max) to assess measurement fidelity
+	Calibration *Calibration `json:"calibration,omitempty"`
+	// Optional: memory and disk stats to assess resource pressure
+	MemTotalBytes      uint64 `json:"mem_total_bytes,omitempty"`
+	MemFreeOrAvailable uint64 `json:"mem_free_or_available_bytes,omitempty"`
+	DiskRootTotalBytes uint64 `json:"disk_root_total_bytes,omitempty"`
+	DiskRootFreeBytes  uint64 `json:"disk_root_free_bytes,omitempty"`
+	SchemaVersion      int    `json:"schema_version"`
 }
 
 type ResultEnvelope struct {
@@ -225,9 +393,24 @@ var (
 	currentSituation  string
 	httpTimeout       = 120 * time.Second
 	stallTimeout      = 20 * time.Second
-	siteTimeout       time.Duration // overall per-site timeout (covers DNS+all IP attempts)
-	maxIPsPerSite     int           // if >0 limit IPs processed per site (e.g. first v4 + first v6)
+	siteTimeout       time.Duration     // overall per-site timeout (covers DNS+all IP attempts)
+	dnsTimeoutDefault = 5 * time.Second // used for DNS when siteTimeout is 0
+	maxIPsPerSite     int               // if >0 limit IPs processed per site (e.g. first v4 + first v6)
 )
+
+// preTTFBStall holds whether pre-first-byte stall cancellation is enabled.
+// Configure via SetPreTTFBStall from callers (e.g., main). Default: disabled.
+var preTTFBStall atomic.Bool
+
+// SetPreTTFBStall enables/disables pre-first-byte stall cancellation for primary GETs.
+func SetPreTTFBStall(enabled bool) {
+	preTTFBStall.Store(enabled)
+}
+
+// preTTFBStallEnabled reports whether pre-first-byte stall cancellation is enabled.
+func preTTFBStallEnabled() bool {
+	return preTTFBStall.Load()
+}
 
 // SetHTTPTimeout configures the per-request total timeout (HEAD, GET, range & warm HEAD individually).
 func SetHTTPTimeout(d time.Duration) {
@@ -243,6 +426,13 @@ func SetStallTimeout(d time.Duration) {
 	}
 }
 
+// SetDNSTimeout configures the default DNS timeout used when no siteTimeout is set.
+func SetDNSTimeout(d time.Duration) {
+	if d > 0 {
+		dnsTimeoutDefault = d
+	}
+}
+
 // SetSiteTimeout sets an upper bound on total time spent inside one MonitorSite call.
 // 0 disables the limit.
 func SetSiteTimeout(d time.Duration) {
@@ -255,6 +445,35 @@ func SetSiteTimeout(d time.Duration) {
 func SetMaxIPsPerSite(n int) {
 	if n > 0 {
 		maxIPsPerSite = n
+	}
+}
+
+// isTransientNetErr returns true for common transient network errors where a single retry may succeed.
+func isTransientNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Unwrap and inspect error messages conservatively; avoid brittle exact matches.
+	es := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, io.EOF):
+		return true
+	case strings.Contains(es, "use of closed network connection"):
+		return true
+	case strings.Contains(es, "connection reset by peer"):
+		return true
+	case strings.Contains(es, "broken pipe"):
+		return true
+	case strings.Contains(es, "http2") && strings.Contains(es, "stream closed"):
+		return true
+	case strings.Contains(es, "temporary") || strings.Contains(es, "timeout"):
+		// don't treat context deadline exceeded as transient
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(es, "context deadline exceeded") {
+			return false
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -294,6 +513,14 @@ func CloseResultWriter() {
 	}
 }
 
+// context keys used to propagate ancillary info like DNS server used during resolution.
+type ctxKey string
+
+const (
+	ctxDNSAddrKey ctxKey = "dns_addr"
+	ctxDNSNetKey  ctxKey = "dns_net"
+)
+
 // MonitorSite performs the measurement and writes a JSONL line via writeResult.
 func MonitorSite(site types.Site) {
 	parsed, err := url.Parse(site.URL)
@@ -317,21 +544,34 @@ func MonitorSite(site types.Site) {
 		defer cancel()
 	}
 
-	// DNS resolve once (context-aware where possible)
+	// DNS resolve once (always context-aware). If no siteTimeout is set, bound DNS to 5s.
 	Debugf("[%s] DNS lookup %s", site.Name, host)
 	start := time.Now()
 	var ips []net.IP
-	if siteTimeout > 0 { // use context-aware resolver
-		addrs, derr := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if derr != nil {
-			err = derr
-		} else {
-			for _, a := range addrs {
-				ips = append(ips, a.IP)
-			}
-		}
+	dnsCtx := ctx
+	var dnsCancel context.CancelFunc
+	if siteTimeout <= 0 {
+		dnsCtx, dnsCancel = context.WithTimeout(context.Background(), dnsTimeoutDefault)
+		defer dnsCancel()
+	}
+	// Use a custom resolver to capture which DNS server was dialed (best-effort).
+	var usedDNSServer, usedDNSServerNet string
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			usedDNSServerNet = network
+			usedDNSServer = address
+			d := &net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, network, address)
+		},
+	}
+	addrs, derr := resolver.LookupIPAddr(dnsCtx, host)
+	if derr != nil {
+		err = derr
 	} else {
-		ips, err = net.LookupIP(host)
+		for _, a := range addrs {
+			ips = append(ips, a.IP)
+		}
 	}
 	dnsTime := time.Since(start)
 	if err != nil || len(ips) == 0 {
@@ -380,7 +620,10 @@ func MonitorSite(site types.Site) {
 			Warnf("[%s] site timeout reached after %s (aborting remaining IPs)", site.Name, time.Since(startSite))
 			return
 		}
-		monitorOneIP(ctx, site, ipAddr, idx, dnsIPs, dnsTime)
+		// attach DNS server info into context for downstream recording
+		ctxWithDNS := context.WithValue(ctx, ctxDNSAddrKey, usedDNSServer)
+		ctxWithDNS = context.WithValue(ctxWithDNS, ctxDNSNetKey, usedDNSServerNet)
+		monitorOneIP(ctxWithDNS, site, ipAddr, idx, dnsIPs, dnsTime)
 	}
 }
 
@@ -420,6 +663,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		Errorf("parse url %s: %v", site.URL, err)
 		return
 	}
+	// Info-level per-IP start marker so sessions show a clear begin line even without debug logging.
+	Infof("[%s %s] start", site.Name, ipStr)
 	// Determine environment proxy (standard library resolution) for transparency
 	var envProxyURL string
 	var envBypass bool
@@ -439,6 +684,17 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	var start time.Time
 	// Begin migration to typed SiteResult: maintain legacy map for rich metrics while introducing sr.
 	sr := &SiteResult{Name: site.Name, URL: site.URL, IP: ipStr, CountryConfigured: site.Country, DNSIPs: dnsIPs, DNSTimeMs: dnsTime.Milliseconds(), ResolvedIP: ipStr, IPIndex: idx}
+	// Populate DNS server info from context (best-effort)
+	if v := ctx.Value(ctxDNSAddrKey); v != nil {
+		if s, ok := v.(string); ok {
+			sr.DNSServer = s
+		}
+	}
+	if v := ctx.Value(ctxDNSNetKey); v != nil {
+		if s, ok := v.(string); ok {
+			sr.DNSServerNetwork = s
+		}
+	}
 	if envProxyURL != "" {
 		sr.EnvProxyURL = envProxyURL
 	} else if envBypass {
@@ -488,9 +744,25 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	if parsed.Scheme == "https" {
 		Debugf("[%s %s] TLS handshake", site.Name, ipStr)
 		tlsStart := time.Now()
-		cfg := &tls.Config{ServerName: parsed.Hostname()}
+		cfg := &tls.Config{
+			ServerName: parsed.Hostname(),
+			// Advertise ALPN to learn negotiated protocol (h2 vs http/1.1) from this handshake.
+			NextProtos: []string{"h2", "http/1.1"},
+		}
 		tlsConn := tls.Client(conn, cfg)
+		// Ensure the manual handshake cannot block indefinitely. Use a bounded deadline
+		// based on configured timeouts (prefer the lower of siteTimeout and httpTimeout; fallback 20s).
+		hsDeadline := 20 * time.Second
+		if httpTimeout > 0 && httpTimeout < hsDeadline {
+			hsDeadline = httpTimeout
+		}
+		if siteTimeout > 0 && siteTimeout < hsDeadline {
+			hsDeadline = siteTimeout
+		}
+		_ = tlsConn.SetDeadline(time.Now().Add(hsDeadline))
 		herr := tlsConn.Handshake()
+		// Clear deadline after handshake attempt
+		_ = tlsConn.SetDeadline(time.Time{})
 		tlt := time.Since(tlsStart)
 		sr.SSLHandshakeTimeMs = tlt.Milliseconds()
 		if herr != nil {
@@ -549,6 +821,27 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				}
 			}
 		}
+		// Populate TLS fields early from the successful handshake. This ensures
+		// tls_ver and alpn aren’t left unknown if the subsequent GET fails or
+		// if Response.TLS isn’t available for any reason.
+		switch state.Version {
+		case tls.VersionTLS13:
+			sr.TLSVersion = "TLS1.3"
+		case tls.VersionTLS12:
+			sr.TLSVersion = "TLS1.2"
+		case tls.VersionTLS11:
+			sr.TLSVersion = "TLS1.1"
+		case tls.VersionTLS10:
+			sr.TLSVersion = "TLS1.0"
+		default:
+			sr.TLSVersion = fmt.Sprintf("0x%x", state.Version)
+		}
+		if cs := tls.CipherSuiteName(state.CipherSuite); cs != "" {
+			sr.TLSCipher = cs
+		}
+		if np := state.NegotiatedProtocol; np != "" {
+			sr.ALPN = np
+		}
 		tlsConn.Close()
 	} else {
 		conn.Close()
@@ -565,6 +858,10 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		proxyURL, _ := url.Parse(sr.EnvProxyURL)
 		transport = &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				ServerName: parsed.Hostname(),
+				NextProtos: []string{"h2", "http/1.1"},
+			},
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 				c, e := d.DialContext(ctx, network, address)
@@ -582,16 +879,26 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 					if sr.OriginIPCandidate == "" && len(sr.DNSIPs) > 0 {
 						sr.OriginIPCandidate = sr.DNSIPs[0]
 					}
+					// Best-effort next hop detection
+					if nh, src := detectNextHop(remoteIP); nh != "" {
+						sr.NextHop = nh
+						sr.NextHopSource = src
+					}
 				}
 				return c, e
 			},
 			TLSHandshakeTimeout:   20 * time.Second,
 			ResponseHeaderTimeout: httpTimeout,
+			IdleConnTimeout:       30 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
 		}
 		sr.UsingEnvProxy = true
 	} else {
 		// Direct IP dial preserving Host header
-		transport = &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		transport = &http.Transport{TLSClientConfig: &tls.Config{
+			ServerName: parsed.Hostname(),
+			NextProtos: []string{"h2", "http/1.1"},
+		}, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
 			c, e := d.DialContext(ctx, network, target)
 			if e == nil && remoteIP == "" {
@@ -605,66 +912,145 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				if sr.OriginIPCandidate == "" {
 					sr.OriginIPCandidate = remoteIP
 				}
+				// Best-effort next hop detection
+				if nh, src := detectNextHop(remoteIP); nh != "" {
+					sr.NextHop = nh
+					sr.NextHopSource = src
+				}
 			}
 			return c, e
-		}}
+		},
+			TLSHandshakeTimeout:   20 * time.Second,
+			ResponseHeaderTimeout: httpTimeout,
+			IdleConnTimeout:       30 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
+		}
 	}
 	client := &http.Client{Transport: transport, Timeout: httpTimeout}
 
-	// HEAD
+	// HEAD (with one-shot transient retry)
 	Debugf("[%s %s] HEAD %s", site.Name, ipStr, site.URL)
-	headReq, _ := http.NewRequestWithContext(ctx, "HEAD", site.URL, nil)
-	headReq.Header.Set("X-Probe", probeVal)
-	headStart := time.Now()
-	headResp, headErr := client.Do(headReq)
-	headTime := time.Since(headStart)
+	doHEAD := func() (*http.Response, time.Duration, error) {
+		req, _ := http.NewRequestWithContext(ctx, "HEAD", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		st := time.Now()
+		r, e := client.Do(req)
+		return r, time.Since(st), e
+	}
+	headResp, headTime, headErr := doHEAD()
+	if headErr != nil && isTransientNetErr(headErr) {
+		Warnf("[%s %s] HEAD transient error, retrying once: %v", site.Name, ipStr, headErr)
+		time.Sleep(300 * time.Millisecond)
+		sr.RetriedOnce = true
+		sr.RetriedHead = true
+		headResp, headTime, headErr = doHEAD()
+	}
 	sr.HeadTimeMs = headTime.Milliseconds()
 	if headErr == nil && headResp != nil {
+		// Capture protocol/TLS/encoding as early as possible (helps when GET later fails)
+		fillProtocolTLSAndEncoding(sr, headResp)
 		headResp.Body.Close()
 		sr.HeadStatus = headResp.StatusCode
 	} else if headErr != nil {
 		sr.HeadError = headErr.Error()
 	}
 
-	// GET with trace
+	// GET with trace (with one-shot retry on transient errors like EOF/reset)
 	var dnsStartT, dnsDoneT, connStartT, connDoneT, tlsStartT, tlsDoneT, gotConnT, gotFirstByteT time.Time
 	Debugf("[%s %s] GET %s", site.Name, ipStr, site.URL)
-	getReq, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
-	getReq.Header.Set("X-Probe", probeVal)
-	trace := &httptrace.ClientTrace{DNSStart: func(info httptrace.DNSStartInfo) { dnsStartT = time.Now() }, DNSDone: func(info httptrace.DNSDoneInfo) { dnsDoneT = time.Now() }, ConnectStart: func(network, addr string) { connStartT = time.Now() }, ConnectDone: func(network, addr string, err error) { connDoneT = time.Now() }, TLSHandshakeStart: func() { tlsStartT = time.Now() }, TLSHandshakeDone: func(cs tls.ConnectionState, err error) { tlsDoneT = time.Now() }, GotConn: func(info httptrace.GotConnInfo) { gotConnT = time.Now() }, GotFirstResponseByte: func() { gotFirstByteT = time.Now() }}
-	getReq = getReq.WithContext(httptrace.WithClientTrace(getReq.Context(), trace))
-	start = time.Now()
-	resp, gerr := client.Do(getReq)
-	httpConnectTime := time.Since(start)
-	sr.HTTPConnectTimeMs = httpConnectTime.Milliseconds()
-	if !dnsStartT.IsZero() && !dnsDoneT.IsZero() {
-		sr.TraceDNSMs = dnsDoneT.Sub(dnsStartT).Milliseconds()
-		// stored in sr.TraceDNSMs
+	doGET := func() (*http.Response, error) {
+		dnsStartT, dnsDoneT, connStartT, connDoneT, tlsStartT, tlsDoneT, gotConnT, gotFirstByteT = time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}, time.Time{}
+		// If pre-TTFB stall cancellation is enabled, use a child context to allow targeted cancel.
+		reqBaseCtx := ctx
+		var reqCancel context.CancelFunc
+		if preTTFBStallEnabled() {
+			reqBaseCtx, reqCancel = context.WithCancel(ctx)
+			defer reqCancel()
+		}
+		req, _ := http.NewRequestWithContext(reqBaseCtx, "GET", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		trace := &httptrace.ClientTrace{DNSStart: func(info httptrace.DNSStartInfo) { dnsStartT = time.Now() }, DNSDone: func(info httptrace.DNSDoneInfo) { dnsDoneT = time.Now() }, ConnectStart: func(network, addr string) { connStartT = time.Now() }, ConnectDone: func(network, addr string, err error) { connDoneT = time.Now() }, TLSHandshakeStart: func() { tlsStartT = time.Now() }, TLSHandshakeDone: func(cs tls.ConnectionState, err error) { tlsDoneT = time.Now() }, GotConn: func(info httptrace.GotConnInfo) { gotConnT = time.Now() }, GotFirstResponseByte: func() { gotFirstByteT = time.Now() }}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		start = time.Now()
+		// Optional pre-TTFB watchdog
+		var stopWatch chan struct{}
+		if preTTFBStallEnabled() && stallTimeout > 0 {
+			stopWatch = make(chan struct{})
+			go func(name, ip string) {
+				t := time.NewTicker(200 * time.Millisecond)
+				defer t.Stop()
+				for {
+					select {
+					case <-stopWatch:
+						return
+					case <-t.C:
+						if gotFirstByteT.IsZero() && time.Since(start) > stallTimeout {
+							Warnf("[%s %s] pre-TTFB stall for %s, aborting", name, ip, time.Since(start))
+							if sr.HTTPError == "" {
+								sr.HTTPError = "stall_pre_ttfb"
+							}
+							if reqCancel != nil {
+								reqCancel()
+							}
+							return
+						}
+					}
+				}
+			}(site.Name, ipStr)
+		}
+		r, e := client.Do(req)
+		if stopWatch != nil {
+			close(stopWatch)
+		}
+		httpConnectTime := time.Since(start)
+		sr.HTTPConnectTimeMs = httpConnectTime.Milliseconds()
+		if !dnsStartT.IsZero() && !dnsDoneT.IsZero() {
+			sr.TraceDNSMs = dnsDoneT.Sub(dnsStartT).Milliseconds()
+		}
+		if !connStartT.IsZero() && !connDoneT.IsZero() {
+			sr.TraceConnectMs = connDoneT.Sub(connStartT).Milliseconds()
+		}
+		if !tlsStartT.IsZero() && !tlsDoneT.IsZero() {
+			sr.TraceTLSMs = tlsDoneT.Sub(tlsStartT).Milliseconds()
+		}
+		if !gotConnT.IsZero() {
+			sr.TraceTimeToConnMs = gotConnT.Sub(start).Milliseconds()
+		}
+		if !gotFirstByteT.IsZero() {
+			sr.TraceTTFBMs = gotFirstByteT.Sub(start).Milliseconds()
+		}
+		return r, e
 	}
-	if !connStartT.IsZero() && !connDoneT.IsZero() {
-		sr.TraceConnectMs = connDoneT.Sub(connStartT).Milliseconds()
-		// stored in sr.TraceConnectMs
-	}
-	if !tlsStartT.IsZero() && !tlsDoneT.IsZero() {
-		sr.TraceTLSMs = tlsDoneT.Sub(tlsStartT).Milliseconds()
-		// stored in sr.TraceTLSMs
-	}
-	if !gotConnT.IsZero() {
-		sr.TraceTimeToConnMs = gotConnT.Sub(start).Milliseconds()
-		// stored in sr.TraceTimeToConnMs
-	}
-	if !gotFirstByteT.IsZero() {
-		sr.TraceTTFBMs = gotFirstByteT.Sub(start).Milliseconds()
+	resp, gerr := doGET()
+	if gerr != nil {
+		// One-shot retry on transient errors (EOF/reset)
+		if isTransientNetErr(gerr) {
+			Warnf("[%s %s] GET transient error, retrying once: %v", site.Name, ipStr, gerr)
+			time.Sleep(300 * time.Millisecond)
+			sr.RetriedOnce = true
+			sr.RetriedGet = true
+			if r2, e2 := doGET(); e2 == nil {
+				resp = r2
+				gerr = nil
+			} else {
+				gerr = e2
+			}
+		}
 	}
 	if gerr != nil {
-		// Record HTTP GET error distinctly
-		sr.HTTPError = gerr.Error()
+		if sr.HTTPError == "" {
+			sr.HTTPError = gerr.Error()
+		}
+		if errors.Is(gerr, context.DeadlineExceeded) || strings.Contains(strings.ToLower(gerr.Error()), "context deadline exceeded") {
+			Warnf("[%s %s] GET timeout (context deadline exceeded)", site.Name, ipStr)
+		} else {
+			Warnf("[%s %s] GET failed: %v", site.Name, ipStr, gerr)
+		}
 		writeResult(wrapRoot(sr))
-		Warnf("[%s %s] GET failed: %v", site.Name, ipStr, gerr)
 		return
 	}
-
-	clHeader := resp.Header.Get("Content-Length")
+	// Populate protocol/TLS/encoding from the response so http_protocol/alpn/tls_ver are not left unknown
+	fillProtocolTLSAndEncoding(sr, resp)
 	// content length header handled later into sr.ContentLengthHeader
 	via := resp.Header.Get("Via")
 	xcache := resp.Header.Get("X-Cache")
@@ -697,7 +1083,9 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 	sr.IPMismatch = ipMismatch
-	prefetchSuspect := headErr == nil && headTime > 0 && httpConnectTime < (headTime/2)
+	// derive connect duration from recorded metric
+	connectDur := time.Duration(sr.HTTPConnectTimeMs) * time.Millisecond
+	prefetchSuspect := headErr == nil && headTime > 0 && connectDur > 0 && connectDur < (headTime/2)
 	sr.PrefetchSuspected = prefetchSuspect
 	proxySuspected := ipMismatch || via != "" || xcache != ""
 	// Basic heuristic mapping to identify common CDN/proxy names and enterprise proxies (Zscaler, Bluecoat etc.)
@@ -837,8 +1225,8 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	sr.ProbeHeaderValue = probeVal
 	probeEcho := resp.Header.Get("X-Probe")
 	sr.ProbeEchoed = (probeEcho != "")
-	if headTime > 0 && headTime.Milliseconds() > 0 {
-		sr.HeadGetTimeRatio = float64(httpConnectTime.Milliseconds()) / float64(headTime.Milliseconds())
+	if headTime > 0 && headTime.Milliseconds() > 0 && sr.HTTPConnectTimeMs > 0 {
+		sr.HeadGetTimeRatio = float64(sr.HTTPConnectTimeMs) / float64(headTime.Milliseconds())
 	}
 	if remoteIP != "" {
 		if asnNum, asnOrg, ok := lookupGeoIP2ASN(remoteIP); ok {
@@ -861,11 +1249,21 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	nextSample := transferStart.Add(SpeedSampleInterval)
 	lastProgressLog := time.Now()
 	lastProgress := time.Now()
+	// Make the first visible progress explicit at info level even if Content-Length is unknown
+	firstProgressLogged := false
+	// If Content-Length header is present, pre-parse expected total bytes for richer progress logs
+	clHeader := resp.Header.Get("Content-Length")
+	var expectedBytes int64
+	if clHeader != "" {
+		if v, e := strconv.ParseInt(clHeader, 10, 64); e == nil && v > 0 {
+			expectedBytes = v
+		}
+	}
 	// Watchdog goroutine: logs if no additional bytes for half stallTimeout (but does not abort; abort handled inline)
 	watchdogQuit := make(chan struct{})
 	var lastBytesLogged int64
 	if stallTimeout > 0 {
-		go func(name, ip string) {
+		go func(name, ip string, expected int64) {
 			interval := stallTimeout / 2
 			if interval < 5*time.Second {
 				interval = 5 * time.Second
@@ -877,14 +1275,24 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 				case <-time.After(interval):
 					br := bytesRead
 					if br == lastBytesLogged {
-						Warnf("[%s %s] watchdog: no progress for %s (total %d bytes)", name, ip, interval, br)
+						if expected > 0 {
+							pct := (float64(br) * 100.0) / float64(expected)
+							Warnf("[%s %s] watchdog: no progress for %s (%d/%d bytes, %.1f%%)", name, ip, interval, br, expected, pct)
+						} else {
+							Warnf("[%s %s] watchdog: no progress for %s (%d/unknown bytes)", name, ip, interval, br)
+						}
 					} else if getLevel() == LevelDebug {
-						Debugf("[%s %s] watchdog: progress %d(+%d) bytes", name, ip, br, br-lastBytesLogged)
+						if expected > 0 {
+							pct := (float64(br) * 100.0) / float64(expected)
+							Debugf("[%s %s] watchdog: progress %d(+%d) bytes (%.1f%%)", name, ip, br, br-lastBytesLogged, pct)
+						} else {
+							Debugf("[%s %s] watchdog: progress %d(+%d)/unknown bytes", name, ip, br, br-lastBytesLogged)
+						}
 					}
 					lastBytesLogged = br
 				}
 			}
-		}(site.Name, ipStr)
+		}(site.Name, ipStr, expectedBytes)
 	}
 	for {
 		n, er := resp.Body.Read(buf)
@@ -896,11 +1304,32 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		if getLevel() == LevelInfo {
 			progressInterval = 10 * time.Second
 		}
+		if !firstProgressLogged && bytesRead > 0 {
+			// First chunk observed; emit an immediate start-of-transfer marker
+			if expectedBytes > 0 {
+				pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+				Infof("[%s %s] start transfer %d/%d bytes (%.1f MB, %.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, float64(bytesRead)/1024.0/1024.0, pct)
+			} else {
+				Infof("[%s %s] start transfer %d/unknown bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+			}
+			firstProgressLogged = true
+			lastProgressLog = time.Now()
+		}
 		if time.Since(lastProgressLog) >= progressInterval {
 			if getLevel() == LevelDebug {
-				Debugf("[%s %s] transfer progress %d bytes", site.Name, ipStr, bytesRead)
+				if expectedBytes > 0 {
+					pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+					Debugf("[%s %s] transfer progress %d/%d bytes (%.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, pct)
+				} else {
+					Debugf("[%s %s] transfer progress %d/unknown bytes", site.Name, ipStr, bytesRead)
+				}
 			} else if getLevel() == LevelInfo {
-				Infof("[%s %s] progress %d bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+				if expectedBytes > 0 {
+					pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+					Infof("[%s %s] progress %d/%d bytes (%.1f MB, %.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, float64(bytesRead)/1024.0/1024.0, pct)
+				} else {
+					Infof("[%s %s] progress %d/unknown bytes (%.1f MB)", site.Name, ipStr, bytesRead, float64(bytesRead)/1024.0/1024.0)
+				}
 			}
 			lastProgressLog = time.Now()
 		}
@@ -918,13 +1347,29 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 			firstRTTBytes = bytesRead
 		}
 		if er != nil {
+			// Normal end of stream or early termination
+			if errors.Is(er, io.EOF) {
+				if expectedBytes > 0 && bytesRead < expectedBytes {
+					// Early EOF; the mismatch flag will be set below. Log a concise debug for diagnostics.
+					Debugf("[%s %s] early EOF at %d/%d bytes (%.1f%%)", site.Name, ipStr, bytesRead, expectedBytes, (float64(bytesRead)*100.0)/float64(expectedBytes))
+				}
+			}
 			break
 		}
 		// Stall detection
 		if stallTimeout > 0 && time.Since(lastProgress) > stallTimeout {
-			Warnf("[%s %s] transfer stalled for %s, aborting", site.Name, ipStr, time.Since(lastProgress))
+			if expectedBytes > 0 {
+				pct := (float64(bytesRead) * 100.0) / float64(expectedBytes)
+				Warnf("[%s %s] transfer stalled for %s, aborting (%d/%d bytes, %.1f%%)", site.Name, ipStr, time.Since(lastProgress), bytesRead, expectedBytes, pct)
+			} else {
+				Warnf("[%s %s] transfer stalled for %s, aborting (%d/unknown bytes)", site.Name, ipStr, time.Since(lastProgress), bytesRead)
+			}
 			sr.TransferStalled = true
 			sr.StallElapsedMs = time.Since(transferStart).Milliseconds()
+			if sr.HTTPError == "" {
+				sr.HTTPError = "stall_abort"
+			}
+			// Break out and force close to stop reads promptly
 			break
 		}
 	}
@@ -957,17 +1402,69 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		if clVal, e := strconv.ParseInt(clHeader, 10, 64); e == nil {
 			sr.ContentLengthHeader = clVal
 			sr.ContentLengthMismatch = (clVal != bytesRead)
+			// If server closed the connection before delivering the advertised Content-Length,
+			// treat this as an incomplete transfer. Surface it as an HTTPError so analysis counts it.
+			if sr.ContentLengthMismatch && sr.HTTPError == "" {
+				sr.HTTPError = fmt.Sprintf("partial_body: expected=%d read=%d", clVal, bytesRead)
+				Warnf("[%s %s] content-length mismatch: expected=%d read=%d", site.Name, ipStr, clVal, bytesRead)
+			}
 		}
 	}
 
-	// Secondary Range GET
-	secondGetStart := time.Now()
-	secondReq, _ := http.NewRequestWithContext(ctx, "GET", site.URL, nil)
-	secondReq.Header.Set("X-Probe", probeVal)
-	secondReq.Header.Set("Range", "bytes=0-65535")
-	secondResp, secondErr := client.Do(secondReq)
-	secondGetTime := time.Since(secondGetStart)
+	// Secondary Range GET (with one-shot transient retry)
+	var rangeProgressCh chan struct{}
+	doSecondGET := func() (*http.Response, time.Duration, error) {
+		st := time.Now()
+		// Child context to allow mid-body stall cancellation
+		rCtx, rCancel := context.WithCancel(ctx)
+		defer rCancel()
+		req, _ := http.NewRequestWithContext(rCtx, "GET", site.URL, nil)
+		req.Header.Set("X-Probe", probeVal)
+		req.Header.Set("Range", "bytes=0-65535")
+		// Start a watchdog that will cancel if no progress is made beyond stallTimeout once body starts
+		rangeProgressCh = make(chan struct{}, 1)
+		stopWatch := make(chan struct{})
+		if stallTimeout > 0 {
+			go func(name, ip string) {
+				t := time.NewTicker(200 * time.Millisecond)
+				defer t.Stop()
+				startAt := time.Now()
+				for {
+					select {
+					case <-stopWatch:
+						return
+					case <-t.C:
+						// If we haven't seen any progress and we've exceeded stallTimeout since request start, cancel
+						if time.Since(startAt) > stallTimeout {
+							select {
+							case <-rangeProgressCh:
+								// progress observed, reset timer
+								startAt = time.Now()
+							default:
+								Warnf("[%s %s] range pre-body stall for %s, aborting", name, ip, time.Since(startAt))
+								rCancel()
+								return
+							}
+						}
+					}
+				}
+			}(site.Name, ipStr)
+		}
+		r, e := client.Do(req)
+		close(stopWatch)
+		return r, time.Since(st), e
+	}
+	secondResp, secondGetTime, secondErr := doSecondGET()
+	if secondErr != nil && isTransientNetErr(secondErr) {
+		Warnf("[%s %s] Range GET transient error, retrying once: %v", site.Name, ipStr, secondErr)
+		time.Sleep(300 * time.Millisecond)
+		sr.RetriedOnce = true
+		sr.RetriedRange = true
+		secondResp, secondGetTime, secondErr = doSecondGET()
+	}
 	if secondErr == nil && secondResp != nil {
+		// Also capture protocol/TLS/encoding from the Range response (usually same connection)
+		fillProtocolTLSAndEncoding(sr, secondResp)
 		sr.SecondGetStatus = secondResp.StatusCode
 		sr.SecondGetTimeMs = secondGetTime.Milliseconds()
 		sr.SecondGetHeaderAge = secondResp.Header.Get("Age")
@@ -975,7 +1472,90 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		if rng := secondResp.Header.Get("Content-Range"); rng != "" {
 			sr.SecondGetContentRange = rng
 		}
-		io.Copy(io.Discard, secondResp.Body)
+		// Read Range body with lightweight progress logs
+		var expectedRange int64
+		if cr := sr.SecondGetContentRange; cr != "" {
+			// Parse format: "bytes start-end/total"
+			parts := strings.Fields(cr)
+			if len(parts) == 2 && strings.ToLower(parts[0]) == "bytes" {
+				rng := parts[1]
+				// split start-end/total
+				se := strings.SplitN(rng, "/", 2)
+				if len(se) >= 1 {
+					re := strings.SplitN(se[0], "-", 2)
+					if len(re) == 2 {
+						if start, e1 := strconv.ParseInt(re[0], 10, 64); e1 == nil {
+							if end, e2 := strconv.ParseInt(re[1], 10, 64); e2 == nil && end >= start {
+								expectedRange = (end - start + 1)
+							}
+						}
+					}
+				}
+			}
+		}
+		if expectedRange == 0 {
+			if cl := secondResp.Header.Get("Content-Length"); cl != "" {
+				if v, e := strconv.ParseInt(cl, 10, 64); e == nil && v > 0 {
+					expectedRange = v
+				}
+			}
+		}
+		buf2 := make([]byte, 32*1024)
+		var rangeBytes int64
+		lastRangeProgress := time.Now()
+		lastRangeProgressLog := time.Now()
+		for {
+			n, er := secondResp.Body.Read(buf2)
+			rangeBytes += int64(n)
+			if n > 0 {
+				lastRangeProgress = time.Now()
+				// signal progress to watchdog if waiting
+				if rangeProgressCh != nil {
+					select {
+					case rangeProgressCh <- struct{}{}:
+					default:
+					}
+				}
+			}
+			progressInterval := 3 * time.Second
+			if getLevel() == LevelInfo {
+				progressInterval = 10 * time.Second
+			}
+			if time.Since(lastRangeProgressLog) >= progressInterval {
+				if getLevel() == LevelDebug {
+					if expectedRange > 0 {
+						pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+						Debugf("[%s %s] range progress %d/%d bytes (%.1f%%)", site.Name, ipStr, rangeBytes, expectedRange, pct)
+					} else {
+						Debugf("[%s %s] range progress %d/unknown bytes", site.Name, ipStr, rangeBytes)
+					}
+				} else if getLevel() == LevelInfo {
+					if expectedRange > 0 {
+						pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+						Infof("[%s %s] range progress %d/%d bytes (%.1f%%)", site.Name, ipStr, rangeBytes, expectedRange, pct)
+					} else {
+						Infof("[%s %s] range progress %d/unknown bytes", site.Name, ipStr, rangeBytes)
+					}
+				}
+				lastRangeProgressLog = time.Now()
+			}
+			// Stall detection for Range GET body read
+			if stallTimeout > 0 && time.Since(lastRangeProgress) > stallTimeout {
+				if expectedRange > 0 {
+					pct := (float64(rangeBytes) * 100.0) / float64(expectedRange)
+					Warnf("[%s %s] range transfer stalled for %s, aborting (%d/%d bytes, %.1f%%)", site.Name, ipStr, time.Since(lastRangeProgress), rangeBytes, expectedRange, pct)
+				} else {
+					Warnf("[%s %s] range transfer stalled for %s, aborting (%d/unknown bytes)", site.Name, ipStr, time.Since(lastRangeProgress), rangeBytes)
+				}
+				if sr.SecondGetError == "" {
+					sr.SecondGetError = "stall_abort"
+				}
+				break
+			}
+			if er != nil {
+				break
+			}
+		}
 		secondResp.Body.Close()
 	} else if secondErr != nil {
 		sr.SecondGetError = secondErr.Error()
@@ -1183,6 +1763,14 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 		}
 	}
 	analysis := &SpeedAnalysis{AverageKbps: avgSpeed, StddevKbps: stddevSpeed, CoefVariation: cov, MinKbps: minSpeed, MaxKbps: maxSpeed, P50Kbps: p50, P90Kbps: p90, P95Kbps: p95, P99Kbps: p99, SlopeKbpsPerSec: slope, JitterMeanAbsPct: jitterMeanAbsPct, Patterns: patterns, PlateauCount: plateauCount, LongestPlateauMs: longestPlateauMs, PlateauStable: plateauStable, PlateauSegments: plateauSegments}
+	// Populate measurement quality fields from intra-transfer samples
+	if len(speedSamples) > 0 {
+		sc, ci95, req, good := computeMeasurementQuality(speedSamples)
+		analysis.SampleCount = sc
+		analysis.CI95RelMoEPct = ci95
+		analysis.RequiredSamplesFor10Pct95CI = req
+		analysis.QualityGood = good
+	}
 	if n > 0 {
 		insights := []string{}
 		if p50 > 0 && p99 > 0 {
@@ -1255,13 +1843,355 @@ func monitorOneIP(ctx context.Context, site types.Site, ipAddr net.IP, idx int, 
 	tcpMs := sr.TCPTimeMs
 	sslMs := sr.SSLHandshakeTimeMs
 	ttfbMs := sr.TraceTTFBMs
-	Infof("[%s %s] done head=%d sec_get=%d bytes=%d time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms", site.Name, ipStr, headStatus, secStatus, transferBytes, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs)
+	// Include negotiated HTTP protocol, ALPN, and TLS version for debugging missing protocol cases
+	proto := sr.HTTPProtocol
+	if proto == "" {
+		proto = "(unknown)"
+	}
+	alpn := sr.ALPN
+	if alpn == "" {
+		alpn = "(unknown)"
+	}
+	tlsv := sr.TLSVersion
+	if tlsv == "" {
+		tlsv = "(unknown)"
+	}
+	// Final status log: distinguish between success, aborted (stall), and incomplete (partial body)
+	statusLabel := "done"
+	if sr.TransferStalled {
+		statusLabel = "aborted"
+	} else if sr.ContentLengthMismatch {
+		statusLabel = "incomplete"
+	}
+	extra := formatPercentOf(transferBytes, sr.ContentLengthHeader)
+	finalLine := fmt.Sprintf("[%s %s] %s head=%d sec_get=%d bytes=%d%s time=%dms speed=%.1fkbps dns=%dms tcp=%dms tls=%dms ttfb=%dms proto=%s alpn=%s tls_ver=%s", site.Name, ipStr, statusLabel, headStatus, secStatus, transferBytes, extra, transferTime, transferSpeed, dnsMs, tcpMs, sslMs, ttfbMs, proto, alpn, tlsv)
+	if statusLabel == "done" {
+		Infof(finalLine)
+	} else {
+		// escalate visibility for abnormal end states
+		Warnf(finalLine)
+	}
+}
+
+// detectNextHop returns the next-hop IP for the given destination IP using platform-specific tooling.
+// On Linux uses `ip route get <dest>`, on macOS uses `route -n get <dest>`.
+// Returns empty string if not determinable.
+func detectNextHop(destIP string) (string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	switch runtime.GOOS {
+	case "linux":
+		// ip route get <dest>
+		out, err := exec.CommandContext(ctx, "ip", "route", "get", destIP).CombinedOutput()
+		if err != nil {
+			return "", ""
+		}
+		// Example: "<dest> via 192.0.2.1 dev eth0 src 192.0.2.10 ..."
+		fields := strings.Fields(string(out))
+		for i := 0; i < len(fields); i++ {
+			if fields[i] == "via" && i+1 < len(fields) {
+				return fields[i+1], "iproute2"
+			}
+		}
+		return "", "iproute2"
+	case "darwin":
+		// route -n get <dest>
+		out, err := exec.CommandContext(ctx, "route", "-n", "get", destIP).CombinedOutput()
+		if err != nil {
+			return "", ""
+		}
+		// Look for line: gateway: x.x.x.x
+		lines := strings.Split(string(out), "\n")
+		for _, ln := range lines {
+			ln = strings.TrimSpace(ln)
+			if strings.HasPrefix(ln, "gateway:") {
+				parts := strings.Fields(ln)
+				if len(parts) >= 2 {
+					return parts[1], "route"
+				}
+			}
+		}
+		return "", "route"
+	case "windows":
+		// Prefer PowerShell Get-NetRoute which can query a specific destination prefix.
+		// Try IPv4 /32 first, then IPv6 /128.
+		psCmd := `(Get-NetRoute -DestinationPrefix '` + destIP + `/32' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1).NextHop`
+		out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd).CombinedOutput()
+		nh := strings.TrimSpace(string(out))
+		if err == nil && nh != "" {
+			return nh, "Get-NetRoute"
+		}
+		// IPv6 attempt
+		psCmd6 := `(Get-NetRoute -DestinationPrefix '` + destIP + `/128' -ErrorAction SilentlyContinue | Sort-Object -Property RouteMetric | Select-Object -First 1).NextHop`
+		out6, err6 := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd6).CombinedOutput()
+		nh6 := strings.TrimSpace(string(out6))
+		if err6 == nil && nh6 != "" {
+			return nh6, "Get-NetRoute"
+		}
+		return "", "Get-NetRoute"
+	default:
+		return "", ""
+	}
+}
+
+// fillProtocolTLSAndEncoding extracts protocol (HTTP version), TLS (version/cipher/ALPN),
+// and transfer encoding details from the http.Response and writes them to SiteResult.
+func fillProtocolTLSAndEncoding(sr *SiteResult, resp *http.Response) {
+	if resp == nil || sr == nil {
+		return
+	}
+	// HTTP protocol string (normalize whitespace/case and alias HTTP/2 -> HTTP/2.0)
+	sr.HTTPProtocol = normalizeHTTPProto(resp.Proto)
+
+	// TLS details
+	if resp.TLS != nil {
+		switch resp.TLS.Version {
+		case tls.VersionTLS13:
+			sr.TLSVersion = "TLS1.3"
+		case tls.VersionTLS12:
+			sr.TLSVersion = "TLS1.2"
+		case tls.VersionTLS11:
+			sr.TLSVersion = "TLS1.1"
+		case tls.VersionTLS10:
+			sr.TLSVersion = "TLS1.0"
+		default:
+			sr.TLSVersion = fmt.Sprintf("0x%x", resp.TLS.Version)
+		}
+		sr.TLSCipher = tls.CipherSuiteName(resp.TLS.CipherSuite)
+		if len(resp.TLS.NegotiatedProtocol) > 0 {
+			sr.ALPN = resp.TLS.NegotiatedProtocol
+		}
+	} else {
+		// If the request was HTTPS but Response.TLS is nil, note that we’ll rely on
+		// the earlier manual handshake values (populated before GET).
+		if resp.Request != nil && resp.Request.URL != nil && strings.EqualFold(resp.Request.URL.Scheme, "https") {
+			tv := sr.TLSVersion
+			if tv == "" {
+				tv = "(unknown)"
+			}
+			ap := sr.ALPN
+			if ap == "" {
+				ap = "(unknown)"
+			}
+			Debugf("[protocol] https response missing TLS info (resp.TLS=nil); using handshake values tls_ver=%s alpn=%s", tv, ap)
+		}
+	}
+
+	// Transfer-Encoding
+	if len(resp.TransferEncoding) > 0 {
+		sr.TransferEncoding = strings.Join(resp.TransferEncoding, ",")
+		for _, te := range resp.TransferEncoding {
+			if strings.EqualFold(te, "chunked") {
+				sr.Chunked = true
+				break
+			}
+		}
+	}
+}
+
+// normalizeHTTPProto trims whitespace, upper-cases the token, and maps common aliases.
+// Examples:
+//   - " http/2 "  => "HTTP/2.0"
+//   - "http/2"    => "HTTP/2.0"
+//   - "HtTp/1.1"  => "HTTP/1.1"
+//   - "http/1.0"  => "HTTP/1.0"
+func normalizeHTTPProto(p string) string {
+	if p == "" {
+		return p
+	}
+	s := strings.TrimSpace(p)
+	s = strings.ToUpper(s)
+	switch s {
+	case "HTTP/2":
+		return "HTTP/2.0"
+	}
+	return s
 }
 
 // ---- Root meta & system info helpers (portable) ----
 var baseMetaOnce sync.Once
 var cachedBaseMeta *Meta
 var processStart = time.Now()
+
+// localSelfTestKbps holds the most recent self-test result set by the host process.
+var localSelfTestKbps float64
+
+var cachedCalibration *Calibration
+
+// SetLocalSelfTestKbps records the local throughput self-test (kbps) to be embedded in meta for each line.
+func SetLocalSelfTestKbps(kbps float64) {
+	if kbps <= 0 {
+		return
+	}
+	localSelfTestKbps = kbps
+	// If base meta has been initialized, update it so subsequent copies inherit the value.
+	if cachedBaseMeta != nil {
+		cachedBaseMeta.LocalSelfTestKbps = kbps
+	}
+}
+
+// CalibrationPoint captures the observed throughput versus a target rate.
+type CalibrationPoint struct {
+	TargetKbps   float64 `json:"target_kbps"`
+	ObservedKbps float64 `json:"observed_kbps"`
+	ErrorPct     float64 `json:"error_pct"`
+	Samples      int     `json:"samples,omitempty"`
+}
+
+// Calibration summarizes local measurement fidelity across a few target rates and the maximum sustainable speed.
+type Calibration struct {
+	CalibratedUTC   string             `json:"calibrated_utc"`
+	ProbeDurationMs int                `json:"probe_duration_ms,omitempty"`
+	MaxKbps         float64            `json:"max_kbps,omitempty"`
+	Ranges          []CalibrationPoint `json:"ranges,omitempty"`
+}
+
+// SetCalibration stores calibration results to embed in subsequent meta copies.
+func SetCalibration(c *Calibration) {
+	if c == nil {
+		return
+	}
+	cachedCalibration = c
+	if cachedBaseMeta != nil {
+		cachedBaseMeta.Calibration = c
+	}
+}
+
+// RunLocalSpeedCalibration runs a local calibration across target rates (kbps). target of 0 means unlimited (max probe).
+// It returns a Calibration struct with observed kbps for each target and a separate max measurement.
+func RunLocalSpeedCalibration(targets []float64, perTargetDur time.Duration) (*Calibration, error) {
+	if perTargetDur <= 0 {
+		perTargetDur = 500 * time.Millisecond
+	}
+	cal := &Calibration{CalibratedUTC: time.Now().UTC().Format(time.RFC3339Nano), ProbeDurationMs: int(perTargetDur / time.Millisecond)}
+	// Measure unlimited/max first for a stable reference
+	if kbps, err := LocalMaxSpeedProbe(perTargetDur); err == nil {
+		cal.MaxKbps = kbps
+	}
+	// For each target, spin a rate-limited httptest server and measure observed throughput
+	for _, tgt := range targets {
+		if tgt <= 0 {
+			// skip explicit 0 target here; max already recorded
+			continue
+		}
+		// create a server that writes at approximately tgt kbps using a feedback controller
+		// that tracks desired bytes over time to reduce drift from timer granularity
+		targetKbps := tgt
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Determine bytes per second
+			bytesPerSec := (targetKbps * 1000.0) / 8.0
+			if bytesPerSec <= 0 {
+				bytesPerSec = 1
+			}
+			// Derive chunk size from desired bytesPerSec to keep write cadence responsive at low rates.
+			// Target ≈ 20ms worth of bytes; clamp to [256B, 8KB]
+			dynChunk := int(bytesPerSec * 0.02)
+			if dynChunk < 256 {
+				dynChunk = 256
+			} else if dynChunk > 8*1024 {
+				dynChunk = 8 * 1024
+			}
+			chunkSize := dynChunk
+			buf := make([]byte, chunkSize)
+			for i := range buf {
+				buf[i] = 0x5A
+			}
+			start := time.Now()
+			deadline := start.Add(perTargetDur + 50*time.Millisecond)
+			var sent int64
+			// helper: compute how many bytes we should have sent by now
+			desiredBytes := func() int64 {
+				elapsed := time.Since(start).Seconds()
+				if elapsed < 0 {
+					elapsed = 0
+				}
+				return int64(bytesPerSec * elapsed)
+			}
+			// loop until deadline; on each iteration write enough chunks to catch up to desired rate
+			for time.Now().Before(deadline) {
+				toSend := desiredBytes() - sent
+				if toSend >= int64(chunkSize) {
+					// write as many whole chunks as needed to reduce deficit
+					nChunks := int(toSend / int64(chunkSize))
+					// cap bursts to avoid monopolizing CPU; remaining will be caught in next loop
+					if nChunks > 8 {
+						nChunks = 8
+					}
+					for i := 0; i < nChunks; i++ {
+						if _, err := w.Write(buf); err != nil {
+							return
+						}
+						sent += int64(chunkSize)
+					}
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+					// continue loop without sleeping to re-evaluate deficit
+					continue
+				}
+				// We're ahead or close to desired rate; sleep just enough to accumulate ~one chunk of deficit
+				// Compute time to accumulate a chunk deficit at the current bytesPerSec
+				// guard against division by zero above
+				secForChunk := float64(chunkSize) / bytesPerSec
+				sleep := time.Duration(secForChunk * float64(time.Second))
+				if sleep < 200*time.Microsecond {
+					sleep = 200 * time.Microsecond
+				} else if sleep > 5*time.Millisecond {
+					sleep = 5 * time.Millisecond
+				}
+				time.Sleep(sleep)
+			}
+		}))
+		// client reads for perTargetDur and computes observed throughput
+		func() {
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), perTargetDur)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+			tr := &http.Transport{DisableCompression: true}
+			client := &http.Client{Transport: tr}
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil {
+				cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: 0, ErrorPct: 100, Samples: 0})
+				return
+			}
+			defer resp.Body.Close()
+			var nBytes int64
+			samples := 0
+			// smaller buffer increases sample count and smooths measurement
+			buf := make([]byte, 8*1024)
+			for {
+				if time.Since(start) >= perTargetDur {
+					break
+				}
+				nr, er := resp.Body.Read(buf)
+				if nr > 0 {
+					nBytes += int64(nr)
+					samples++
+				}
+				if er != nil {
+					if errors.Is(er, io.EOF) {
+						break
+					}
+					break
+				}
+			}
+			elSec := time.Since(start).Seconds()
+			var obsKbps float64
+			if elSec > 0 {
+				obsKbps = (float64(nBytes) * 8.0 / 1000.0) / elSec
+			}
+			errPct := 0.0
+			if targetKbps > 0 {
+				errPct = math.Abs(obsKbps-targetKbps) / targetKbps * 100.0
+			}
+			cal.Ranges = append(cal.Ranges, CalibrationPoint{TargetKbps: targetKbps, ObservedKbps: obsKbps, ErrorPct: errPct, Samples: samples})
+		}()
+	}
+	SetCalibration(cal)
+	return cal, nil
+}
 
 // wrapRoot can accept either a typed *SiteResult plus supplemental map fields, or a legacy map.
 func wrapRoot(sr *SiteResult) *ResultEnvelope {
@@ -1347,13 +2277,35 @@ func gatherBaseMeta() *Meta {
 		}
 		m.ConnectionType = detectConnectionType()
 		m.Containerized = detectContainer()
+		// Attempt to populate memory and disk stats (best-effort)
+		if tot, free, err := readMem(); err == nil {
+			m.MemTotalBytes = tot
+			m.MemFreeOrAvailable = free
+		}
+		if dtot, dfree, err := readDisk("/"); err == nil {
+			m.DiskRootTotalBytes = dtot
+			m.DiskRootFreeBytes = dfree
+		}
 		m.SchemaVersion = SchemaVersion
 		m.Situation = currentSituation
+		if localSelfTestKbps > 0 {
+			m.LocalSelfTestKbps = localSelfTestKbps
+		}
+		if cachedCalibration != nil {
+			m.Calibration = cachedCalibration
+		}
 		cachedBaseMeta = m
 	})
 	// Shallow copy with updated timestamp
 	cp := *cachedBaseMeta
 	cp.TimestampUTC = time.Now().UTC().Format(time.RFC3339Nano)
+	// Ensure the latest self-test value is reflected even if set after base init.
+	if localSelfTestKbps > 0 {
+		cp.LocalSelfTestKbps = localSelfTestKbps
+	}
+	if cachedCalibration != nil {
+		cp.Calibration = cachedCalibration
+	}
 	return &cp
 }
 func readLoadAvg() (float64, float64, float64, error) {
@@ -1392,6 +2344,77 @@ func readUptime() (float64, error) {
 	}
 	f, err := strconv.ParseFloat(parts[0], 64)
 	return f, err
+}
+
+// readMem attempts to return total and free/available memory in bytes on Linux and macOS. Best-effort.
+func readMem() (uint64, uint64, error) {
+	switch runtime.GOOS {
+	case "linux":
+		b, err := os.ReadFile("/proc/meminfo")
+		if err != nil {
+			return 0, 0, err
+		}
+		// Parse MemTotal and MemAvailable in kB
+		var totKB, availKB uint64
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fmt.Sscanf(line, "MemTotal: %d kB", &totKB)
+			} else if strings.HasPrefix(line, "MemAvailable:") {
+				fmt.Sscanf(line, "MemAvailable: %d kB", &availKB)
+			}
+		}
+		if totKB == 0 {
+			return 0, 0, fmt.Errorf("meminfo parse")
+		}
+		return totKB * 1024, availKB * 1024, nil
+	case "darwin":
+		// total: sysctl hw.memsize
+		out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0, 0, err
+		}
+		var tot uint64
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &tot)
+		// available: vm_stat free + inactive pages
+		vmOut, err := exec.Command("/usr/bin/vm_stat").Output()
+		if err != nil {
+			return tot, 0, nil
+		}
+		var pageSize uint64 = 4096 // default; vm_stat header may tell the true size
+		lines := strings.Split(string(vmOut), "\n")
+		if len(lines) > 0 && strings.Contains(lines[0], "page size of") {
+			// e.g., Mach Virtual Memory Statistics: (page size of 16384 bytes)
+			var ps uint64
+			if _, err := fmt.Sscanf(lines[0], "Mach Virtual Memory Statistics: (page size of %d bytes)", &ps); err == nil && ps > 0 {
+				pageSize = ps
+			}
+		}
+		var freePages, inactivePages uint64
+		for _, ln := range lines {
+			if strings.HasPrefix(strings.TrimSpace(ln), "Pages free:") {
+				fmt.Sscanf(ln, "Pages free: %d.", &freePages)
+			}
+			if strings.HasPrefix(strings.TrimSpace(ln), "Pages inactive:") {
+				fmt.Sscanf(ln, "Pages inactive: %d.", &inactivePages)
+			}
+		}
+		avail := (freePages + inactivePages) * pageSize
+		return tot, avail, nil
+	default:
+		return 0, 0, fmt.Errorf("unsupported")
+	}
+}
+
+// readDisk returns total and free bytes for the given mount path (best-effort; Unix only)
+func readDisk(path string) (uint64, uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, err
+	}
+	// Prefer Bavail for free bytes available to non-root
+	total := uint64(st.Blocks) * uint64(st.Bsize)
+	bavail := uint64(st.Bavail) * uint64(st.Bsize)
+	return total, bavail, nil
 }
 func readKernelVersion() (string, error) {
 	if runtime.GOOS != "linux" {
@@ -1567,31 +2590,6 @@ func writeResult(env *ResultEnvelope) {
 	f.WriteString(string(b) + "\n")
 }
 
-// hostPort retained for potential future use when constructing explicit authority; nolint to silence unused warning.
-//
-//nolint:unused
-func hostPort(u *url.URL) string {
-	port := u.Port()
-	if port == "" {
-		if u.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	return u.Hostname() + ":" + port
-}
-
-// resolveIP retained for potential future diagnostic utilities; nolint to silence unused warning.
-//
-//nolint:unused
-func resolveIP(host string) string {
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return ""
-	}
-	return ips[0].String()
-}
 func containsCI(haystack, needle string) bool {
 	if needle == "" {
 		return true

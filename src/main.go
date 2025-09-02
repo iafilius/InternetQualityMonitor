@@ -1,9 +1,10 @@
 // Internet Monitor main entrypoint.
 //
 // Two modes:
-//  1. Analyze-only mode (default): parse existing monitor_results.jsonl batches, summarize, compute deltas & alerts, optionally emit JSON report.
-//  2. Collection mode (enable with --analyze-only=false): perform active measurements across configured sites for N iterations, writing JSONL lines;
-//     after each iteration a rolling analysis (of up to last 10 batches or iterations so far) is executed and alerts generated.
+//  1. Collection mode (default): perform active measurements across configured sites for N iterations, writing JSONL lines; after each
+//     iteration a rolling analysis (of up to last 10 batches or iterations so far) is executed and alerts generated.
+//  2. Analyze-only mode (enable with --analyze-only=true): parse existing monitor_results.jsonl batches, summarize, compute deltas & alerts,
+//     optionally emit a structured JSON alert report.
 //
 // Design notes:
 // - Batch identity: run_tag (timestamp base + optional _i<iteration>). Legacy lines missing run_tag are upgraded via timestamp derived tags.
@@ -14,6 +15,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,11 +118,12 @@ func main() {
 	sitesPath := flag.String("sites", "./sites.jsonc", "Path to sites JSONC file")
 	iterations := flag.Int("iterations", 1, "Number of passes over the sites list")
 	parallel := flag.Int("parallel", 1, "Maximum concurrent site monitors")
-	outFile := flag.String("out", monitor.DefaultResultsFile, "Output JSONL file")
+	outFile := flag.String("out", monitor.DefaultResultsFile, "Output JSONL file for collection results (ignored in analyze-only; use --input)")
 	logLevel := flag.String("log-level", "info", "Log level (debug|info|warn|error)")
 	httpTimeout := flag.Duration("http-timeout", 120*time.Second, "Per-request total timeout (including body transfer)")
 	stallTimeout := flag.Duration("stall-timeout", 20*time.Second, "Abort transfer if no progress for this long")
 	siteTimeout := flag.Duration("site-timeout", 120*time.Second, "Optional overall timeout per site (DNS + all IP probes). 0 disables.")
+	dnsTimeout := flag.Duration("dns-timeout", 5*time.Second, "Default DNS timeout when no site-timeout is set; also used as upper bound for fanout DNS")
 	maxIPsPerSite := flag.Int("max-ips-per-site", 0, "If >0 limit number of IPs probed per site (e.g. 2 for first v4+v6). 0 = all")
 	situation := flag.String("situation", "Unknown", "Label describing current network/context situation (e.g. Office, Home, VPN, Travel). Added to meta for later comparative analysis")
 	speedDropAlert := flag.Float64("speed-drop-alert", 30, "Speed drop alert threshold percent")
@@ -132,10 +136,97 @@ func main() {
 	progressResolveIP := flag.Bool("progress-resolve-ip", true, "Resolve and append first IP(s) for active sites in progress output")
 	ipFanout := flag.Bool("ip-fanout", true, "If true, pre-resolve all site IPs and randomize site/IP tasks to spread load")
 	alertsJSON := flag.String("alerts-json", "", "Path to write structured alert JSON report (optional)")
-	analyzeOnly := flag.Bool("analyze-only", false, "If true, perform analysis on existing results file and exit (default true for now)")
+	preTTFBStall := flag.Bool("pre-ttfb-stall", false, "Cancel primary GET if no first byte within stall-timeout; marks http_error=stall_pre_ttfb")
+	analyzeOnly := flag.Bool("analyze-only", false, "If true, analyze existing results and exit (no new collection)")
+	inputFile := flag.String("input", monitor.DefaultResultsFile, "Input JSONL file to analyze when --analyze-only is set")
 	analysisBatches := flag.Int("analysis-batches", 10, "Max number of recent batches to analyze when --analyze-only is set")
 	finalAnalysisBatches := flag.Int("final-analysis-batches", 0, "If >0 in collection mode, after all iterations perform a final full analysis over last N batches")
+	// Self-test flags (default-on)
+	selfTest := flag.Bool("selftest-speed", true, "Run a quick local throughput self-test on startup (loopback)")
+	selfTestDur := flag.Duration("selftest-duration", 300*time.Millisecond, "Duration for local throughput self-test")
+	// Run calibration by default for each monitor session; can be disabled with --calibrate=false
+	calib := flag.Bool("calibrate", true, "Run local speed calibration at startup and embed results into metadata (collection mode only)")
+	calibTargetsCSV := flag.String("calibrate-targets", "", "Comma-separated speed targets in kbps (empty = auto: 10,30,100,300,1000,… up to local max; 0 means skip a value). Max is always measured.")
+	calibDur := flag.Duration("calibrate-duration", 500*time.Millisecond, "Duration per calibration target")
+	calibTolPct := flag.Int("calibrate-tolerance", 10, "Calibration tolerance percent for target checks (info only)")
 	flag.Parse()
+
+	var selfTestKbps float64
+	if *selfTest {
+		if kbps, err := monitor.LocalMaxSpeedProbe(*selfTestDur); err == nil {
+			selfTestKbps = kbps
+			fmt.Printf("[selftest] local throughput: %.1f Mbps (%.0f kbps)\n", kbps/1000.0, kbps)
+			monitor.SetLocalSelfTestKbps(kbps)
+		} else {
+			fmt.Printf("[selftest] local throughput probe error: %v\n", err)
+		}
+	}
+
+	// Only run calibration for collection sessions (embed into emitted metadata)
+	if *calib && !*analyzeOnly {
+		// build targets: if CSV provided use it; otherwise auto-generate 10,30 per decade up to local max
+		var targets []float64
+		if strings.TrimSpace(*calibTargetsCSV) != "" {
+			for _, tok := range strings.Split(*calibTargetsCSV, ",") {
+				tok = strings.TrimSpace(tok)
+				if tok == "" {
+					continue
+				}
+				if v, err := strconv.ParseFloat(tok, 64); err == nil && v >= 0 {
+					if v > 0 {
+						targets = append(targets, v)
+					}
+				}
+			}
+		} else {
+			maxRef := selfTestKbps
+			if maxRef <= 0 {
+				if kbps, err := monitor.LocalMaxSpeedProbe(*calibDur); err == nil {
+					maxRef = kbps
+				}
+			}
+			if maxRef > 0 {
+				// Generate: 10, 30, 100, 300, 1000, 3000, ... up to maxRef
+				for base := 10.0; base <= maxRef; base *= 10.0 {
+					if base <= maxRef {
+						targets = append(targets, base)
+					}
+					if base*3.0 <= maxRef {
+						targets = append(targets, base*3.0)
+					}
+				}
+			}
+		}
+		cal, err := monitor.RunLocalSpeedCalibration(targets, *calibDur)
+		if err != nil {
+			fmt.Printf("[calibration] error: %v\n", err)
+		} else {
+			monitor.SetCalibration(cal)
+			// Compute pass/fail against tolerance if provided
+			pass, total := 0, 0
+			if *calibTolPct > 0 {
+				total = len(cal.Ranges)
+				for _, p := range cal.Ranges {
+					if p.ErrorPct <= float64(*calibTolPct) {
+						pass++
+					}
+				}
+			}
+			if *calibTolPct > 0 && total > 0 {
+				fmt.Printf("[calibration] max=%.0f kbps, %d targets, within %d%%: %d/%d\n", cal.MaxKbps, len(cal.Ranges), *calibTolPct, pass, total)
+			} else {
+				fmt.Printf("[calibration] max=%.0f kbps, %d targets\n", cal.MaxKbps, len(cal.Ranges))
+			}
+			// Log how many read samples contributed per target for context
+			if len(cal.Ranges) > 0 {
+				sampleCounts := make([]int, 0, len(cal.Ranges))
+				for _, p := range cal.Ranges {
+					sampleCounts = append(sampleCounts, p.Samples)
+				}
+				fmt.Printf("[calibration] samples per target: %v\n", sampleCounts)
+			}
+		}
+	}
 
 	// Hostname placeholder expansion for --out. Users can specify patterns like
 	// monitor_results_{host}.jsonl and we substitute the current machine hostname.
@@ -160,14 +251,26 @@ func main() {
 			*outFile = path
 			fmt.Printf("[init] expanded output path with hostname (orig=%s sanitized=%s): %s\n", orig, sanitized, *outFile)
 		}
+		// Also support hostname expansion for --input, if used
+		if strings.Contains(*inputFile, "{host}") || strings.Contains(*inputFile, "%HOST%") || strings.Contains(*inputFile, "$HOST") {
+			path := *inputFile
+			path = strings.ReplaceAll(path, "{host}", sanitized)
+			path = strings.ReplaceAll(path, "%HOST%", sanitized)
+			path = strings.ReplaceAll(path, "$HOST", sanitized)
+			*inputFile = path
+			fmt.Printf("[init] expanded input path with hostname (orig=%s sanitized=%s): %s\n", orig, sanitized, *inputFile)
+		}
 	}
 
 	monitor.SetLogLevel(*logLevel)
 	monitor.SetHTTPTimeout(*httpTimeout)
 	monitor.SetStallTimeout(*stallTimeout)
 	monitor.SetSiteTimeout(*siteTimeout)
+	monitor.SetDNSTimeout(*dnsTimeout)
 	monitor.SetMaxIPsPerSite(*maxIPsPerSite)
 	monitor.SetSituation(*situation)
+	// Pre‑TTFB stall watchdog toggle
+	monitor.SetPreTTFBStall(*preTTFBStall)
 
 	// Only load sites if we are going to collect (not in analyze-only mode)
 	var sites []types.Site
@@ -184,10 +287,6 @@ func main() {
 		}
 	}
 
-	// Init async writer
-	monitor.InitResultWriter(*outFile)
-	defer monitor.CloseResultWriter()
-
 	// ANALYSIS ONLY MODE (skip collection)
 	if *analyzeOnly {
 		defaultAlerts := false
@@ -199,7 +298,9 @@ func main() {
 		if batches < 1 {
 			batches = 1
 		}
-		summaries, err := analysis.AnalyzeRecentResultsFull(*outFile, monitor.SchemaVersion, batches, *situation)
+		inPath := strings.TrimSpace(*inputFile)
+		fmt.Printf("[init] analyze-only: input=%s batches=%d situation=%s\n", inPath, batches, *situation)
+		summaries, err := analysis.AnalyzeRecentResultsFull(inPath, monitor.SchemaVersion, batches, *situation)
 		if err != nil {
 			fmt.Printf("[analysis] %v\n", err)
 			os.Exit(1)
@@ -322,6 +423,7 @@ func main() {
 			fmt.Println("[analysis] no batches found")
 			return
 		}
+
 		if len(summaries) == 1 {
 			last := summaries[0]
 			fmt.Printf("[batch-compare %s] only one batch available\n", last.RunTag)
@@ -404,6 +506,10 @@ func main() {
 	}
 
 	baseRunTag := time.Now().UTC().Format("20060102_150405")
+
+	// Init async writer for collection mode so results go to the requested --out file
+	monitor.InitResultWriter(*outFile)
+	defer monitor.CloseResultWriter()
 	defaultAlerts := false
 	if *alertsJSON == "" { // user did not supply a path; enable automatic alerts JSON per iteration (repo root preferred)
 		defaultAlerts = true
@@ -437,7 +543,18 @@ func main() {
 				}
 				host := u.Hostname()
 				startDNS := time.Now()
-				ips, derr := net.LookupIP(host)
+				// Context-aware DNS with bounded timeout: min(site-timeout, --dns-timeout)
+				perLookupTimeout := *dnsTimeout
+				if siteTimeout != nil && *siteTimeout > 0 && *siteTimeout < perLookupTimeout {
+					perLookupTimeout = *siteTimeout
+				}
+				dnsCtx, dnsCancel := context.WithTimeout(context.Background(), perLookupTimeout)
+				addrs, derr := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+				dnsCancel()
+				var ips []net.IP
+				for _, a := range addrs {
+					ips = append(ips, a.IP)
+				}
 				dnsDur := time.Since(startDNS)
 				if derr != nil || len(ips) == 0 {
 					fmt.Printf("[dns %s] failed: %v\n", s.Name, derr)
@@ -552,6 +669,10 @@ func main() {
 							} else {
 								fmt.Printf("[iteration %d progress] workers_busy=%d/%d remaining=%d done=%d/%d\n", iter, inF, workerCount, remaining, comp, totalTasks)
 							}
+							// Stop progress loop when all tasks are completed
+							if int(comp) >= totalTasks {
+								return
+							}
 							// Simple stall heuristic: only one task left (remaining==0, comp<total), one worker busy for >2 progress intervals without completion
 							if !warned && remaining == 0 && int(comp) < totalTasks && inF == 1 {
 								stuckFor := time.Since(lastChange)
@@ -658,6 +779,9 @@ func main() {
 							} else {
 								fmt.Printf("[iteration %d progress] workers_busy=%d/%d remaining=%d done=%d/%d\n", iter, inF, workerCount, remaining, comp, totalSites)
 							}
+							if int(comp) >= totalSites {
+								return
+							}
 						}
 					}
 				}(it + 1)
@@ -673,24 +797,20 @@ func main() {
 							if *progressResolveIP {
 								if u, err := url.Parse(site.URL); err == nil {
 									host := u.Hostname()
-									resCh := make(chan []string, 1)
-									go func(h string) {
-										ips, _ := net.LookupIP(h)
-										var out []string
-										for _, ip := range ips {
-											out = append(out, ip.String())
-											if len(out) >= 2 {
-												break
-											}
+									// Resolve with 1s context deadline; ensure cancel to avoid leaks
+									dnsCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+									addrs, _ := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+									cancel()
+									var ips []string
+									for _, a := range addrs {
+										ips = append(ips, a.IP.String())
+										if len(ips) >= 2 {
+											break
 										}
-										resCh <- out
-									}(host)
-									select {
-									case ips := <-resCh:
-										if len(ips) > 0 {
-											ipSuffix = "(" + strings.Join(ips, "/") + ")"
-										}
-									case <-time.After(1 * time.Second):
+									}
+									if len(ips) > 0 {
+										ipSuffix = "(" + strings.Join(ips, "/") + ")"
+									} else {
 										ipSuffix = "(dns-timeout)"
 									}
 								}

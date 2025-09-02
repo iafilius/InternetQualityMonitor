@@ -1,0 +1,6 @@
+{
+  "plantuml.render": "Local",
+  "plantuml.diagramsRoot": "docs/diagrams",
+  "plantuml.exportOutDir": "docs/images",
+  "plantuml.commandArgs": ["-charset", "UTF-8"]
+}

@@ -124,3 +124,17 @@ This document captures ideas for extracting richer telemetry (with or without a 
 - Persist raw samples; derived metrics can be recomputed offline.
 - Document schema changes with version bumps.
 
+---
+
+## TODO / Bugs
+
+- Viewer: Screen not updated when filtered batches == 1
+	- Repro:
+		1) Open viewer and load a results file with at least two situations, where one situation has only 1 batch.
+		2) Select that situation from the Situation drop-down (Batch X-axis mode).
+		3) Observe: table updates, but sometimes the chart image doesn’t change (appears stale) even though filteredSummaries returns 1.
+	- Notes:
+		- We already pad X-axis ranges and duplicate the single point for go-chart, and we refresh canvases/overlays.
+		- Likely a repaint race or image cache edge when dimensions don’t change. Possible fix: force a two-step image swap (set Image=nil and Refresh, then set new image and Refresh) or swap to a 1px different MinSize before setting back.
+		- Also check Time axis path for single timestamp and verify legend/series changes trigger a repaint.
+

@@ -1,0 +1,33 @@
+@startuml MonitorSequence
+actor User as U
+participant Monitor
+participant DNS
+participant "http.Client" as HC
+participant "Target Site" as S
+
+U -> Monitor : start MonitorSiteIP(site, ip)
+Monitor -> DNS : resolve host (timeout)
+DNS --> Monitor : IPs
+Monitor -> HC : HEAD (timeout)
+HC --> Monitor : Response (status/headers)
+Monitor -> HC : GET (with httptrace)
+activate HC
+HC -> S : TLS handshake (if HTTPS)
+S --> HC : handshake complete
+note over HC,S #lightyellow
+tls_handshake_ms measured here
+end note
+Monitor -> Monitor : record TLS ver/ALPN + handshake_ms
+HC --> Monitor : Response (status, body stream)
+note over Monitor,HC #lightyellow
+pre_ttfb_ms measured until first response byte
+end note
+Monitor -> Monitor : pre‑TTFB watchdog (optional)
+Monitor -> Monitor : read loop + stall watchdog
+Monitor -> Monitor : sample throughput every 100ms
+Monitor -> HC : Range GET (bytes=0-65535)
+HC --> Monitor : Response (206/200)
+Monitor -> Monitor : read small range with pre‑body stall guard
+deactivate HC
+Monitor -> Monitor : write JSONL line
+@enduml

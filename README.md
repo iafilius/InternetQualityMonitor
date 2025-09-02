@@ -2,6 +2,8 @@
 
 This project monitors various aspects of internet connectivity for a list of HTTP(S) sites hosted in different countries. It supports local monitoring (with Zscaler client) and remote monitoring over SSH (unmodified internet).
 
+See also: Design Criteria and Principles → [DESIGN_CRITERIA.md](./DESIGN_CRITERIA.md), Architecture → [ARCHITECTURE.md](./ARCHITECTURE.md)
+
 ## TL;DR
 Quick network performance + proxy/cache heuristics monitor + batch analyzer.
 
@@ -19,6 +21,7 @@ Recent changes:
  - Batch proxy aggregation metrics: analysis now reports `env_proxy_usage_rate_pct`, `classified_proxy_rate_pct`, per `proxy_name_counts` & `proxy_name_rate_pct` maps; console adds `env_proxy=` and `proxy_classified=` percentages plus top proxy names for quick scan.
  - Overall multi-batch aggregation line: when more than one batch is analyzed, an additional `overall across <N> batches` line is printed, showing line-weighted aggregate metrics (including IPv4/IPv6 splits) across all displayed batches. Individual batch lines are now marked with `(per-batch)` for clarity.
 - Console output units: analysis lines now include explicit units for clarity (kbps, ms, B, kbps/s).
+ - Calibration (default‑on in collection mode): On startup the monitor performs a local loopback speed calibration and embeds results into metadata. Targets default to 10/30 per decade up to the measured local max when not specified. CLI prints a tolerance summary (\"within N%: X/Y\") and logs \"[calibration] samples per target: [..]\" to show how many read iterations contributed per target. See also `README_analysis.md` (calibration fields) and `README_iqmviewer.md` (Diagnostics view).
 
 First time (no results yet) you likely want to collect data (this is now the default mode):
 ```bash
@@ -195,6 +198,26 @@ Operational conveniences:
 - Asynchronous single-writer result queue (low contention, durable append)
 - Multiple iterations (--iterations)
 
+### Runtime logging (progress, stalls, watchdog)
+
+The monitor emits concise progress and stall logs during transfers. When the target size is known (via Content-Length or Content-Range), logs include current/target bytes and percentage; otherwise they show current/unknown.
+
+- Periodic progress (primary GET):
+   - Debug: "[site ip] transfer progress current/target bytes (X.Y%)" or "current/unknown"
+   - Info: "[site ip] progress current/target bytes (MB, X.Y%)" or "current/unknown (MB)"
+   - Frequency: ~3s at debug; ~10s at info level.
+- Watchdog (no recent progress):
+   - Known size: "watchdog: no progress for 10s (current/target bytes, X.Y%)"
+   - Unknown size: "watchdog: no progress for 10s (current/unknown bytes)"
+- Stall abort (past stall-timeout without reads):
+   - Known size: "transfer stalled for 20s, aborting (current/target bytes, X.Y%)"
+   - Unknown size: "transfer stalled for 20s, aborting (current/unknown bytes)"
+- Secondary Range GET progress:
+   - Uses Content-Range to determine the expected bytes (fallback to Content-Length if present).
+   - Logs similar progress lines: "range progress current/target bytes (X.Y%)" or "current/unknown".
+
+Tip: Increase `--log-level=debug` to see more frequent progress updates.
+
 ## Usage
 1. Add sites to `sites.jsonc`
 2. Run the monitor from your local PC or via SSH
@@ -281,6 +304,153 @@ $env:ANALYSIS_BATCHES = "25"; ./monitor_atHomeCorpLaptop.ps1
 
 The monitor banner prints the selected parameters (parallel, iterations, situation, log level, sites, output path, analysis batches) so runs are self-describing in logs.
 
+## Charts overview & interpretations
+
+TTFB (Avg) and TTFB Percentiles (ms)
+- TTFB is the time to first byte for a request. Avg TTFB shows the mean per batch (Overall/IPv4/IPv6).
+- TTFB Percentiles show P50/P90/P95/P99 per batch. Expect P99 ≥ P95 ≥ P90 ≥ P50. Larger gaps mean heavier tail latency (e.g., slow DNS/TLS, cold caches, backend spikes).
+
+Speed Percentiles
+- P50/P90/P95/P99 of transfer speed. Wide gaps indicate jitter or unstable throughput.
+
+Error Rate, Jitter, CoV
+- Error Rate: percentage of requests with errors.
+- Jitter (%): mean absolute relative change between consecutive sample speeds in a transfer; higher = more erratic.
+- Coefficient of Variation (%): stddev/mean of speeds; higher = less consistent.
+
+Plateau metrics
+- Plateau Count: number of intra-transfer stable segments.
+- Longest Plateau (ms): the longest such segment; long values can indicate stalls.
+- Plateau Stable Rate (%): fraction of time spent in stable plateaus (smoother throughput).
+
+Cache/Proxy signals
+- Cache Hit Rate (%): fraction likely served from caches.
+- Proxy Suspected Rate (%): requests likely traversing proxies.
+- Warm Cache Suspected Rate (%): requests likely benefiting from warm caches.
+
+Diagnostics (tail, deltas, and SLA)
+- Tail Heaviness (P99/P50 Speed): Ratio of P99 to P50 throughput. Values > 2 suggest a heavy tail (more extreme slowdowns vs median). Useful to spot jittery or bursty networks.
+- TTFB Tail Heaviness (P95/P50): Ratio of tail to median latency per batch. Values close to 1.0 indicate a tight latency distribution; higher values mean heavier tail latency and more outliers/spikes.
+- Family Delta – Speed (IPv6−IPv4): Difference in average transfer speed between IPv6 and IPv4. Positive means IPv6 faster; negative means IPv4 faster.
+- Family Delta – TTFB (IPv4−IPv6): Difference in average TTFB between IPv4 and IPv6. Positive means IPv4 slower (higher latency); negative means IPv6 slower.
+- Family Delta – Speed % (IPv6 vs IPv4): Percent difference vs IPv4 baseline: (IPv6−IPv4)/IPv4 × 100%. Positive means IPv6 faster.
+- Family Delta – TTFB % (IPv6 vs IPv4): Percent difference vs IPv6 baseline: (IPv4−IPv6)/IPv6 × 100%. Positive means IPv6 lower latency.
+- SLA Compliance – Speed: Estimated percent of requests that meet or exceed the P50 speed target. Approximated from percentiles; higher is better. Threshold is user‑configurable.
+- SLA Compliance – TTFB: Estimated percent of requests that meet or beat the P95 TTFB target (i.e., P95 ≤ threshold). Approximated from percentiles; higher is better. Threshold is user‑configurable.
+- SLA Compliance Delta – Speed (pp): IPv6 compliance minus IPv4 compliance, in percentage points. Positive means IPv6 meets the speed SLA more often.
+- SLA Compliance Delta – TTFB (pp): IPv6 compliance minus IPv4 compliance, in percentage points. Positive means IPv6 meets the TTFB SLA more often.
+ - TTFB P95−P50 Gap: Difference between tail and median latency (P95 minus P50) per batch. Larger gaps indicate heavier tail latency and more outliers/spikes.
+
+TTFB Tail Heaviness (P95/P50)
+- What it shows: The ratio of P95 TTFB to P50 TTFB per batch (Overall/IPv4/IPv6).
+- How to read: ~1.0 means the tail is close to median (tight distribution). Higher ratios mean heavier tails and greater latency variability.
+- Why it matters: Complements the absolute P95−P50 Gap by giving a dimensionless view that is comparable across sites and situations.
+
+### Viewer controls and exports
+
+- Situation filter: Use the Situation dropdown in the toolbar to scope charts and the table to a single scenario or All.
+- Titles: Chart titles are kept clean and do not include the situation label.
+- Watermark: The active Situation is shown in a subtle bottom-right on-image watermark (e.g., "Situation: Home_WiFi"). This watermark is embedded into exported PNGs so context is preserved when sharing.
+- X-Axis modes: Batch, RunTag, or Time (Settings → X‑Axis). Y-Scale: Absolute (zero baseline) or Relative (nice bounds) (Settings → Y‑Scale).
+- SLA thresholds (configurable): Settings → “SLA Thresholds…” lets you set corporate‑friendly defaults or your own targets:
+   - SLA P50 Speed (kbps): default 10,000 kbps (≈10 Mbps). Used by the SLA Compliance – Speed chart and hover labels.
+   - SLA P95 TTFB (ms): default 200 ms. Used by the SLA Compliance – TTFB chart and hover labels.
+   Values are persisted across sessions. Chart titles reflect the current thresholds and units.
+- Exports: Individual export items mirror the on‑screen order. "Export All (One Image)" stitches charts together in the same order shown in the UI, maintaining the watermark per chart.
+
+Rolling overlays (Avg Speed & Avg TTFB)
+- Rolling window N: default 7 (persisted). Change via Settings → “Rolling Window…”. Smooths out short-term noise.
+- Rolling Mean (μ): toggle to show a smoothed trend line across the last N batches.
+- ±1σ Band: independent toggle to show a translucent band between μ−σ and μ+σ. Legend shows a single entry “Rolling μ±1σ (N)” per chart when enabled.
+- Help dialogs on the Speed/TTFB charts include a short hint on what the band means and how changing N affects smoothing and band width.
+
+Stability & quality (viewer)
+- Low‑Speed Time Share (%): time spent below the Low‑Speed Threshold; highlights choppiness even when averages look fine.
+- Stall Rate (%): share of requests that stalled; good as a reliability/quality symptom.
+- Avg Stall Time (ms): average stalled time for stalled requests; higher means longer buffering events.
+- Stalled Requests Count: quick absolute count derived as round(Lines × Stall Rate%). Has a dedicated export option.
+
+Low‑Speed Threshold control
+- Settings → “Low‑Speed Threshold…” sets the cutoff for Low‑Speed Time Share. Default 1000 kbps; persisted. Changing it re‑analyzes data on the fly. Stall metrics are independent of this threshold.
+
+See also:
+- `README_iqmviewer.md` for a compact, feature‑focused viewer overview and troubleshooting.
+- `README_analysis.md` for analysis thresholds, options, and derived metrics reference.
+
+Quick screenshots (from the viewer):
+
+![Avg Speed with overlays](docs/images/speed_avg.png)
+![Low-Speed Time Share](docs/images/low_speed_share.png)
+![Stall Rate](docs/images/stall_rate.png)
+![Avg Stall Time](docs/images/stall_time.png)
+![Stalled Requests Count](docs/images/stall_count.png)
+![SLA – Speed](docs/images/sla_speed.png)
+![SLA – TTFB](docs/images/sla_ttfb.png)
+
+More visuals available:
+
+![Speed Percentiles – Overall](docs/images/speed_percentiles_overall.png)
+![TTFB P95−P50 Gap](docs/images/ttfb_p95_p50_gap.png)
+![Delta – Speed (abs)](docs/images/delta_speed_abs.png)
+![Error Rate](docs/images/error_rate.png)
+![DNS Lookup Time](docs/images/dns_lookup_time.png)
+![TCP Connect Time](docs/images/tcp_connect_time.png)
+![TLS Handshake Time](docs/images/tls_handshake_time.png)
+
+### Micro‑stalls (transient stalls)
+
+Micro‑stalls are short pauses during transfer where no bytes are received for a brief period, but the request later continues and completes (distinct from hard stalls that hit the stall‑timeout and abort).
+
+- Default threshold: a micro‑stall is detected when the cumulative bytes do not increase for ≥500 ms between speed samples.
+- Metrics produced by analysis:
+   - Transient Stall Rate (%): share of requests with ≥1 micro‑stall.
+   - Avg Transient Stall Time (ms): average total paused time per affected request.
+   - Avg Transient Stall Count: average number of micro‑stall events per affected request.
+
+These metrics surface in the analysis summaries and are visualized in the viewer (with dedicated exports and inclusion in combined/exported screenshots).
+
+### Updating screenshots (docs/images)
+
+Use the helper script to regenerate images from your latest results:
+
+```
+./update_screenshots.sh [RESULTS_FILE] [SITUATION] [THEME] [VARIANTS] [BATCHES] [LOW_SPEED_KBPS] [DNS_LEGACY]
+```
+
+Defaults: `RESULTS_FILE=monitor_results.jsonl`, `SITUATION=All`, `THEME=auto`, `VARIANTS=averages`, `BATCHES=50`, `LOW_SPEED_KBPS=1000`, `DNS_LEGACY=false`.
+
+Examples:
+- Auto theme (system), include action variants, last 50 batches:
+   `./update_screenshots.sh monitor_results.jsonl All auto averages 50 1000`
+- Force light theme, disable action variants, use 25 batches and 1500 kbps low-speed threshold:
+   `./update_screenshots.sh monitor_results.jsonl Home_WiFi light none 25 1500`
+
+- Include dashed legacy DNS overlay in DNS chart screenshots (7th arg):
+   `./update_screenshots.sh monitor_results.jsonl All auto averages 50 1000 true`
+
+Or run headless directly via the viewer:
+
+```
+go build ./cmd/iqmviewer
+./iqmviewer -file monitor_results.jsonl \
+    --screenshot \
+    --screenshot-outdir docs/images \
+    --screenshot-situation All \
+    --screenshot-batches 50 \
+    --screenshot-rolling-window 7 \
+   --screenshot-dns-legacy true
+    --screenshot-rolling-band \
+    --screenshot-theme auto \
+    --screenshot-variants averages \
+    --screenshot-low-speed-threshold-kbps 1000
+```
+
+Setup timing screenshots (written to `docs/images` when enabled):
+- `dns_lookup_time.png`
+- `tcp_connect_time.png`
+- `tls_handshake_time.png`
+
+
 Analyzing only recent batches for a specific situation:
 ```bash
 go run ./src/main.go --out monitor_results.jsonl --analysis-batches 5 --situation Home_CorporateLaptop_CorpProxy_SequencedTest
@@ -325,7 +495,7 @@ Guidelines for creating a new wrapper:
 
 Rationale: Re-using identical labels provides clean before/after / environment-to-environment comparisons and enables simple grep/jq pipelines without extra bookkeeping.
 
-### Command Line
+### Command Line (collector/analyzer)
 
 From repository root (module directory):
 
@@ -344,12 +514,20 @@ Flags:
 - `--http-timeout` (duration, default `120s`): Overall timeout per individual HTTP request (HEAD / GET / range / warm HEAD) including body transfer.
 - `--stall-timeout` (duration, default `20s`): Abort an in-progress body transfer if no additional bytes arrive within this window (marks line with `transfer_stalled`).
 - `--site-timeout` (duration, default `120s`): Overall budget per site (sequential mode) or per (site,IP) task (fanout) including DNS and all probes; aborts remaining steps if exceeded.
+- `--dns-timeout` (duration, default `5s`): Default DNS lookup timeout used when `--site-timeout` is 0. In IP fanout, each pre-resolve uses `min(--site-timeout, --dns-timeout)`.
+
+Environment flags:
+- `--pre-ttfb-stall`: Enables an optional pre‑TTFB stall watchdog for the primary GET. If no first byte arrives within `--stall-timeout`, the request is canceled early and the line records `http_error = "stall_pre_ttfb"`. Default is disabled to preserve historical behavior.
 - `--max-ips-per-site` (int, default `0` = unlimited): Limit probed IPs per site (first IPv4 + first IPv6 typical when set to 2) to prevent long multi-IP sites monopolizing workers.
 - `--ip-fanout` (bool, default `true`): Pre-resolve all sites, build one task per selected IP, shuffle for fairness, then process concurrently. Disable with `--ip-fanout=false` to use classic per-site sequential IP iteration.
 - Progress logging controls (collection mode):
    - `--progress-interval` (duration, default `5s`): Emit periodic worker status (0 disables).
    - `--progress-sites` (bool, default `true`): Show active site/IP labels in progress lines.
    - `--progress-resolve-ip` (bool, default `true`): In non-fanout mode, attempt short-timeout DNS to display first 1–2 IPs inline.
+
+Notes:
+- DNS lookups in the monitor are always context-aware. When `--site-timeout` is set, DNS is bounded by that value; otherwise it uses `--dns-timeout`.
+- Progress inline IP resolution uses a fixed 1s DNS deadline to avoid blocking the progress logger.
 - `--situation` (string, default `Unknown`): Arbitrary label describing the current network context (e.g. `Home`, `Office`, `VPN`, `Hotel`). Stored in each result's `meta.situation` to segment and compare batches later.
 - Alert thresholds (percentages unless noted) to emit `[alert ...]` lines comparing the newest batch vs aggregate of prior batches:
    - `--speed-drop-alert` (default `30`): Trigger if average speed decreased by at least this percent.
@@ -570,6 +748,8 @@ Plateaus & stability:
 Caching / proxy / reuse rates (% of lines where condition true):
 - Cache hit rate (cache_hit_rate_pct)
 - Proxy suspected rate (proxy_suspected_rate_pct)
+   - Deprecated in the Viewer UI: The legacy combined "Proxy Suspected Rate (%)" chart is hidden/removed from the Viewer. Use the split charts "Enterprise Proxy Rate (%)" and "Server-side Proxy Rate (%)" instead.
+   - Backward compatibility: The analysis still emits `proxy_suspected_rate_pct` for downstream consumers and older tooling.
 - IP mismatch rate (ip_mismatch_rate_pct)
 - Prefetch suspected rate (prefetch_suspected_rate_pct)
 - Warm cache suspected rate (warm_cache_suspected_rate_pct)
@@ -579,6 +759,23 @@ Use these to correlate: e.g. a rise in `ip_mismatch_rate_pct` plus degraded `avg
 </details>
 
 Per-family batch objects (`ipv4`, `ipv6`): each, when present, mirrors the core metric names (e.g. `avg_speed_kbps`, `avg_ttfb_ms`, `avg_p50_kbps`, rates like `cache_hit_rate_pct`) restricted to that IP family. They are omitted if a family has zero lines in the batch. Alert JSON currently reports only the combined batch (family-level alerts not yet emitted).
+
+Protocol/TLS/encoding rollups (to help diagnose proxy/network path issues):
+- http_protocol_counts: number of lines per HTTP protocol, e.g. HTTP/1.1 vs HTTP/2.0
+- http_protocol_rate_pct: share for each HTTP protocol within the batch
+- avg_speed_by_http_protocol_kbps: average transfer speed per HTTP protocol
+- stall_rate_by_http_protocol_pct: stall rate for each HTTP protocol
+- error_rate_by_http_protocol_pct: error rate for each HTTP protocol
+- tls_version_counts / tls_version_rate_pct: counts and shares per TLS version (e.g., TLS1.2, TLS1.3)
+- alpn_counts / alpn_rate_pct: counts and shares per negotiated ALPN (e.g., h2, http/1.1)
+- chunked_rate_pct: fraction of lines using chunked transfer encoding
+
+These metrics are derived from the primary GET response and can be used to correlate performance or reliability differences between HTTP/1.1 and HTTP/2, TLS versions, or usage of chunked encoding.
+
+Note: When the primary GET is unavailable (e.g., due to a timeout), the monitor now populates protocol/TLS/encoding fields from earlier or subsequent phases when possible:
+- HEAD response: protocol/TLS/ALPN are captured on success and retained if GET later fails.
+- Range (partial) GET response: protocol/TLS/ALPN are also captured here and typically match the primary GET connection.
+This ensures the viewer’s protocol/TLS charts don’t degrade to Unknown solely because the primary GET failed.
 
 ### Example Batch Summary Console Lines
 <details>
@@ -805,9 +1002,9 @@ Your Go code will then be able to use these databases for GeoIP lookups.
 | GeoIP fields empty | GeoLite2 DB not installed | Install via `geoipupdate`; verify path `/usr/share/GeoIP/GeoLite2-Country.mmdb` |
 | Slow analysis | Very large results file | Limit with `--analysis-batches`; rotate/archive old lines |
 | Memory concern | Many recent batches retained | Lower `--analysis-batches` (default 10) |
-| HEAD slower than GET (ratio >1) | Proxy / caching anomaly | Check `proxy_suspected_rate_pct` and headers (`Via`, `X-Cache`) |
+| HEAD slower than GET (ratio >1) | Proxy / caching anomaly | Prefer the split metrics (`enterprise_proxy_rate_pct`, `server_proxy_rate_pct`); `proxy_suspected_rate_pct` remains available for compatibility. Also inspect headers (`Via`, `X-Cache`). |
 | Sudden p99/p50 spike | Bursty traffic or fewer samples | Validate sample count; look for plateau instability |
-| ip_mismatch_rate_pct spike | CDN path shift or proxy insertion | Compare ASN/org; correlate with `proxy_suspected_rate_pct` |
+| ip_mismatch_rate_pct spike | CDN path shift or proxy insertion | Compare ASN/org; correlate with `enterprise_proxy_rate_pct` / `server_proxy_rate_pct` (or legacy `proxy_suspected_rate_pct`). |
 | Warm cache suspected w/ low cache hit rate | HEAD path cached, object not | Inspect `header_age` / `x-cache` and warm HEAD timings |
 | Need verbose analysis | Want batch grouping debug | `ANALYSIS_DEBUG=1 go run ./src/main.go` |
 | Need baseline only | Old data noisy | Move or delete results file; collect fresh single batch |
@@ -819,3 +1016,7 @@ go test ./src/analysis -run TestExtendedRateAndSlopeMetrics -count=1
 ```
 
 </details>
+
+### Changelog
+
+See `CHANGELOG.md` for a summary of recent changes across the analyzer and viewer.

@@ -1,0 +1,21 @@
+@startuml Deployment
+node "User Device" {
+  component Viewer
+  component Readers
+}
+node "Monitor Host" {
+  component Monitor
+}
+node "Targets / Internet" as Net {
+  component "HTTP(S) Sites"
+}
+node "Enterprise Network" as Ent {
+  component "Corp Proxy" as CorpProxy
+}
+
+MonitorHost -down- Net : HTTPS
+MonitorHost -[dashed]- Ent : optional proxy path
+UserDevice -down- MonitorHost : file share / SSH copy of JSONL
+UserDevice -right- Readers : local CLI
+UserDevice -right- Viewer : local UI
+@enduml

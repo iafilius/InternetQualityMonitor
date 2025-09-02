@@ -1,0 +1,11 @@
+@startuml ViewerFlow
+participant Viewer
+participant Analysis
+collections Summaries
+participant PNG
+
+Viewer -> Analysis : AnalyzeRecentResultsFullWithOptions(...)
+Analysis --> Viewer : Summaries
+Viewer -> Viewer : render go‑chart figures
+Viewer -> PNG : export images (optional)
+@enduml
