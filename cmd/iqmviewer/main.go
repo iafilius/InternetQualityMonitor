@@ -10876,6 +10876,161 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// sessionTS holds one HTTP session's samples and metadata
+type sessionTS struct {
+	URL               string
+	TransferSizeBytes int64
+	TransferTimeMs    int64
+	HTTPProtocol      string
+	ALPN              string
+	Samples           []monitor.SpeedSample
+}
+
+// loadPerRequestSessionsForRunTag returns up to maxSessions sessions with samples and metadata for a runTag.
+func loadPerRequestSessionsForRunTag(state *uiState, runTag string, maxSessions int) []sessionTS {
+	if state == nil || strings.TrimSpace(state.filePath) == "" || strings.TrimSpace(runTag) == "" || maxSessions <= 0 {
+		return nil
+	}
+	f, err := os.Open(state.filePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	const maxLine = 10 * 1024 * 1024
+	buf := make([]byte, 0, 1*1024*1024)
+	scanner.Buffer(buf, maxLine)
+	sessions := make([]sessionTS, 0, maxSessions*2)
+	for scanner.Scan() {
+		var env monitor.ResultEnvelope
+		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
+			continue
+		}
+		if env.Meta == nil || env.SiteResult == nil {
+			continue
+		}
+		if env.Meta.RunTag != runTag {
+			continue
+		}
+		if len(env.SiteResult.TransferSpeedSamples) == 0 {
+			continue
+		}
+		s := sessionTS{
+			URL:               env.SiteResult.URL,
+			TransferSizeBytes: env.SiteResult.TransferSizeBytes,
+			TransferTimeMs:    env.SiteResult.TransferTimeMs,
+			HTTPProtocol:      env.SiteResult.HTTPProtocol,
+			ALPN:              env.SiteResult.ALPN,
+			Samples:           append([]monitor.SpeedSample(nil), env.SiteResult.TransferSpeedSamples...),
+		}
+		sessions = append(sessions, s)
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	// Sort by size desc, then time desc
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].TransferSizeBytes == sessions[j].TransferSizeBytes {
+			return sessions[i].TransferTimeMs > sessions[j].TransferTimeMs
+		}
+		return sessions[i].TransferSizeBytes > sessions[j].TransferSizeBytes
+	})
+	if len(sessions) > maxSessions {
+		sessions = sessions[:maxSessions]
+	}
+	return sessions
+}
+
+// renderSpeedOverTimeTopSessionsChart renders small-multiples (stacked) charts for top sessions by size.
+// It composes multiple per-session time-series images vertically into one tall image.
+func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		w, h := chartSize(state)
+		return blank(w, h)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	sel := rows[ix]
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	ss := loadPerRequestSessionsForRunTag(state, sel.RunTag, 4)
+	if len(ss) == 0 {
+		return nil
+	}
+	// Per mini-chart size: make them half height for a compact stack
+	fullW, fullH := chartSize(state)
+	miniH := int(math.Max(200, float64(fullH)/2))
+	outH := miniH * len(ss)
+	// Render each mini chart and compose vertically
+	out := image.NewRGBA(image.Rect(0, 0, fullW, outH))
+	yOff := 0
+	for idx, s := range ss {
+		// Build one series for this session
+		xs := make([]float64, 0, len(s.Samples))
+		ys := make([]float64, 0, len(s.Samples))
+		maxY := -math.MaxFloat64
+		for _, sp := range s.Samples {
+			xs = append(xs, float64(sp.TimeMs)/1000.0)
+			v := sp.Speed * factor
+			ys = append(ys, v)
+			if v > maxY {
+				maxY = v
+			}
+		}
+		if maxY <= 0 {
+			maxY = 1
+		}
+		// Human title: index, host, short path, size/time
+		u := parseURLOrNil(s.URL)
+		host := ""
+		path := ""
+		if u != nil {
+			host = u.Host
+			path = u.EscapedPath()
+		}
+		title := fmt.Sprintf("%d) %s%s — %0.1f MB in %0.2f s (%s)", idx+1, host, path, float64(s.TransferSizeBytes)/1e6, float64(s.TransferTimeMs)/1000.0, ternary(s.HTTPProtocol!="", s.HTTPProtocol, s.ALPN))
+		// Render
+		ch := chart.Chart{
+			Title:      title,
+			Background: chart.Style{Padding: chart.Box{Top: 12, Left: 16, Right: 12, Bottom: 28}},
+			XAxis:      chart.XAxis{Name: "time (s)"},
+			YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: 0, Max: maxY * 1.05}},
+			Series: []chart.Series{
+				chart.ContinuousSeries{
+					Name:     "speed",
+					XValues:  xs,
+					YValues:  ys,
+					Style:    chart.Style{StrokeColor: chart.ColorBlue.WithAlpha(210), StrokeWidth: 1.8, DotWidth: 0},
+				},
+			},
+		}
+		themeChart(&ch)
+		ch.Width = fullW
+		ch.Height = miniH
+		var buf bytes.Buffer
+		if err := ch.Render(chart.PNG, &buf); err != nil {
+			continue
+		}
+		img, err := png.Decode(&buf)
+		if err != nil {
+			continue
+		}
+		// Optional hint on first panel only to avoid repetition
+		if state.showHints && idx == 0 {
+			img = drawHint(img, "Hint: Top 4 sessions by transfer size; unit via Settings → Speed Unit.")
+			img = drawNoteTopLeft(img, "Each panel shows a single request's ~100 ms samples")
+		}
+		// Watermark each panel with situation
+		img = drawWatermark(img, "Situation: "+activeSituationLabel(state))
+		// Blit into output
+		draw.Draw(out, image.Rect(0, yOff, fullW, yOff+miniH), img, image.Point{}, draw.Src)
+		yOff += miniH
+	}
+	return out
+}
+
 // renderPartialBodyRateByHTTPProtocolChart draws percentage of partial body requests by HTTP protocol.
 func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -13164,7 +13319,16 @@ func rebuildDetailedCharts(state *uiState) {
 				widget.NewLabel("No per-request speed samples available for this batch."),
 			))
 		}
-		// 3) Errors by URL
+		// 3) Top Sessions (small multiples) – speed over time per session
+		if img := renderSpeedOverTimeTopSessionsChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Speed over Time — Top Sessions — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+		}
+		// 4) Errors by URL
 		if len(rows[ix].ErrorLinesByURL) == 0 {
 			state.detailedChartsBox.Add(container.NewVBox(
 				widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),

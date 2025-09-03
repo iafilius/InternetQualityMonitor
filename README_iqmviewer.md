@@ -40,6 +40,11 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
  - Error analytics: “Error Types (%)” composition chart showing share of total errors by type (DNS, TCP, TLS, HEAD, HTTP, Range) per batch; complements per‑protocol error charts.
  - Per‑URL errors: “Errors by URL (Top 12)” bar chart showing the top URLs by error count in the currently selected batch. Pick a row in the table to update it. Useful to quickly spot problematic endpoints.
+ - Detailed Batch Charts tab:
+	 - Speed Percentiles — <RunTag>: P25, P50, P75, P90, P95, P99 for the selected or compared batches. Unit-aware.
+	 - Speed over Time — <RunTag>: time‑series of measured throughput per 100 ms sample across requests in the batch; thin lines per request (up to 8). Theme- and unit‑aware, with hints and watermark.
+	 - Speed over Time — Top Sessions — <RunTag>: small multiples (top 4 sessions by transfer size). Each panel shows a single HTTP session’s speed vs time; title includes host/path and size/time. Useful to inspect shape and stability.
+	 - Errors by URL (Top 12) — <RunTag>: horizontal bars of most error‑prone URLs for the batch.
 - Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
  - Info popups follow consistent design criteria; see `docs/ui/info_popup_design_criteria.md`.
 
@@ -120,6 +125,11 @@ Notes:
 	 - When Min/Max is hidden, the Min/Max panels display a subtle inline hint explaining how to enable them.
 - Visible Charts: quickly show/hide individual charts. Your choices persist across sessions.
 - Visibility Presets:
+- Detailed tab behavior
+	- The top bar shows a Batch selector and a Compare button. You can compare up to 4 RunTags; charts are stacked per selected RunTag.
+	- Settings → “Auto‑open Detailed tab when selection exists” opens the Detailed tab after load when a stored selection (or compare list) is present.
+	- Selections persist: the selected RunTag and compare list are saved across restarts.
+
 	- Built-in presets (Everything, Setup Timings, Errors Focus, etc.).
 	- Save current as custom preset… stores your current visible set (by stable chart IDs) with a name. Presets persist across restarts.
 	- Apply/Rename/Delete Custom Preset submenus appear when you have custom presets. The menu title shows the active preset name when your current visibility exactly matches a preset.
