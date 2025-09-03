@@ -758,6 +758,14 @@ type uiState struct {
 	detailedSelectedRunTag string
 	// Optional: compare up to 4 batches in detailed tab (RunTags)
 	detailedCompareRunTags        []string
+	// Detailed charts last-rendered canvases for the Selected batch (used for exports)
+	detailedPctlImgCanvas          *canvas.Image
+	detailedSpeedOverTimeImgCanvas *canvas.Image
+	detailedTopSessionsImgCanvas   *canvas.Image
+	detailedErrorsByURLImgCanvas   *canvas.Image
+	// Tunables for Detailed charts
+	detailedMaxSeries    int // max request series in "Speed over Time"
+	detailedTopSessionsN int // number of sessions in Top Sessions small-multiples
 	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
 	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
@@ -2994,7 +3002,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportPlCount := fyne.NewMenuItem("Export Plateau Count Chart…", func() { exportChartPNG(state, state.plCountImgCanvas, "plateau_count_chart.png") })
 	exportPlLongest := fyne.NewMenuItem("Export Longest Plateau Chart…", func() { exportChartPNG(state, state.plLongestImgCanvas, "plateau_longest_chart.png") })
 	exportPlStable := fyne.NewMenuItem("Export Plateau Stable Rate Chart…", func() { exportChartPNG(state, state.plStableImgCanvas, "plateau_stable_rate_chart.png") })
-	exportAll := fyne.NewMenuItem("Export All Charts (One Image)…", func() { exportAllChartsCombined(state) })
+	exportAll := fyne.NewMenuItem("Export All BatchAvg Charts (One Image)…", func() { exportAllChartsCombined(state) })
 	// Create logical submenus to reduce clutter
 	avgSub := fyne.NewMenu("Averages & Percentiles",
 		exportSpeedAvg,
@@ -3083,6 +3091,13 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	platSubItem.ChildMenu = platSub
 
 	// Group all export submenus under a single "Export Charts" submenu
+	// Detailed chart export items (operate on currently selected batch in Detailed tab)
+	exportDetailedPctl := fyne.NewMenuItem("Export Detailed – Speed Percentiles…", func() { exportChartPNG(state, state.detailedPctlImgCanvas, "detailed_speed_percentiles.png") })
+	exportDetailedSpeed := fyne.NewMenuItem("Export Detailed – Speed over Time…", func() { exportChartPNG(state, state.detailedSpeedOverTimeImgCanvas, "detailed_speed_over_time.png") })
+	exportDetailedTop := fyne.NewMenuItem("Export Detailed – Top Sessions…", func() { exportChartPNG(state, state.detailedTopSessionsImgCanvas, "detailed_top_sessions.png") })
+	exportDetailedErrURL := fyne.NewMenuItem("Export Detailed – Errors by URL…", func() { exportChartPNG(state, state.detailedErrorsByURLImgCanvas, "detailed_errors_by_url.png") })
+	exportAllDetailed := fyne.NewMenuItem("Export All Detailed (Selected Batch)…", func() { exportAllDetailedChartsCombined(state) })
+
 	exportChartsSub := fyne.NewMenu("Export Charts",
 		setupSubItem,
 		transportSubItem,
@@ -3096,6 +3111,13 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		platSubItem,
 		fyne.NewMenuItemSeparator(),
 		exportAll,
+		fyne.NewMenuItemSeparator(),
+		exportDetailedPctl,
+		exportDetailedSpeed,
+		exportDetailedTop,
+		exportDetailedErrURL,
+		fyne.NewMenuItemSeparator(),
+		exportAllDetailed,
 	)
 	exportChartsItem := fyne.NewMenuItem("Export Charts", nil)
 	exportChartsItem.ChildMenu = exportChartsSub
@@ -3736,6 +3758,46 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		d.Resize(fyne.NewSize(380, 160))
 		d.Show()
 	}
+
+	// Detailed settings dialogs
+	openDetailedSeriesDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Max per-measurement series (1–32)")
+		val := state.detailedMaxSeries
+		if val <= 0 { val = 8 }
+		entry.SetText(strconv.Itoa(val))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Max lines in Speed over Time", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 1 { iv = 1 }
+				if iv > 32 { iv = 32 }
+				state.detailedMaxSeries = iv
+				savePrefs(state)
+				rebuildDetailedCharts(state)
+			}
+		}}
+		d := dialog.NewCustomConfirm("Detailed – Max Lines", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d.Resize(fyne.NewSize(360, 160))
+		d.Show()
+	}
+	openDetailedTopSessionsDialog := func() {
+		entry := widget.NewEntry()
+		entry.SetPlaceHolder("Top sessions (1–12)")
+		val := state.detailedTopSessionsN
+		if val <= 0 { val = 4 }
+		entry.SetText(strconv.Itoa(val))
+		form := &widget.Form{Items: []*widget.FormItem{{Text: "Top Sessions count", Widget: entry}}, OnSubmit: func() {
+			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
+				if iv < 1 { iv = 1 }
+				if iv > 12 { iv = 12 }
+				state.detailedTopSessionsN = iv
+				savePrefs(state)
+				rebuildDetailedCharts(state)
+			}
+		}}
+		d := dialog.NewCustomConfirm("Detailed – Top Sessions", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d.Resize(fyne.NewSize(360, 160))
+		d.Show()
+	}
 	openRollingDialog := func() {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Rolling Window (N)")
@@ -4075,6 +4137,14 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	dataScopeItem := fyne.NewMenuItem("Data Scope", nil)
 	dataScopeItem.ChildMenu = dataScopeMenu
 
+	// Detailed Charts submenu: tunables for detailed tab
+	detailedSettingsMenu := fyne.NewMenu("Detailed Charts",
+		fyne.NewMenuItem("Max series in Speed over Time…", func() { openDetailedSeriesDialog() }),
+		fyne.NewMenuItem("Top Sessions (small-multiples)…", func() { openDetailedTopSessionsDialog() }),
+	)
+	detailedSettingsItem := fyne.NewMenuItem("Detailed Charts", nil)
+	detailedSettingsItem.ChildMenu = detailedSettingsMenu
+
 	// Detailed tab behavior: auto-open when a selection exists
 	autoOpenDetailedLabel := func() string {
 		if state.autoOpenDetailedTab {
@@ -4112,6 +4182,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		axesUnitsItem,
 		thresholdsItem,
 		dataScopeItem,
+		detailedSettingsItem,
 		autoOpenDetailedToggle,
 		resetAll,
 		fyne.NewMenuItemSeparator(),
@@ -10805,7 +10876,13 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	}
 	sel := rows[ix]
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
-	const maxSeries = 8
+	maxSeries := state.detailedMaxSeries
+	if maxSeries <= 0 {
+		maxSeries = 8
+	}
+	if maxSeries > 32 {
+		maxSeries = 32
+	}
 	seriesSamples := loadPerRequestSpeedSamplesForRunTag(state, sel.RunTag, maxSeries)
 	if len(seriesSamples) == 0 {
 		// Nothing to show
@@ -10837,9 +10914,9 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 		if len(xs) == 1 {
 			x2 := xs[0] + 0.001
 			ys = append([]float64{ys[0]}, ys[0])
-			series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.8, DotWidth: 0}})
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.6, DotWidth: 1.6}})
 		} else {
-			series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.8, DotWidth: 0}})
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.6, DotWidth: 1.6}})
 		}
 	}
 	// Guard against all-zeros
@@ -10870,8 +10947,8 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 		return blank(cw, chh)
 	}
 	if state.showHints {
-		img = drawHint(img, "Hint: Thin lines are individual requests (up to 8). Unit follows Settings → Speed Unit.")
-		img = drawNoteTopLeft(img, "Samples at ~100 ms interval; relative time from request start")
+		img = drawHint(img, fmt.Sprintf("Hint: Thin lines with dots are individual requests (up to %d). Unit via Settings → Speed Unit.", maxSeries))
+		img = drawNoteTopLeft(img, "Dots = measured samples (~100 ms); relative time from request start")
 	}
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
@@ -10955,7 +11032,10 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 	}
 	sel := rows[ix]
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
-	ss := loadPerRequestSessionsForRunTag(state, sel.RunTag, 4)
+	maxSessions := state.detailedTopSessionsN
+	if maxSessions <= 0 { maxSessions = 4 }
+	if maxSessions > 12 { maxSessions = 12 }
+	ss := loadPerRequestSessionsForRunTag(state, sel.RunTag, maxSessions)
 	if len(ss) == 0 {
 		return nil
 	}
@@ -11002,7 +11082,7 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 					Name:     "speed",
 					XValues:  xs,
 					YValues:  ys,
-					Style:    chart.Style{StrokeColor: chart.ColorBlue.WithAlpha(210), StrokeWidth: 1.8, DotWidth: 0},
+					Style:    chart.Style{StrokeColor: chart.ColorBlue.WithAlpha(210), StrokeWidth: 1.6, DotWidth: 1.6},
 				},
 			},
 		}
@@ -11019,8 +11099,8 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 		}
 		// Optional hint on first panel only to avoid repetition
 		if state.showHints && idx == 0 {
-			img = drawHint(img, "Hint: Top 4 sessions by transfer size; unit via Settings → Speed Unit.")
-			img = drawNoteTopLeft(img, "Each panel shows a single request's ~100 ms samples")
+			img = drawHint(img, fmt.Sprintf("Hint: Top %d sessions by transfer size; unit via Settings → Speed Unit.", maxSessions))
+			img = drawNoteTopLeft(img, "Dots = measured samples (~100 ms)")
 		}
 		// Watermark each panel with situation
 		img = drawWatermark(img, "Situation: "+activeSituationLabel(state))
@@ -13298,6 +13378,10 @@ func rebuildDetailedCharts(state *uiState) {
 			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 			header := widget.NewLabelWithStyle("Speed Percentiles — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			// Save last canvas for export of selected batch (only when single tag)
+			if len(tags) == 1 {
+				state.detailedPctlImgCanvas = canv
+			}
 		} else {
 			// If all percentiles are zero/missing, note it
 			state.detailedChartsBox.Add(container.NewVBox(
@@ -13313,6 +13397,9 @@ func rebuildDetailedCharts(state *uiState) {
 			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 			header := widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			if len(tags) == 1 {
+				state.detailedSpeedOverTimeImgCanvas = canv
+			}
 		} else {
 			state.detailedChartsBox.Add(container.NewVBox(
 				widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -13327,6 +13414,9 @@ func rebuildDetailedCharts(state *uiState) {
 			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 			header := widget.NewLabelWithStyle("Speed over Time — Top Sessions — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			if len(tags) == 1 {
+				state.detailedTopSessionsImgCanvas = canv
+			}
 		}
 		// 4) Errors by URL
 		if len(rows[ix].ErrorLinesByURL) == 0 {
@@ -13341,6 +13431,9 @@ func rebuildDetailedCharts(state *uiState) {
 			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 			header := widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			if len(tags) == 1 {
+				state.detailedErrorsByURLImgCanvas = canv
+			}
 		}
 	}
 	// Restore previous selection
@@ -14186,6 +14279,105 @@ func exportAllChartsCombined(state *uiState) {
 	fs.Show()
 }
 
+// exportAllDetailedChartsCombined stitches the Detailed charts for the currently selected batch
+// (Percentiles, Speed over Time, Top Sessions, Errors by URL) into one tall image and prompts to save.
+func exportAllDetailedChartsCombined(state *uiState) {
+	if state == nil || state.window == nil {
+		return
+	}
+	// We re-render using the detailed renderers to ensure consistent width.
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		dialog.ShowInformation("Export Detailed", "No batches loaded.", state.window)
+		return
+	}
+	// Ensure we have a selection; default to first row
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	// Re-render at export width
+	cw, _ := chartSize(state)
+	exportW := cw
+	if exportW < 1600 {
+		exportW = 1600
+	}
+	prev := renderWidthOverride
+	renderWidthOverride = exportW
+	imgs := []image.Image{}
+	// 1) Percentiles
+	if img := renderSpeedPercentilesDetailedChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
+	// 2) Speed over Time (per measurement)
+	if img := renderSpeedOverTimeDetailedChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
+	// 3) Top Sessions
+	if img := renderSpeedOverTimeTopSessionsChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
+	// 4) Errors by URL
+	if img := renderErrorsByURLChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
+	renderWidthOverride = prev
+	if len(imgs) == 0 {
+		dialog.ShowInformation("Export Detailed", "No detailed charts to export for the selected batch.", state.window)
+		return
+	}
+	// Stitch vertically
+	maxW := 0
+	totalH := 0
+	for _, im := range imgs {
+		b := im.Bounds()
+		if b.Dx() > maxW { maxW = b.Dx() }
+		totalH += b.Dy() + 8
+	}
+	if totalH > 0 { totalH -= 8 }
+	out := image.NewRGBA(image.Rect(0, 0, maxW, totalH))
+	var bg color.RGBA
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		bg = color.RGBA{R: 250, G: 250, B: 250, A: 255}
+	} else {
+		bg = color.RGBA{R: 18, G: 18, B: 18, A: 255}
+	}
+	for y := 0; y < totalH; y++ {
+		for x := 0; x < maxW; x++ {
+			out.SetRGBA(x, y, bg)
+		}
+	}
+	y := 0
+	for i, im := range imgs {
+		b := im.Bounds()
+		x := (maxW - b.Dx()) / 2
+		draw.Draw(out, image.Rect(x, y, x+b.Dx(), y+b.Dy()), im, b.Min, draw.Over)
+		y += b.Dy()
+		if i != len(imgs)-1 { y += 8 }
+	}
+	// Default filename based on runtag
+	tag := rows[ix].RunTag
+	name := fmt.Sprintf("iqm_detailed_%s.png", sanitizeFilename(tag))
+	fs := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
+		if err != nil || wc == nil { return }
+		defer wc.Close()
+		if encErr := png.Encode(wc, out); encErr != nil {
+			dialog.ShowError(encErr, state.window)
+			return
+		}
+		if u := wc.URI(); u != nil {
+			p := u.Path()
+			if strings.TrimSpace(p) == "" { p = u.String() }
+			dialog.ShowInformation("Export complete", fmt.Sprintf("Saved to:\n%s", p), state.window)
+		} else {
+			dialog.ShowInformation("Export complete", "Saved.", state.window)
+		}
+	}, state.window)
+	fs.SetFileName(name)
+	fs.SetFilter(storage.NewExtensionFileFilter([]string{".png"}))
+	fs.Show()
+}
+
 // getExportPlan returns the labels of charts that would be exported by exportAllChartsCombined
 // for the current state. This is a test helper used to validate that exportRespectVisibility and
 // visibility toggles are honored without invoking the file save dialog.
@@ -14369,6 +14561,14 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 		return renderSelfTestChart
 	case state.errorsByURLImgCanvas:
 		return renderErrorsByURLChart
+	case state.detailedPctlImgCanvas:
+		return renderSpeedPercentilesDetailedChart
+	case state.detailedSpeedOverTimeImgCanvas:
+		return renderSpeedOverTimeDetailedChart
+	case state.detailedTopSessionsImgCanvas:
+		return renderSpeedOverTimeTopSessionsChart
+	case state.detailedErrorsByURLImgCanvas:
+		return renderErrorsByURLChart
 	}
 	return nil
 }
@@ -14412,6 +14612,25 @@ func clearRecentFiles(state *uiState) {
 		return
 	}
 	state.app.Preferences().SetString("recentFiles", "")
+}
+
+// sanitizeFilename replaces characters that are unsafe for filenames with '_'.
+func sanitizeFilename(s string) string {
+	if s == "" {
+		return s
+	}
+	// Replace a conservative set of characters
+	repl := func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		}
+		if r < 32 { // control chars
+			return '_'
+		}
+		return r
+	}
+	return strings.Map(repl, s)
 }
 
 // prefs
@@ -14467,6 +14686,9 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("exportRespectVisibility", state.exportRespectVisibility)
 	// Auto-open Detailed tab when a selection exists
 	prefs.SetBool("autoOpenDetailedTab", state.autoOpenDetailedTab)
+	// Detailed tunables
+	prefs.SetInt("detailedMaxSeries", state.detailedMaxSeries)
+	prefs.SetInt("detailedTopSessionsN", state.detailedTopSessionsN)
 	// Persist Detailed tab selections
 	prefs.SetString("detailedSelectedRunTag", strings.TrimSpace(state.detailedSelectedRunTag))
 	if len(state.detailedCompareRunTags) > 0 {
@@ -14556,6 +14778,10 @@ func resetViewerDefaults(state *uiState) {
 
 	// Export behavior
 	state.exportRespectVisibility = true
+
+	// Detailed defaults
+	state.detailedMaxSeries = 8
+	state.detailedTopSessionsN = 4
 
 	// Situation filter back to All
 	state.situation = "All"
@@ -14670,6 +14896,9 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.exportRespectVisibility = prefs.BoolWithFallback("exportRespectVisibility", state.exportRespectVisibility)
 	// Auto-open Detailed tab when a selection exists
 	state.autoOpenDetailedTab = prefs.BoolWithFallback("autoOpenDetailedTab", state.autoOpenDetailedTab)
+	// Detailed tunables
+	if v := prefs.IntWithFallback("detailedMaxSeries", state.detailedMaxSeries); v > 0 { state.detailedMaxSeries = v }
+	if v := prefs.IntWithFallback("detailedTopSessionsN", state.detailedTopSessionsN); v > 0 { state.detailedTopSessionsN = v }
 	// (removed: pctl prefs)
 	// Hidden charts (persisted as JSON array of titles)
 	// Preferred: load hidden chart IDs first
