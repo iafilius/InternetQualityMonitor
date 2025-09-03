@@ -757,15 +757,18 @@ type uiState struct {
 	// Currently selected RunTag in detailed tab
 	detailedSelectedRunTag string
 	// Optional: compare up to 4 batches in detailed tab (RunTags)
-	detailedCompareRunTags        []string
+	detailedCompareRunTags []string
 	// Detailed charts last-rendered canvases for the Selected batch (used for exports)
 	detailedPctlImgCanvas          *canvas.Image
 	detailedSpeedOverTimeImgCanvas *canvas.Image
 	detailedTopSessionsImgCanvas   *canvas.Image
 	detailedErrorsByURLImgCanvas   *canvas.Image
+	// New: Bytes over Time charts (detailed)
+	detailedBytesOverTimeImgCanvas *canvas.Image
+	detailedBytesTopSessionsCanvas *canvas.Image
 	// Tunables for Detailed charts
-	detailedMaxSeries    int // max request series in "Speed over Time"
-	detailedTopSessionsN int // number of sessions in Top Sessions small-multiples
+	detailedMaxSeries             int           // max request series in "Speed over Time"
+	detailedTopSessionsN          int           // number of sessions in Top Sessions small-multiples
 	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
 	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
@@ -3096,6 +3099,10 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportDetailedSpeed := fyne.NewMenuItem("Export Detailed – Speed over Time…", func() { exportChartPNG(state, state.detailedSpeedOverTimeImgCanvas, "detailed_speed_over_time.png") })
 	exportDetailedTop := fyne.NewMenuItem("Export Detailed – Top Sessions…", func() { exportChartPNG(state, state.detailedTopSessionsImgCanvas, "detailed_top_sessions.png") })
 	exportDetailedErrURL := fyne.NewMenuItem("Export Detailed – Errors by URL…", func() { exportChartPNG(state, state.detailedErrorsByURLImgCanvas, "detailed_errors_by_url.png") })
+	exportDetailedBytes := fyne.NewMenuItem("Export Detailed – Bytes over Time…", func() { exportChartPNG(state, state.detailedBytesOverTimeImgCanvas, "detailed_bytes_over_time.png") })
+	exportDetailedBytesTop := fyne.NewMenuItem("Export Detailed – Bytes over Time (Top Sessions)…", func() {
+		exportChartPNG(state, state.detailedBytesTopSessionsCanvas, "detailed_bytes_over_time_top_sessions.png")
+	})
 	exportAllDetailed := fyne.NewMenuItem("Export All Detailed (Selected Batch)…", func() { exportAllDetailedChartsCombined(state) })
 
 	exportChartsSub := fyne.NewMenu("Export Charts",
@@ -3116,6 +3123,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		exportDetailedSpeed,
 		exportDetailedTop,
 		exportDetailedErrURL,
+		exportDetailedBytes,
+		exportDetailedBytesTop,
 		fyne.NewMenuItemSeparator(),
 		exportAllDetailed,
 	)
@@ -3764,18 +3773,28 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Max per-measurement series (1–32)")
 		val := state.detailedMaxSeries
-		if val <= 0 { val = 8 }
+		if val <= 0 {
+			val = 8
+		}
 		entry.SetText(strconv.Itoa(val))
 		form := &widget.Form{Items: []*widget.FormItem{{Text: "Max lines in Speed over Time", Widget: entry}}, OnSubmit: func() {
 			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
-				if iv < 1 { iv = 1 }
-				if iv > 32 { iv = 32 }
+				if iv < 1 {
+					iv = 1
+				}
+				if iv > 32 {
+					iv = 32
+				}
 				state.detailedMaxSeries = iv
 				savePrefs(state)
 				rebuildDetailedCharts(state)
 			}
 		}}
-		d := dialog.NewCustomConfirm("Detailed – Max Lines", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d := dialog.NewCustomConfirm("Detailed – Max Lines", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
 		d.Resize(fyne.NewSize(360, 160))
 		d.Show()
 	}
@@ -3783,18 +3802,28 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		entry := widget.NewEntry()
 		entry.SetPlaceHolder("Top sessions (1–12)")
 		val := state.detailedTopSessionsN
-		if val <= 0 { val = 4 }
+		if val <= 0 {
+			val = 4
+		}
 		entry.SetText(strconv.Itoa(val))
 		form := &widget.Form{Items: []*widget.FormItem{{Text: "Top Sessions count", Widget: entry}}, OnSubmit: func() {
 			if iv, err := strconv.Atoi(strings.TrimSpace(entry.Text)); err == nil {
-				if iv < 1 { iv = 1 }
-				if iv > 12 { iv = 12 }
+				if iv < 1 {
+					iv = 1
+				}
+				if iv > 12 {
+					iv = 12
+				}
 				state.detailedTopSessionsN = iv
 				savePrefs(state)
 				rebuildDetailedCharts(state)
 			}
 		}}
-		d := dialog.NewCustomConfirm("Detailed – Top Sessions", "Save", "Cancel", form, func(ok bool) { if ok { form.OnSubmit() } }, state.window)
+		d := dialog.NewCustomConfirm("Detailed – Top Sessions", "Save", "Cancel", form, func(ok bool) {
+			if ok {
+				form.OnSubmit()
+			}
+		}, state.window)
 		d.Resize(fyne.NewSize(360, 160))
 		d.Show()
 	}
@@ -11033,8 +11062,12 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 	sel := rows[ix]
 	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
 	maxSessions := state.detailedTopSessionsN
-	if maxSessions <= 0 { maxSessions = 4 }
-	if maxSessions > 12 { maxSessions = 12 }
+	if maxSessions <= 0 {
+		maxSessions = 4
+	}
+	if maxSessions > 12 {
+		maxSessions = 12
+	}
 	ss := loadPerRequestSessionsForRunTag(state, sel.RunTag, maxSessions)
 	if len(ss) == 0 {
 		return nil
@@ -11070,7 +11103,7 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 			host = u.Host
 			path = u.EscapedPath()
 		}
-		title := fmt.Sprintf("%d) %s%s — %0.1f MB in %0.2f s (%s)", idx+1, host, path, float64(s.TransferSizeBytes)/1e6, float64(s.TransferTimeMs)/1000.0, ternary(s.HTTPProtocol!="", s.HTTPProtocol, s.ALPN))
+		title := fmt.Sprintf("%d) %s%s — %0.1f MB in %0.2f s (%s)", idx+1, host, path, float64(s.TransferSizeBytes)/1e6, float64(s.TransferTimeMs)/1000.0, ternary(s.HTTPProtocol != "", s.HTTPProtocol, s.ALPN))
 		// Render
 		ch := chart.Chart{
 			Title:      title,
@@ -11079,10 +11112,10 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 			YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: 0, Max: maxY * 1.05}},
 			Series: []chart.Series{
 				chart.ContinuousSeries{
-					Name:     "speed",
-					XValues:  xs,
-					YValues:  ys,
-					Style:    chart.Style{StrokeColor: chart.ColorBlue.WithAlpha(210), StrokeWidth: 1.6, DotWidth: 1.6},
+					Name:    "speed",
+					XValues: xs,
+					YValues: ys,
+					Style:   chart.Style{StrokeColor: chart.ColorBlue.WithAlpha(210), StrokeWidth: 1.6, DotWidth: 1.6},
 				},
 			},
 		}
@@ -11105,6 +11138,169 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 		// Watermark each panel with situation
 		img = drawWatermark(img, "Situation: "+activeSituationLabel(state))
 		// Blit into output
+		draw.Draw(out, image.Rect(0, yOff, fullW, yOff+miniH), img, image.Point{}, draw.Src)
+		yOff += miniH
+	}
+	return out
+}
+
+// renderBytesOverTimeDetailedChart plots cumulative bytes over time per measurement (up to detailedMaxSeries).
+func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, ch := chartSize(state)
+		return blank(cw, ch)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	sel := rows[ix]
+	maxSeries := state.detailedMaxSeries
+	if maxSeries <= 0 {
+		maxSeries = 8
+	}
+	if maxSeries > 32 {
+		maxSeries = 32
+	}
+	seriesSamples := loadPerRequestSpeedSamplesForRunTag(state, sel.RunTag, maxSeries)
+	if len(seriesSamples) == 0 {
+		return nil
+	}
+
+	// Build cumulative bytes series per request
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange, drawing.Color{R: 128, G: 0, B: 128, A: 255}}
+	var series []chart.Series
+	maxY := -math.MaxFloat64
+	for i, ss := range seriesSamples {
+		var cum int64
+		xs := make([]float64, 0, len(ss))
+		ys := make([]float64, 0, len(ss))
+		for _, s := range ss {
+			cum += s.Bytes
+			xs = append(xs, float64(s.TimeMs)/1000.0)
+			ys = append(ys, float64(cum)/1_000_000.0) // MB
+		}
+		for _, v := range ys {
+			if v > maxY {
+				maxY = v
+			}
+		}
+		name := fmt.Sprintf("Req #%d", i+1)
+		col := palette[i%len(palette)].WithAlpha(200)
+		if len(xs) == 1 {
+			x2 := xs[0] + 0.001
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: []float64{ys[0], ys[0]}, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.6, DotWidth: 1.6}})
+		} else {
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.6, DotWidth: 1.6}})
+		}
+	}
+	if maxY <= 0 {
+		return nil
+	}
+	padBottom := 32
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{
+		Title:      "Bytes over Time (MB)",
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      chart.XAxis{Name: "time (s)"},
+		YAxis:      chart.YAxis{Name: "MB", Range: &chart.ContinuousRange{Min: 0, Max: maxY * 1.05}},
+		Series:     series,
+	}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, fmt.Sprintf("Hint: Cumulative bytes per request (up to %d). Dots = measured samples (~100 ms)", maxSeries))
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderBytesOverTimeTopSessionsChart renders small-multiples of cumulative bytes for top sessions.
+func renderBytesOverTimeTopSessionsChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, ch := chartSize(state)
+		return blank(cw, ch)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	sel := rows[ix]
+	maxSessions := state.detailedTopSessionsN
+	if maxSessions <= 0 {
+		maxSessions = 4
+	}
+	if maxSessions > 12 {
+		maxSessions = 12
+	}
+	ss := loadPerRequestSessionsForRunTag(state, sel.RunTag, maxSessions)
+	if len(ss) == 0 {
+		return nil
+	}
+
+	fullW, fullH := chartSize(state)
+	miniH := int(math.Max(200, float64(fullH)/2))
+	outH := miniH * len(ss)
+	out := image.NewRGBA(image.Rect(0, 0, fullW, outH))
+	yOff := 0
+	for idx, s := range ss {
+		var cum int64
+		xs := make([]float64, 0, len(s.Samples))
+		ys := make([]float64, 0, len(s.Samples))
+		maxY := -math.MaxFloat64
+		for _, sp := range s.Samples {
+			cum += sp.Bytes
+			xs = append(xs, float64(sp.TimeMs)/1000.0)
+			v := float64(cum) / 1_000_000.0
+			ys = append(ys, v)
+			if v > maxY {
+				maxY = v
+			}
+		}
+		if maxY <= 0 {
+			maxY = 1
+		}
+		u := parseURLOrNil(s.URL)
+		host, path := "", ""
+		if u != nil {
+			host = u.Host
+			path = u.EscapedPath()
+		}
+		title := fmt.Sprintf("%d) %s%s — %0.1f MB in %0.2f s (%s)", idx+1, host, path, float64(s.TransferSizeBytes)/1e6, float64(s.TransferTimeMs)/1000.0, ternary(s.HTTPProtocol != "", s.HTTPProtocol, s.ALPN))
+		ch := chart.Chart{
+			Title:      title,
+			Background: chart.Style{Padding: chart.Box{Top: 12, Left: 16, Right: 12, Bottom: 28}},
+			XAxis:      chart.XAxis{Name: "time (s)"},
+			YAxis:      chart.YAxis{Name: "MB", Range: &chart.ContinuousRange{Min: 0, Max: maxY * 1.05}},
+			Series:     []chart.Series{chart.ContinuousSeries{XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: chart.ColorGreen.WithAlpha(210), StrokeWidth: 1.6, DotWidth: 1.6}}},
+		}
+		themeChart(&ch)
+		ch.Width = fullW
+		ch.Height = miniH
+		var buf bytes.Buffer
+		if err := ch.Render(chart.PNG, &buf); err != nil {
+			continue
+		}
+		img, err := png.Decode(&buf)
+		if err != nil {
+			continue
+		}
+		if state.showHints && idx == 0 {
+			img = drawHint(img, fmt.Sprintf("Hint: Top %d sessions by size, cumulative bytes; dots show measured samples.", maxSessions))
+		}
+		img = drawWatermark(img, "Situation: "+activeSituationLabel(state))
 		draw.Draw(out, image.Rect(0, yOff, fullW, yOff+miniH), img, image.Point{}, draw.Src)
 		yOff += miniH
 	}
@@ -13406,6 +13602,18 @@ func rebuildDetailedCharts(state *uiState) {
 				widget.NewLabel("No per-request speed samples available for this batch."),
 			))
 		}
+		// 2b) Bytes over Time (cumulative per measurement)
+		if img := renderBytesOverTimeDetailedChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Bytes over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			if len(tags) == 1 {
+				state.detailedBytesOverTimeImgCanvas = canv
+			}
+		}
 		// 3) Top Sessions (small multiples) – speed over time per session
 		if img := renderSpeedOverTimeTopSessionsChart(state); img != nil {
 			img = drawNoteTopLeft(img, "Batch: "+tag)
@@ -13416,6 +13624,18 @@ func rebuildDetailedCharts(state *uiState) {
 			state.detailedChartsBox.Add(container.NewVBox(header, canv))
 			if len(tags) == 1 {
 				state.detailedTopSessionsImgCanvas = canv
+			}
+		}
+		// 3b) Top Sessions – bytes over time (cumulative)
+		if img := renderBytesOverTimeTopSessionsChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Bytes over Time — Top Sessions — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+			if len(tags) == 1 {
+				state.detailedBytesTopSessionsCanvas = canv
 			}
 		}
 		// 4) Errors by URL
@@ -14313,8 +14533,16 @@ func exportAllDetailedChartsCombined(state *uiState) {
 	if img := renderSpeedOverTimeDetailedChart(state); img != nil {
 		imgs = append(imgs, img)
 	}
+	// 2b) Bytes over Time (per measurement)
+	if img := renderBytesOverTimeDetailedChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
 	// 3) Top Sessions
 	if img := renderSpeedOverTimeTopSessionsChart(state); img != nil {
+		imgs = append(imgs, img)
+	}
+	// 3b) Bytes over Time Top Sessions
+	if img := renderBytesOverTimeTopSessionsChart(state); img != nil {
 		imgs = append(imgs, img)
 	}
 	// 4) Errors by URL
@@ -14331,10 +14559,14 @@ func exportAllDetailedChartsCombined(state *uiState) {
 	totalH := 0
 	for _, im := range imgs {
 		b := im.Bounds()
-		if b.Dx() > maxW { maxW = b.Dx() }
+		if b.Dx() > maxW {
+			maxW = b.Dx()
+		}
 		totalH += b.Dy() + 8
 	}
-	if totalH > 0 { totalH -= 8 }
+	if totalH > 0 {
+		totalH -= 8
+	}
 	out := image.NewRGBA(image.Rect(0, 0, maxW, totalH))
 	var bg color.RGBA
 	if strings.EqualFold(screenshotThemeGlobal, "light") {
@@ -14353,13 +14585,17 @@ func exportAllDetailedChartsCombined(state *uiState) {
 		x := (maxW - b.Dx()) / 2
 		draw.Draw(out, image.Rect(x, y, x+b.Dx(), y+b.Dy()), im, b.Min, draw.Over)
 		y += b.Dy()
-		if i != len(imgs)-1 { y += 8 }
+		if i != len(imgs)-1 {
+			y += 8
+		}
 	}
 	// Default filename based on runtag
 	tag := rows[ix].RunTag
 	name := fmt.Sprintf("iqm_detailed_%s.png", sanitizeFilename(tag))
 	fs := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
-		if err != nil || wc == nil { return }
+		if err != nil || wc == nil {
+			return
+		}
 		defer wc.Close()
 		if encErr := png.Encode(wc, out); encErr != nil {
 			dialog.ShowError(encErr, state.window)
@@ -14367,7 +14603,9 @@ func exportAllDetailedChartsCombined(state *uiState) {
 		}
 		if u := wc.URI(); u != nil {
 			p := u.Path()
-			if strings.TrimSpace(p) == "" { p = u.String() }
+			if strings.TrimSpace(p) == "" {
+				p = u.String()
+			}
 			dialog.ShowInformation("Export complete", fmt.Sprintf("Saved to:\n%s", p), state.window)
 		} else {
 			dialog.ShowInformation("Export complete", "Saved.", state.window)
@@ -14569,6 +14807,10 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 		return renderSpeedOverTimeTopSessionsChart
 	case state.detailedErrorsByURLImgCanvas:
 		return renderErrorsByURLChart
+	case state.detailedBytesOverTimeImgCanvas:
+		return renderBytesOverTimeDetailedChart
+	case state.detailedBytesTopSessionsCanvas:
+		return renderBytesOverTimeTopSessionsChart
 	}
 	return nil
 }
@@ -14897,8 +15139,12 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	// Auto-open Detailed tab when a selection exists
 	state.autoOpenDetailedTab = prefs.BoolWithFallback("autoOpenDetailedTab", state.autoOpenDetailedTab)
 	// Detailed tunables
-	if v := prefs.IntWithFallback("detailedMaxSeries", state.detailedMaxSeries); v > 0 { state.detailedMaxSeries = v }
-	if v := prefs.IntWithFallback("detailedTopSessionsN", state.detailedTopSessionsN); v > 0 { state.detailedTopSessionsN = v }
+	if v := prefs.IntWithFallback("detailedMaxSeries", state.detailedMaxSeries); v > 0 {
+		state.detailedMaxSeries = v
+	}
+	if v := prefs.IntWithFallback("detailedTopSessionsN", state.detailedTopSessionsN); v > 0 {
+		state.detailedTopSessionsN = v
+	}
 	// (removed: pctl prefs)
 	// Hidden charts (persisted as JSON array of titles)
 	// Preferred: load hidden chart IDs first
