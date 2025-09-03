@@ -743,6 +743,8 @@ type uiState struct {
 	errorReasonsImgCanvas *canvas.Image // Error Reasons composition (%)
 	// Error reasons (detailed) chart
 	errorReasonsDetailedImgCanvas *canvas.Image // Error Reasons (detailed) composition (%)
+	// Errors by URL (Top N) – bar chart for selected batch
+	errorsByURLImgCanvas          *canvas.Image
 	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
 	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
@@ -1140,6 +1142,8 @@ func chartTitleToID(title string) string {
 		return "plateau_longest"
 	case "Plateau Stable Rate":
 		return "plateau_stable_rate"
+	case "Errors by URL (Top 12)":
+		return "errors_by_url"
 	default:
 		// fallback: slugify
 		t := strings.ToLower(title)
@@ -1277,6 +1281,8 @@ func chartHasData(state *uiState, title string) bool {
 		return state.plLongestImgCanvas != nil && state.plLongestImgCanvas.Image != nil
 	case "Plateau Stable Rate":
 		return state.plStableImgCanvas != nil && state.plStableImgCanvas.Image != nil
+	case "Errors by URL (Top 12)":
+		return state.errorsByURLImgCanvas != nil && state.errorsByURLImgCanvas.Image != nil
 	default:
 		return true
 	}
@@ -2083,6 +2089,7 @@ func main() {
 	state.errorTypesImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errorReasonsImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.errorReasonsDetailedImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.errorsByURLImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolStallShareImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolPartialRateImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
 	state.protocolPartialShareImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
@@ -2099,6 +2106,7 @@ func main() {
 	state.errorTypesImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.errorReasonsImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.errorReasonsDetailedImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.errorsByURLImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolStallShareImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolPartialRateImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.protocolPartialShareImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
@@ -2404,6 +2412,7 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "Error Types (%)", "Share of total errors by error type (DNS, TCP, TLS, HEAD, HTTP, Range). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorTypesImgCanvas, state.errorTypesOverlay)),
 		makeChartSection(state, "Error Reasons (%)", "Share of total errors by normalized reason (e.g., timeout, conn_refused, conn_reset, tls_cert, stall_pre_ttfb, stall_abort, http_4xx, http_5xx, partial_body, dns_failure). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorReasonsImgCanvas, state.errorReasonsOverlay)),
 		makeChartSection(state, "Error Reasons (detailed) (%)", "Share of total errors by detailed reason (e.g., http_404, http_503, tls_cert_expired, tls_cert_untrusted, timeout_connect, timeout_ttfb, timeout_read, conn_reset, dns_no_such_host, other_…). Stacks typically sum to about 100% per batch.", container.NewStack(state.errorReasonsDetailedImgCanvas, state.errorReasonsDetailedOverlay)),
+		makeChartSection(state, "Errors by URL (Top 12)", "Top URLs by error count in the selected batch (pick a row in the table). Helps identify problematic endpoints quickly.", container.NewStack(state.errorsByURLImgCanvas)),
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Version Mix (%)", "Share of requests by negotiated TLS version. Bars typically sum to about 100% across TLS versions per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc8446"+axesTip, container.NewStack(state.tlsVersionMixImgCanvas, state.tlsVersionMixOverlay)),
 		widget.NewSeparator(),
@@ -2844,6 +2853,8 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	exportSLATTFBDelta := fyne.NewMenuItem("Export SLA Compliance Delta – TTFB (pp)…", func() { exportChartPNG(state, state.slaTTFBDeltaImgCanvas, "sla_compliance_delta_ttfb_chart.png") })
 	exportTTFBGap := fyne.NewMenuItem("Export TTFB P95−P50 Gap…", func() { exportChartPNG(state, state.tpctlP95GapImgCanvas, "ttfb_p95_p50_gap_chart.png") })
 	exportErrors := fyne.NewMenuItem("Export Error Rate Chart…", func() { exportChartPNG(state, state.errImgCanvas, "error_rate_chart.png") })
+	// New: per-URL errors
+	exportErrorsByURL := fyne.NewMenuItem("Export Errors by URL…", func() { exportChartPNG(state, state.errorsByURLImgCanvas, "errors_by_url_chart.png") })
 	exportJitter := fyne.NewMenuItem("Export Jitter Chart…", func() { exportChartPNG(state, state.jitterImgCanvas, "jitter_chart.png") })
 	exportCoV := fyne.NewMenuItem("Export CoV Chart…", func() { exportChartPNG(state, state.covImgCanvas, "cov_chart.png") })
 	// Self-test export
@@ -2965,6 +2976,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 
 	errorsSub := fyne.NewMenu("Errors & Variability",
 		exportErrors,
+		exportErrorsByURL,
 		exportJitter,
 		exportCoV,
 	)
@@ -4785,6 +4797,13 @@ func redrawCharts(state *uiState) {
 			_, chh := chartSize(state)
 			state.errorReasonsDetailedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 			state.errorReasonsDetailedImgCanvas.Refresh()
+		}
+		// Errors by URL (Top 12) – selected batch only
+		if img := renderErrorsByURLChart(state); img != nil {
+			state.errorsByURLImgCanvas.Image = img
+			_, chh := chartSize(state)
+			state.errorsByURLImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			state.errorsByURLImgCanvas.Refresh()
 		}
 		ppImg := renderPartialBodyRateByHTTPProtocolChart(state)
 		if ppImg != nil {
@@ -9514,6 +9533,10 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9525,7 +9548,7 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "HTTP Protocol Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "HTTP Protocol Mix (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -9616,6 +9639,10 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	yAxisRange, yTicks := computeYAxisRange(minY, maxY, state.useRelative, false)
 	padBottom := 28
 	switch state.xAxisMode {
@@ -9627,7 +9654,7 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	if state.showHints {
 		padBottom += 18
 	}
-	ch := chart.Chart{Title: fmt.Sprintf("Avg Speed by HTTP Protocol (%s)", unitName), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, fmt.Sprintf("Avg Speed by HTTP Protocol (%s)", unitName)), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: unitName, Range: yAxisRange, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -9701,6 +9728,10 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9712,7 +9743,7 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Stall Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Stall Rate by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -9786,6 +9817,10 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9797,7 +9832,7 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Error Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Error Rate by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -9872,6 +9907,10 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -9883,7 +9922,7 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Error Share by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Error Share by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -10289,6 +10328,10 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10300,7 +10343,7 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Stall Share by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Stall Share by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -10375,6 +10418,10 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10386,7 +10433,7 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Partial Share by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Partial Share by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -10403,6 +10450,111 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 		img = drawHint(img, "Hint: Share of total partial responses per protocol. Typically sums to ~100% across visible protocols.")
 	}
 	return drawWatermark(img, noteUnknownHidden(state, "Situation: "+activeSituationLabel(state)))
+}
+
+// renderErrorsByURLChart draws a horizontal bar chart of top-N URLs by error count for the selected batch.
+// It uses the currently selected row (batch) and displays up to 12 bars sorted by count desc.
+func renderErrorsByURLChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	// Determine active batch index (selectedRow), clamp range
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	bs := rows[ix]
+	if len(bs.ErrorLinesByURL) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	// Collect and sort URLs by count desc
+	type kv struct {
+		k string
+		v int
+	}
+	list := make([]kv, 0, len(bs.ErrorLinesByURL))
+	for u, c := range bs.ErrorLinesByURL {
+		if c > 0 {
+			list = append(list, kv{u, c})
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].v == list[j].v {
+			return list[i].k < list[j].k
+		}
+		return list[i].v > list[j].v
+	})
+	if len(list) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	// Keep top N (12)
+	topN := 12
+	if len(list) > topN {
+		list = list[:topN]
+	}
+	// Reverse for horizontal bar top-down ordering (largest on top)
+	// go-chart draws series in order with categories by X; we'll build Y as categories via stacked dummy approach.
+	// We'll emulate a horizontal bar chart by using a chart.BarChart-like composition with ContinuousSeries across categories index.
+	labels := make([]string, len(list))
+	ys := make([]float64, len(list))
+	for i := range list {
+		// reverse order so highest is first (top)
+		j := len(list) - 1 - i
+		labels[i] = list[j].k
+		ys[i] = float64(list[j].v)
+	}
+	// We'll plot as a vertical bar chart; attach URL labels to each bar (truncated for readability).
+	maxLabel := 36
+	// Single series as bars via chart.ContinuousSeries with style to simulate bars (using chart.BarWidth with XAxis style minor grid?)
+	// go-chart doesn't have BarChart in v2; we'll use chart.BarSeries (exists) if available.
+	// In v2.1.1, chart has BarChart and ValueProvider; but to avoid refactor, emulate bars via chart.BarChart.
+	// We'll construct a BarChart if available in import.
+	values := make([]chart.Value, len(labels))
+	for i := range labels {
+		sURL := labels[i]
+		if len(sURL) > maxLabel {
+			sURL = sURL[:maxLabel-1] + "…"
+		}
+		// Show the count inline with the label for clarity, e.g. "12 • example.com"
+		lbl := fmt.Sprintf("%d • %s", int(ys[i]), sURL)
+		values[i] = chart.Value{Value: ys[i], Label: lbl}
+	}
+	// Build bar chart
+	bc := chart.BarChart{
+		Title:      "Errors by URL (Top 12)",
+		Height:     0, // will set below
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: 110}},
+		YAxis:      chart.YAxis{},
+		XAxis:      chart.Style{},
+		Bars:       values,
+	}
+	// Apply theming
+	themeBarChart(&bc)
+	// Use chart size
+	cw, chh := chartSize(state)
+	bc.Width = cw
+	bc.Height = chh
+	// Custom labels on X axis
+	bc.XAxis = chart.Style{}
+	// Render with custom value labels under bars (use ticks drawn by library based on labels on values)
+	var buf bytes.Buffer
+	if err := bc.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Select a batch row to update this chart. Shows raw error counts per URL (top 12).")
+		// Add a compact note clarifying that bar colors are purely for visual separation
+		img = drawNoteTopLeft(img, "Bars = error count; colors don't encode categories")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
 // renderPartialBodyRateByHTTPProtocolChart draws percentage of partial body requests by HTTP protocol.
@@ -10461,6 +10613,10 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10472,7 +10628,7 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "Partial Body Rate by HTTP Protocol (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "Partial Body Rate by HTTP Protocol (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -10546,6 +10702,10 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10557,7 +10717,7 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "TLS Version Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "TLS Version Mix (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -10631,6 +10791,10 @@ func renderALPNMixChart(state *uiState) image.Image {
 			}
 		}
 	}
+	// Append legend cue for hidden unknowns
+	if s := legendUnknownHiddenSeries(state); s != nil {
+		series = append(series, s)
+	}
 	padBottom := 28
 	switch state.xAxisMode {
 	case "run_tag":
@@ -10642,7 +10806,7 @@ func renderALPNMixChart(state *uiState) image.Image {
 		padBottom += 18
 	}
 	yTicks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
-	ch := chart.Chart{Title: "ALPN Mix (%)", Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
+	ch := chart.Chart{Title: titleUnknownHidden(state, "ALPN Mix (%)"), Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}}, XAxis: xAxis, YAxis: chart.YAxis{Name: "%", Range: &chart.ContinuousRange{Min: 0, Max: 100}, Ticks: yTicks}, Series: series}
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
@@ -12517,6 +12681,68 @@ func drawWatermark(img image.Image, text string) image.Image {
 	return rgba
 }
 
+// drawNoteTopLeft draws a small top-left note (legend-like) with high-contrast theme-aware styling.
+func drawNoteTopLeft(img image.Image, text string) image.Image {
+	if img == nil || strings.TrimSpace(text) == "" {
+		return img
+	}
+	b := img.Bounds()
+	rgba := image.NewRGBA(b)
+	draw.Draw(rgba, b, img, b.Min, draw.Src)
+	pad := 6
+	// Try to use a TTF face; fallback to basicfont
+	var face font.Face
+	if res := theme.DefaultTheme().Font(fyne.TextStyle{}); res != nil {
+		if f, err := opentype.Parse(res.Content()); err == nil {
+			if ff, err2 := opentype.NewFace(f, &opentype.FaceOptions{Size: 13, DPI: 96, Hinting: font.HintingFull}); err2 == nil {
+				face = ff
+			}
+		}
+	}
+	if face == nil {
+		face = basicfont.Face7x13
+	}
+	// Measure text
+	drMeasure := &font.Drawer{Face: face}
+	tw := drMeasure.MeasureString(text).Ceil()
+	m := face.Metrics()
+	asc := m.Ascent.Ceil()
+	desc := m.Descent.Ceil()
+	th := asc + desc
+	if th <= 0 {
+		th = 16
+	}
+	x := b.Min.X + 8
+	yBase := b.Min.Y + 8 + th
+	// Colors: light/dark theme
+	var textCol, shadowCol, boxBG, boxBorder *image.Uniform
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	} else {
+		textCol = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		shadowCol = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 220})
+		boxBG = image.NewUniform(color.RGBA{R: 0, G: 0, B: 0, A: 200})
+		boxBorder = image.NewUniform(color.RGBA{R: 255, G: 255, B: 255, A: 60})
+	}
+	rectOuter := image.Rect(x-pad, yBase-th-pad, x+tw+pad, yBase+pad/2)
+	rectInner := image.Rect(rectOuter.Min.X+1, rectOuter.Min.Y+1, rectOuter.Max.X-1, rectOuter.Max.Y-1)
+	draw.Draw(rgba, rectOuter, boxBorder, image.Point{}, draw.Over)
+	draw.Draw(rgba, rectInner, boxBG, image.Point{}, draw.Over)
+	// Shadow outline
+	outline := [][2]int{{1, 1}, {-1, 1}, {1, -1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+	for _, d := range outline {
+		dr := &font.Drawer{Dst: rgba, Src: shadowCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x + d[0]), Y: fixed.I(yBase - desc + d[1])}}
+		dr.DrawString(text)
+	}
+	// Main text
+	dr := &font.Drawer{Dst: rgba, Src: textCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(yBase - desc)}}
+	dr.DrawString(text)
+	return rgba
+}
+
 // noteUnknownHidden appends a short note to the watermark when '(unknown)' protocols are hidden.
 func noteUnknownHidden(state *uiState, base string) string {
 	if state != nil && state.hideUnknownProtocols {
@@ -12534,6 +12760,16 @@ func titleUnknownHidden(state *uiState, base string) string {
 		return base + " — (unknown hidden)"
 	}
 	return base
+}
+
+// legendUnknownHiddenSeries returns a dummy series so the legend shows a cue when '(unknown)' is hidden.
+// It renders no visible line (NaN values), but its Name appears in the legend.
+func legendUnknownHiddenSeries(state *uiState) chart.Series {
+	if state != nil && state.hideUnknownProtocols {
+		// Empty series: shows in legend, does not render lines nor affect axis ranges
+		return chart.ContinuousSeries{Name: "(unknown hidden)", XValues: []float64{}, YValues: []float64{}}
+	}
+	return nil
 }
 
 // isRegionLight samples the average luminance of the given rectangle to determine if the region is light.
@@ -12855,6 +13091,47 @@ func themeChart(ch *chart.Chart) {
 	// Note: go-chart does not expose a direct LegendStyle here; legend inherits canvas, so background is already themed.
 }
 
+// themeBarChart applies light/dark styling to bar chart backgrounds, axes, ticks, grids, and titles
+// according to screenshotThemeGlobal. It mirrors themeChart but for chart.BarChart.
+func themeBarChart(bc *chart.BarChart) {
+	if bc == nil {
+		return
+	}
+	var (
+		bg, text, grid, axis drawing.Color
+	)
+	if strings.EqualFold(screenshotThemeGlobal, "light") {
+		bg = drawing.ColorFromHex("FAFAFA")
+		text = drawing.ColorFromHex("141414")
+		grid = drawing.ColorFromHex("DDDDDD")
+		axis = drawing.ColorFromHex("BBBBBB")
+	} else {
+		// dark
+		bg = drawing.ColorFromHex("121212")
+		text = drawing.ColorFromHex("F0F0F0")
+		grid = drawing.ColorFromHex("333333")
+		axis = drawing.ColorFromHex("666666")
+	}
+	// Backgrounds
+	bc.Background.FillColor = bg
+	bc.Canvas.FillColor = bg
+	// Axes & ticks
+	bc.XAxis.FontColor = text
+	bc.XAxis.StrokeColor = axis
+	// BarChart doesn't expose TickStyle on XAxis; labels are rendered using XAxis style.
+	bc.YAxis.Style.FontColor = text
+	bc.YAxis.Style.StrokeColor = axis
+	bc.YAxis.TickStyle.FontColor = text
+	// Y major/minor grid
+	bc.YAxis.GridMajorStyle.StrokeColor = grid
+	bc.YAxis.GridMajorStyle.StrokeWidth = 1
+	bc.YAxis.GridMinorStyle.StrokeColor = drawing.Color{R: grid.R, G: grid.G, B: grid.B, A: 110}
+	bc.YAxis.GridMinorStyle.StrokeWidth = 1
+	bc.YAxis.GridMinorStyle.StrokeDashArray = []float64{2, 3}
+	// Title color
+	bc.TitleStyle.FontColor = text
+}
+
 // export PNG
 func exportChartPNG(state *uiState, img *canvas.Image, defaultName string) {
 	if state == nil || state.window == nil || img == nil || img.Image == nil {
@@ -12977,6 +13254,10 @@ func exportAllChartsCombined(state *uiState) {
 	if state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Error Reasons (detailed) (%)")) {
 		renderers = append(renderers, renderErrorReasonsDetailedChart)
 		labels = append(labels, "Error Reasons (detailed) (%)")
+	}
+	if state.errorsByURLImgCanvas != nil && state.errorsByURLImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Errors by URL (Top 12)")) {
+		renderers = append(renderers, renderErrorsByURLChart)
+		labels = append(labels, "Errors by URL (Top 12)")
 	}
 	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("TLS Version Mix (%)")) {
 		renderers = append(renderers, renderTLSVersionMixChart)
@@ -13444,6 +13725,8 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 		return renderChunkedTransferRateChart
 	case state.selfTestImgCanvas:
 		return renderSelfTestChart
+	case state.errorsByURLImgCanvas:
+		return renderErrorsByURLChart
 	}
 	return nil
 }

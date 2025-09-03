@@ -39,6 +39,7 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
  - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
  - Error analytics: “Error Types (%)” composition chart showing share of total errors by type (DNS, TCP, TLS, HEAD, HTTP, Range) per batch; complements per‑protocol error charts.
+ - Per‑URL errors: “Errors by URL (Top 12)” bar chart showing the top URLs by error count in the currently selected batch. Pick a row in the table to update it. Useful to quickly spot problematic endpoints.
 - Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
  - Info popups follow consistent design criteria; see `docs/ui/info_popup_design_criteria.md`.
 
@@ -122,7 +123,12 @@ Notes:
 	- Built-in presets (Everything, Setup Timings, Errors Focus, etc.).
 	- Save current as custom preset… stores your current visible set (by stable chart IDs) with a name. Presets persist across restarts.
 	- Apply/Rename/Delete Custom Preset submenus appear when you have custom presets. The menu title shows the active preset name when your current visibility exactly matches a preset.
-	- Combined export can optionally include only visible charts via Chart Options → "Export only visible charts". You can also hide generic 'Other' categories from Error Reasons charts via Chart Options.
+	- Combined export can optionally include only visible charts via Chart Options → "Export only visible charts". You can also:
+		- Hide generic 'Other' categories from Error Reasons charts via Chart Options → "Hide 'Other' categories".
+		- Hide “(unknown)” protocols across Protocol/TLS/ALPN charts via Chart Options → "Hide '(unknown)' protocols". When enabled:
+			- Chart titles show a suffix “— (unknown hidden)”.
+			- Watermarks note the hidden state.
+			- Legends omit the “(unknown)” series.
 
 ### Selection
 - Selection is session-only: the last clicked batch (RunTag) is remembered only within the current session and restored after reloads during the session. It is not persisted across app restarts.
@@ -278,6 +284,8 @@ Examples:
 - ALPN Mix (%): share of requests by negotiated ALPN (e.g., h2, http/1.1). Sums to ~100% across ALPN values.
 - Chunked Transfer Rate (%): percentage of responses using chunked transfer encoding. Does not add to 100% (a rate, not a share).
 
+Tip: If you enable Chart Options → "Hide '(unknown)' protocols", the affected chart titles will include “— (unknown hidden)”, legends will omit the series, and exports retain the same indication in the watermark.
+
 All are crosshair-enabled, theme-aware, and available in combined exports.
 
 ### Rates vs Shares: how to read percent charts
@@ -384,6 +392,7 @@ Additional protocol/error screenshots:
 - `stall_share_by_http_protocol.png`
 - `partial_share_by_http_protocol.png`
 - `error_types.png`
+ - `errors_by_url.png`
 
 SLA examples:
 
