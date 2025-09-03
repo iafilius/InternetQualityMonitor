@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -674,6 +675,8 @@ type uiState struct {
 	app      fyne.App
 	window   fyne.Window
 	filePath string
+	// main tabs container (for programmatic navigation)
+	tabs *container.AppTabs
 
 	situation  string
 	batchesN   int
@@ -744,7 +747,17 @@ type uiState struct {
 	// Error reasons (detailed) chart
 	errorReasonsDetailedImgCanvas *canvas.Image // Error Reasons (detailed) composition (%)
 	// Errors by URL (Top N) – bar chart for selected batch
-	errorsByURLImgCanvas          *canvas.Image
+	errorsByURLImgCanvas *canvas.Image
+
+	// Detailed Batch Charts tab: UI and state
+	// Dedicated canvas container for detailed per-batch charts
+	detailedChartsBox *fyne.Container
+	// Batch selector for detailed tab (single-select)
+	detailedSelect *widget.Select
+	// Currently selected RunTag in detailed tab
+	detailedSelectedRunTag string
+	// Optional: compare up to 4 batches in detailed tab (RunTags)
+	detailedCompareRunTags        []string
 	protocolStallShareImgCanvas   *canvas.Image // Stall share by HTTP protocol (%) – sums to ~100%
 	protocolPartialRateImgCanvas  *canvas.Image // Partial body rate by HTTP protocol (%)
 	protocolPartialShareImgCanvas *canvas.Image // Partial share by HTTP protocol (%) – sums to ~100%
@@ -757,6 +770,10 @@ type uiState struct {
 
 	// internal guards
 	initializing bool
+
+	// preferences
+	// When enabled, if a Detailed selection exists at startup/load, auto-switch to the Detailed tab
+	autoOpenDetailedTab bool
 
 	// new charts
 	tailRatioImgCanvas     *canvas.Image // P99/P50 Speed ratio
@@ -1749,6 +1766,11 @@ func main() {
 	state.showPreTTFB = a.Preferences().BoolWithFallback("showPreTTFB", true)
 	// Auto-hide Pre‑TTFB when metric is all zero (default: false)
 	state.autoHidePreTTFB = a.Preferences().BoolWithFallback("autoHidePreTTFB", false)
+	// Restore Detailed tab selections
+	state.detailedSelectedRunTag = strings.TrimSpace(a.Preferences().StringWithFallback("detailedSelectedRunTag", ""))
+	if cmp := strings.TrimSpace(a.Preferences().StringWithFallback("detailedCompareRunTags", "")); cmp != "" {
+		state.detailedCompareRunTags = strings.Split(cmp, "\n")
+	}
 	// If CLI provided, override and persist
 	if v := strings.ToLower(strings.TrimSpace(showPretffbCLI)); v == "true" || v == "false" {
 		state.showPreTTFB = (v == "true")
@@ -2504,12 +2526,57 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 	// Remove wide minimums to allow shrinking the window freely
 	chartsScroll.SetMinSize(fyne.NewSize(0, 0))
 	state.chartsScroll = chartsScroll
-	// tabs: Batches | Charts
+	// Build Detailed Batch Charts tab
+	// Selector: list available RunTags from filtered summaries
+	buildDetailedTab := func() *container.TabItem {
+		// Options from current summaries
+		rows := filteredSummaries(state)
+		opts := make([]string, 0, len(rows))
+		for _, r := range rows {
+			opts = append(opts, r.RunTag)
+		}
+		if state.detailedSelect == nil {
+			state.detailedSelect = widget.NewSelect(opts, func(val string) {
+				state.detailedSelectedRunTag = val
+				rebuildDetailedCharts(state)
+			})
+			state.detailedSelect.PlaceHolder = "Pick a batch (RunTag)"
+		} else {
+			state.detailedSelect.Options = opts
+			state.detailedSelect.Refresh()
+		}
+		// Preselect the last table selection if possible
+		if state.detailedSelectedRunTag == "" && state.selectedRow >= 0 {
+			rows := filteredSummaries(state)
+			if state.selectedRow < len(rows) {
+				state.detailedSelectedRunTag = rows[state.selectedRow].RunTag
+				state.detailedSelect.SetSelected(state.detailedSelectedRunTag)
+			}
+		}
+		// Compare button (optional, up to 4)
+		compareBtn := widget.NewButton("Compare…", func() {
+			showCompareDialog(state)
+		})
+		// Charts container
+		if state.detailedChartsBox == nil {
+			state.detailedChartsBox = container.NewVBox()
+		}
+		// Build top bar for detailed tab: label + selector + spacer + Compare button
+		batchLbl := widget.NewLabel("Batch:")
+		bar := container.New(layout.NewHBoxLayout(), batchLbl, state.detailedSelect, layout.NewSpacer(), compareBtn)
+		wrap := container.NewBorder(bar, nil, nil, nil, container.NewVScroll(state.detailedChartsBox))
+		return container.NewTabItem("Detailed Batch Charts", wrap)
+	}
+
+	// tabs: Batches | BatchAvg Charts | Detailed Batch Charts
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Batches", state.table),
-		container.NewTabItem("Charts", chartsScroll),
+		container.NewTabItem("BatchAvg Charts", chartsScroll),
+		buildDetailedTab(),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
+	// keep a reference for programmatic navigation
+	state.tabs = tabs
 	// persist selected tab on change
 	tabs.OnSelected = func(ti *container.TabItem) {
 		if state != nil && state.app != nil {
@@ -4008,6 +4075,20 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 	dataScopeItem := fyne.NewMenuItem("Data Scope", nil)
 	dataScopeItem.ChildMenu = dataScopeMenu
 
+	// Detailed tab behavior: auto-open when a selection exists
+	autoOpenDetailedLabel := func() string {
+		if state.autoOpenDetailedTab {
+			return "Auto-open Detailed tab when selection exists ✓"
+		}
+		return "Auto-open Detailed tab when selection exists"
+	}
+	autoOpenDetailedToggle := fyne.NewMenuItem(autoOpenDetailedLabel(), func() {
+		state.autoOpenDetailedTab = !state.autoOpenDetailedTab
+		savePrefs(state)
+		// Rebuild menus for updated checkmark
+		go func() { time.Sleep(30 * time.Millisecond); fyne.Do(func() { buildMenus(state, fileLabel) }) }()
+	})
+
 	// Reset all settings to defaults
 	resetAll := fyne.NewMenuItem("Reset all settings to defaults…", func() {
 		confirm := dialog.NewConfirm("Reset settings", "This will reset viewer settings to defaults (does not modify data). Continue?", func(ok bool) {
@@ -4031,6 +4112,7 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		axesUnitsItem,
 		thresholdsItem,
 		dataScopeItem,
+		autoOpenDetailedToggle,
 		resetAll,
 		fyne.NewMenuItemSeparator(),
 		themeSubItem,
@@ -4209,6 +4291,41 @@ func loadAll(state *uiState, fileLabel *widget.Label) {
 			}
 		}
 		state.table.Refresh()
+	}
+	// Update Detailed tab selector options and preselect current row's RunTag if available
+	if state.detailedSelect != nil {
+		rows := filteredSummaries(state)
+		opts := make([]string, 0, len(rows))
+		for _, r := range rows {
+			opts = append(opts, r.RunTag)
+		}
+		state.detailedSelect.Options = opts
+		// If a saved selection exists in prefs and is present, prefer it
+		if tag := strings.TrimSpace(state.detailedSelectedRunTag); tag != "" {
+			for _, o := range opts {
+				if o == tag {
+					state.detailedSelect.SetSelected(tag)
+					break
+				}
+			}
+		} else if state.selectedRow >= 0 && state.selectedRow < len(rows) {
+			state.detailedSelectedRunTag = rows[state.selectedRow].RunTag
+			state.detailedSelect.SetSelected(state.detailedSelectedRunTag)
+		}
+		state.detailedSelect.Refresh()
+		// Ensure charts reflect latest selection/options
+		rebuildDetailedCharts(state)
+		// If enabled, auto-switch to Detailed tab when a selection exists
+		if state.autoOpenDetailedTab && state.tabs != nil {
+			if strings.TrimSpace(state.detailedSelectedRunTag) != "" || len(state.detailedCompareRunTags) > 0 {
+				// Detailed tab index is 2
+				state.tabs.SelectIndex(2)
+				// Persist selection
+				if state.app != nil {
+					state.app.Preferences().SetInt("selectedTabIndex", 2)
+				}
+			}
+		}
 	}
 	updateColumnVisibility(state)
 	redrawCharts(state)
@@ -10557,6 +10674,208 @@ func renderErrorsByURLChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderSpeedPercentilesDetailedChart draws a simple bar chart of speed percentiles
+// (P25, P50, P75, P90, P95, P99) for the currently selected batch in the Detailed tab.
+// Values are converted from kbps to the user's chosen unit.
+func renderSpeedPercentilesDetailedChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	bs := rows[ix]
+
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	// Collect percentiles in fixed order
+	type pv struct {
+		name string
+		val  float64
+	}
+	all := []pv{
+		{"P25", bs.AvgP25Speed},
+		{"P50", bs.AvgP50Speed},
+		{"P75", bs.AvgP75Speed},
+		{"P90", bs.AvgP90Speed},
+		{"P95", bs.AvgP95Speed},
+		{"P99", bs.AvgP99Speed},
+	}
+	values := make([]chart.Value, 0, len(all))
+	nonZero := 0
+	for _, p := range all {
+		v := p.val * factor
+		if p.val > 0 {
+			nonZero++
+		}
+		// Always include the bar (even if zero) to keep ordering consistent
+		values = append(values, chart.Value{Value: v, Label: fmt.Sprintf("%s — %.1f %s", p.name, v, unitName)})
+	}
+	if nonZero == 0 {
+		// Nothing meaningful to show
+		return nil
+	}
+	// Build bar chart
+	bc := chart.BarChart{
+		Title:      fmt.Sprintf("Speed Percentiles (%s)", unitName),
+		Height:     0,
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: 60}},
+		YAxis:      chart.YAxis{},
+		XAxis:      chart.Style{},
+		Bars:       values,
+	}
+	themeBarChart(&bc)
+	cw, chh := chartSize(state)
+	bc.Width = cw
+	bc.Height = chh
+	var buf bytes.Buffer
+	if err := bc.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Per-batch speed percentiles across requests. Unit follows Settings → Speed Unit.")
+		img = drawNoteTopLeft(img, "Bars show P25…P99 speeds")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// loadPerRequestSpeedSamplesForRunTag scans the results JSONL and returns up to maxSeries
+// per-request speed sample arrays for the given runTag. Each inner slice contains the
+// TransferSpeedSamples for one request in that batch. Returns nil if none found or on error.
+func loadPerRequestSpeedSamplesForRunTag(state *uiState, runTag string, maxSeries int) [][]monitor.SpeedSample {
+	if state == nil || strings.TrimSpace(state.filePath) == "" || strings.TrimSpace(runTag) == "" || maxSeries <= 0 {
+		return nil
+	}
+	f, err := os.Open(state.filePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	// Increase buffer for long lines
+	const maxLine = 10 * 1024 * 1024
+	buf := make([]byte, 0, 1*1024*1024)
+	scanner.Buffer(buf, maxLine)
+	out := make([][]monitor.SpeedSample, 0, maxSeries)
+	for scanner.Scan() {
+		if len(out) >= maxSeries {
+			break
+		}
+		line := scanner.Bytes()
+		// Decode minimally into ResultEnvelope
+		var env monitor.ResultEnvelope
+		if err := json.Unmarshal(line, &env); err != nil {
+			continue
+		}
+		if env.Meta == nil || env.SiteResult == nil {
+			continue
+		}
+		if env.Meta.RunTag != runTag {
+			continue
+		}
+		if len(env.SiteResult.TransferSpeedSamples) == 0 {
+			continue
+		}
+		// Copy to avoid retaining backing array from decoder
+		ss := make([]monitor.SpeedSample, len(env.SiteResult.TransferSpeedSamples))
+		copy(ss, env.SiteResult.TransferSpeedSamples)
+		out = append(out, ss)
+	}
+	return out
+}
+
+// renderSpeedOverTimeDetailedChart plots per-request measured speed over time (100 ms samples)
+// for the currently selected batch in the Detailed tab. X-axis is time (s), Y-axis is speed
+// in the user's selected unit. Up to 8 request series are shown to limit clutter.
+func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	sel := rows[ix]
+	unitName, factor := speedUnitNameAndFactor(state.speedUnit)
+	const maxSeries = 8
+	seriesSamples := loadPerRequestSpeedSamplesForRunTag(state, sel.RunTag, maxSeries)
+	if len(seriesSamples) == 0 {
+		// Nothing to show
+		return nil
+	}
+
+	// Build series for chart: use seconds on X for readability
+	palette := []drawing.Color{chart.ColorBlue, chart.ColorGreen, chart.ColorRed, chart.ColorAlternateGray, chart.ColorBlack, chart.ColorYellow, chart.ColorOrange, drawing.Color{R: 128, G: 0, B: 128, A: 255}}
+	var series []chart.Series
+	minY := 0.0
+	maxY := -math.MaxFloat64
+	for i, ss := range seriesSamples {
+		xs := make([]float64, 0, len(ss))
+		ys := make([]float64, 0, len(ss))
+		for _, s := range ss {
+			// time in seconds for X
+			xs = append(xs, float64(s.TimeMs)/1000.0)
+			ys = append(ys, s.Speed*factor)
+		}
+		// Track Y range
+		for _, v := range ys {
+			if v > maxY {
+				maxY = v
+			}
+		}
+		name := fmt.Sprintf("Req #%d", i+1)
+		col := palette[i%len(palette)].WithAlpha(200)
+		// When only a single point exists, pad to render
+		if len(xs) == 1 {
+			x2 := xs[0] + 0.001
+			ys = append([]float64{ys[0]}, ys[0])
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: []float64{xs[0], x2}, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.8, DotWidth: 0}})
+		} else {
+			series = append(series, chart.ContinuousSeries{Name: name, XValues: xs, YValues: ys, Style: chart.Style{StrokeColor: col, StrokeWidth: 1.8, DotWidth: 0}})
+		}
+	}
+	// Guard against all-zeros
+	if maxY <= 0 {
+		return nil
+	}
+
+	padBottom := 32
+	if state.showHints {
+		padBottom += 18
+	}
+	ch := chart.Chart{
+		Title:      fmt.Sprintf("Speed over Time (%s)", unitName),
+		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
+		XAxis:      chart.XAxis{Name: "time (s)"},
+		YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: minY, Max: maxY * 1.05}},
+		Series:     series,
+	}
+	themeChart(&ch)
+	cw, chh := chartSize(state)
+	ch.Width, ch.Height = cw, chh
+	var buf bytes.Buffer
+	if err := ch.Render(chart.PNG, &buf); err != nil {
+		return blank(cw, chh)
+	}
+	img, err := png.Decode(&buf)
+	if err != nil {
+		return blank(cw, chh)
+	}
+	if state.showHints {
+		img = drawHint(img, "Hint: Thin lines are individual requests (up to 8). Unit follows Settings → Speed Unit.")
+		img = drawNoteTopLeft(img, "Samples at ~100 ms interval; relative time from request start")
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
 // renderPartialBodyRateByHTTPProtocolChart draws percentage of partial body requests by HTTP protocol.
 func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
@@ -12762,6 +13081,165 @@ func titleUnknownHidden(state *uiState, base string) string {
 	return base
 }
 
+// rebuildDetailedCharts refreshes the Detailed Batch Charts tab content based on
+// the selected RunTag (single) or the compare selection (up to 4 RunTags).
+// Initial implementation: render "Errors by URL (Top 12)" per chosen batch.
+func rebuildDetailedCharts(state *uiState) {
+	if state == nil || state.detailedChartsBox == nil {
+		return
+	}
+	rows := filteredSummaries(state)
+	// Helper to find row index by RunTag
+	findIndex := func(tag string) int {
+		for i, r := range rows {
+			if r.RunTag == tag {
+				return i
+			}
+		}
+		return -1
+	}
+	// Decide which tags to render
+	var tags []string
+	if len(state.detailedCompareRunTags) > 0 {
+		// Honor compare list (cap at 4)
+		if len(state.detailedCompareRunTags) > 4 {
+			tags = append(tags, state.detailedCompareRunTags[:4]...)
+		} else {
+			tags = append(tags, state.detailedCompareRunTags...)
+		}
+	} else if strings.TrimSpace(state.detailedSelectedRunTag) != "" {
+		tags = []string{state.detailedSelectedRunTag}
+	} else if len(rows) > 0 {
+		tags = []string{rows[0].RunTag}
+	}
+
+	// Clear previous content
+	state.detailedChartsBox.Objects = nil
+
+	if len(tags) == 0 || len(rows) == 0 {
+		// Nothing to show
+		msg := "No batches available."
+		if len(rows) > 0 {
+			msg = "Pick a batch (RunTag) to view detailed charts."
+		}
+		state.detailedChartsBox.Add(widget.NewLabel(msg))
+		state.detailedChartsBox.Refresh()
+		return
+	}
+
+	// Render per-tag charts (vertical stack). Order: Speed Percentiles, then Errors by URL.
+	prevSel := state.selectedRow
+	for _, tag := range tags {
+		ix := findIndex(tag)
+		if ix < 0 {
+			continue
+		}
+		state.selectedRow = ix
+		// 1) Speed Percentiles
+		if img := renderSpeedPercentilesDetailedChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Speed Percentiles — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+		} else {
+			// If all percentiles are zero/missing, note it
+			state.detailedChartsBox.Add(container.NewVBox(
+				widget.NewLabelWithStyle("Speed Percentiles — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				widget.NewLabel("No percentile data available for this batch."),
+			))
+		}
+		// 2) Speed over Time (per measurement)
+		if img := renderSpeedOverTimeDetailedChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+		} else {
+			state.detailedChartsBox.Add(container.NewVBox(
+				widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				widget.NewLabel("No per-request speed samples available for this batch."),
+			))
+		}
+		// 3) Errors by URL
+		if len(rows[ix].ErrorLinesByURL) == 0 {
+			state.detailedChartsBox.Add(container.NewVBox(
+				widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				widget.NewLabel("No errors recorded for this batch."),
+			))
+		} else if img := renderErrorsByURLChart(state); img != nil {
+			img = drawNoteTopLeft(img, "Batch: "+tag)
+			canv := canvas.NewImageFromImage(img)
+			canv.FillMode = canvas.ImageFillContain
+			canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+			header := widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			state.detailedChartsBox.Add(container.NewVBox(header, canv))
+		}
+	}
+	// Restore previous selection
+	state.selectedRow = prevSel
+	state.detailedChartsBox.Refresh()
+}
+
+// showCompareDialog lets the user pick up to four RunTags to compare in the Detailed tab.
+func showCompareDialog(state *uiState) {
+	if state == nil || state.window == nil {
+		return
+	}
+	rows := filteredSummaries(state)
+	if len(rows) == 0 {
+		dialog.ShowInformation("Compare Batches", "No batches available to compare.", state.window)
+		return
+	}
+	// Build options and initial selection map
+	options := make([]string, 0, len(rows))
+	for _, r := range rows {
+		options = append(options, r.RunTag)
+	}
+	selectedSet := map[string]bool{}
+	for _, t := range state.detailedCompareRunTags {
+		selectedSet[t] = true
+	}
+	// UI: checklist of RunTags
+	checks := make([]*widget.Check, 0, len(options))
+	list := container.NewVBox(widget.NewLabel("Select up to 4 batches to compare:"))
+	for _, opt := range options {
+		opt := opt // capture
+		chk := widget.NewCheck(opt, func(bool) {})
+		if selectedSet[opt] {
+			chk.SetChecked(true)
+		}
+		checks = append(checks, chk)
+		list.Add(chk)
+	}
+	// Confirm dialog
+	d := dialog.NewCustomConfirm("Compare Batches", "Save", "Cancel", list, func(ok bool) {
+		if !ok {
+			return
+		}
+		// Gather selection
+		sel := make([]string, 0, 4)
+		for _, c := range checks {
+			if c.Checked {
+				sel = append(sel, c.Text)
+			}
+		}
+		if len(sel) > 4 {
+			dialog.ShowInformation("Compare Batches", "Please select at most 4 batches.", state.window)
+			// Re-open to let user adjust
+			showCompareDialog(state)
+			return
+		}
+		state.detailedCompareRunTags = sel
+		// Rebuild charts with new selection
+		rebuildDetailedCharts(state)
+	}, state.window)
+	d.Show()
+}
+
 // legendUnknownHiddenSeries returns a dummy series so the legend shows a cue when '(unknown)' is hidden.
 // It renders no visible line (NaN values), but its Name appears in the legend.
 func legendUnknownHiddenSeries(state *uiState) chart.Series {
@@ -13823,6 +14301,15 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showQualColumn", state.showQualColumn)
 	// Export behavior
 	prefs.SetBool("exportRespectVisibility", state.exportRespectVisibility)
+	// Auto-open Detailed tab when a selection exists
+	prefs.SetBool("autoOpenDetailedTab", state.autoOpenDetailedTab)
+	// Persist Detailed tab selections
+	prefs.SetString("detailedSelectedRunTag", strings.TrimSpace(state.detailedSelectedRunTag))
+	if len(state.detailedCompareRunTags) > 0 {
+		prefs.SetString("detailedCompareRunTags", strings.Join(state.detailedCompareRunTags, "\n"))
+	} else {
+		prefs.SetString("detailedCompareRunTags", "")
+	}
 	// (removed: pctl prefs)
 	// Calibration tolerance
 	prefs.SetInt("calibTolerancePct", state.calibTolerancePct)
@@ -14017,6 +14504,8 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showQualColumn = prefs.BoolWithFallback("showQualColumn", state.showQualColumn)
 	// Export behavior
 	state.exportRespectVisibility = prefs.BoolWithFallback("exportRespectVisibility", state.exportRespectVisibility)
+	// Auto-open Detailed tab when a selection exists
+	state.autoOpenDetailedTab = prefs.BoolWithFallback("autoOpenDetailedTab", state.autoOpenDetailedTab)
 	// (removed: pctl prefs)
 	// Hidden charts (persisted as JSON array of titles)
 	// Preferred: load hidden chart IDs first
