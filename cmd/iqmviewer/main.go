@@ -2735,8 +2735,45 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 			savePrefs(state)
 		})
 		groupErrs.SetChecked(state.detailedErrorsGroupByHost)
-		// Simplified bar (no visibility toggles here; moved to Settings menu)
-		barInner := container.New(layout.NewHBoxLayout(), batchLbl, state.detailedSelect, layout.NewSpacer(), widget.NewLabel("Host:"), hostSelect, groupErrs, layout.NewSpacer(), compareBtn)
+		// Info button explaining Detailed charts & markers
+		infoBtn := widget.NewButtonWithIcon("Info", theme.InfoIcon(), func() {
+			help := `Detailed Batch Charts
+
+These charts drill into an individual batch (RunTag) with per-request time series and distribution detail:
+
+1. Percentiles: Latency/speed distribution percentiles across samples in the batch. Shows how typical vs worst/best measurements behave.
+2. Speed over Time: Per‑request instantaneous or sampled transfer speed (dots ~100 ms sampling). Thin colored series = individual HTTP sessions (capped by Detailed Max Series). Red vertical line = TTFB (Time To First Byte) for that session; it marks when the first response byte arrived. Orange translucent band = stall period (transfer stalled near end of session).
+3. Bytes over Time: Cumulative bytes transferred over time for each request.
+4. Top Sessions (Speed / Bytes): Small multiples of the heaviest sessions, helpful to compare different hosts/paths and protocols.
+5. Errors by URL: Aggregated error counts for URLs (optionally grouped by host) to spot failing endpoints.
+
+Vertical TTFB Line
+The vertical red line spans the plot height to remain visible even when values are small, so it can appear to dip into the padding area (this is expected). You can disable/enable it via: Menu → Settings → Detailed Charts → "Show TTFB Markers".
+
+Why TTFB Matters
+TTFB isolates server + network request latency before payload transfer. Higher TTFB often indicates backend slowness, DNS, handshake, TLS, or proxy delays.
+
+Key Concepts & References
+• TTFB (Time To First Byte): https://developer.mozilla.org/en-US/docs/Glossary/Time_to_first_byte
+• Web Performance (Resource Timing): https://www.w3.org/TR/resource-timing-2/
+• Network Waterfalls & Latency: https://web.dev/navigation-and-resource-timing/
+• Percentiles in Performance Analysis: (Google) https://support.google.com/webmasters/answer/9205520
+
+Reading the Charts
+• Clustering of early red lines suggests consistent server responsiveness; wide spread suggests variable origin or network delay.
+• Frequent or long orange stall bands may indicate congestion, head-of-line blocking, or buffering at proxy/server.
+• Diverging percentiles (P95 far from median) indicates volatility needing investigation.
+
+Tips
+• Use host filter to narrow error analysis.
+• Adjust Detailed Max Series in Settings to see more or fewer per-request lines.
+• Toggle chart types and TTFB markers quickly from the Detailed Charts submenu.
+`
+			showChartInfoWindow(state, "Detailed Batch Charts – Info", help)
+		})
+		infoBtn.Importance = widget.LowImportance
+		// Simplified bar now includes info button
+		barInner := container.New(layout.NewHBoxLayout(), batchLbl, state.detailedSelect, infoBtn, layout.NewSpacer(), widget.NewLabel("Host:"), hostSelect, groupErrs, layout.NewSpacer(), compareBtn)
 		wrap := container.NewBorder(barInner, nil, nil, nil, container.NewVScroll(state.detailedChartsBox))
 		return container.NewTabItem("Detailed Batch Charts", wrap)
 	}
@@ -14216,6 +14253,24 @@ func rebuildDetailedCharts(state *uiState) {
 			continue
 		}
 		state.selectedRow = ix
+		// helper to build a header with info button
+		makeDetailHeader := func(title, help string) *fyne.Container {
+			lbl := widget.NewLabelWithStyle(title+" — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			btn := widget.NewButtonWithIcon("Info", theme.InfoIcon(), func() { showChartInfoWindow(state, title+" — "+tag+" – Info", help) })
+			btn.Importance = widget.LowImportance
+			return container.New(layout.NewHBoxLayout(), lbl, layout.NewSpacer(), btn)
+		}
+		// Reusable reference URLs
+		refTTFB := "TTFB: https://developer.mozilla.org/en-US/docs/Glossary/Time_to_first_byte\nResource Timing: https://www.w3.org/TR/resource-timing-2/\nPerformance Analysis: https://web.dev/navigation-and-resource-timing/"
+		refPercentiles := "Percentiles guidance: https://support.google.com/webmasters/answer/9205520"
+		refHTTP := "HTTP Semantics: https://www.rfc-editor.org/rfc/rfc9110"
+		// Chart-specific help texts
+		helpPercentiles := "Speed Percentiles (per batch)\n\nShows distribution percentiles of measured transfer speed (or derived metric) for this batch: median (P50), P75, P90, P95, P99 etc (depending on what the renderer includes). Wider gaps between high percentiles and median indicate volatility or tail latency issues.\n\nReading Tips:\n• A tight band = consistent performance.\n• Rising high-percentile curve vs stable median = sporadic slow outliers.\n\n" + refPercentiles
+		helpSpeedOverTime := "Speed over Time (per request samples)\n\nPlots instantaneous (sampled ~100 ms) speeds for each included HTTP session. Thin colored series correspond to individual sessions (capped by Detailed Max Series setting).\n\nMarkers & Overlays:\n• Red vertical line = Time To First Byte (TTFB) for that session (when first response byte arrived).\n• Orange translucent band = span where transfer was detected as stalled.\n\nYou can toggle the red TTFB marker globally: Settings → Detailed Charts → \"Show TTFB Markers\".\n\nInterpretation:\n• Early clustered TTFB lines suggest stable origin/proxy latency.\n• Wide spread in TTFB lines hints at DNS, handshake, congestion, or backend variance.\n• Frequent stall bands may indicate network buffering or server-side throttling.\n\n" + refTTFB
+		helpBytesOverTime := "Bytes over Time (cumulative)\n\nShows cumulative bytes transferred for each HTTP session over time. Slopes reflect throughput; plateaus indicate idle or stalled intervals.\n\nMarkers & Overlays (when enabled):\n• Red vertical line = session TTFB (toggle in Settings).\n• Orange band = detected stall period near tail.\n\nUse to compare ramp-up behavior, early slow starts (e.g., TLS warm-up), or mid-transfer stalls.\n\n" + refTTFB
+		helpTopSessionsSpeed := "Top Sessions (Speed)\n\nSmall multiples focusing on the top sessions by transfer size or ranking metric (speed view). Each panel is a miniature \"Speed over Time\" with identical interpretations: red TTFB line (toggleable), orange stall band, sampled dots.\n\nCompare protocol (ALPN) differences, host/path impact, and initial latency patterns side-by-side.\n\n" + refTTFB + "\n" + refHTTP
+		helpTopSessionsBytes := "Top Sessions (Bytes)\n\nSmall multiples of cumulative bytes per top session. Useful for spotting which flows dominate bandwidth and whether any suffer from late stalls (orange bands) or delayed starts (late TTFB lines).\n\n" + refTTFB
+		helpErrors := "Errors by URL (Top 12)\n\nBar chart of error occurrence counts for this batch, optionally grouped by host. Helps identify failing endpoints or disproportionate error contributors.\n\nUsage:\n• Apply Host filter or group by host for aggregation.\n• Investigate spikes by correlating with latency or stall charts.\n\nReferences:\n" + refHTTP
 		// Percentiles
 		if state.showDetailedPercentiles {
 			if img := renderSpeedPercentilesDetailedChart(state); img != nil {
@@ -14223,13 +14278,14 @@ func rebuildDetailedCharts(state *uiState) {
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Speed Percentiles — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Speed Percentiles", helpPercentiles)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedPctlImgCanvas = canv
 				}
 			} else {
-				state.detailedChartsBox.Add(container.NewVBox(widget.NewLabelWithStyle("Speed Percentiles — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), widget.NewLabel("No percentile data available for this batch.")))
+				header := makeDetailHeader("Speed Percentiles", helpPercentiles)
+				state.detailedChartsBox.Add(container.NewVBox(header, widget.NewLabel("No percentile data available for this batch.")))
 			}
 		}
 		// Speed over time
@@ -14239,13 +14295,14 @@ func rebuildDetailedCharts(state *uiState) {
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Speed over Time", helpSpeedOverTime)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedSpeedOverTimeImgCanvas = canv
 				}
 			} else {
-				state.detailedChartsBox.Add(container.NewVBox(widget.NewLabelWithStyle("Speed over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), widget.NewLabel("No per-request speed samples available for this batch.")))
+				header := makeDetailHeader("Speed over Time", helpSpeedOverTime)
+				state.detailedChartsBox.Add(container.NewVBox(header, widget.NewLabel("No per-request speed samples available for this batch.")))
 			}
 		}
 		// Bytes over time
@@ -14255,7 +14312,7 @@ func rebuildDetailedCharts(state *uiState) {
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Bytes over Time — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Bytes over Time", helpBytesOverTime)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedBytesOverTimeImgCanvas = canv
@@ -14269,7 +14326,7 @@ func rebuildDetailedCharts(state *uiState) {
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Speed over Time — Top Sessions — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Speed over Time — Top Sessions", helpTopSessionsSpeed)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedTopSessionsImgCanvas = canv
@@ -14283,7 +14340,7 @@ func rebuildDetailedCharts(state *uiState) {
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Bytes over Time — Top Sessions — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Bytes over Time — Top Sessions", helpTopSessionsBytes)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedBytesTopSessionsCanvas = canv
@@ -14293,13 +14350,14 @@ func rebuildDetailedCharts(state *uiState) {
 		// Errors by URL
 		if state.showDetailedErrorsByURL {
 			if len(rows[ix].ErrorLinesByURL) == 0 {
-				state.detailedChartsBox.Add(container.NewVBox(widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), widget.NewLabel("No errors recorded for this batch.")))
+				header := makeDetailHeader("Errors by URL (Top 12)", helpErrors)
+				state.detailedChartsBox.Add(container.NewVBox(header, widget.NewLabel("No errors recorded for this batch.")))
 			} else if img := renderErrorsByURLChart(state); img != nil {
 				img = drawNoteTopLeft(img, "Batch: "+tag)
 				canv := canvas.NewImageFromImage(img)
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
-				header := widget.NewLabelWithStyle("Errors by URL (Top 12) — "+tag, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				header := makeDetailHeader("Errors by URL (Top 12)", helpErrors)
 				state.detailedChartsBox.Add(container.NewVBox(header, canv))
 				if len(tags) == 1 {
 					state.detailedErrorsByURLImgCanvas = canv
