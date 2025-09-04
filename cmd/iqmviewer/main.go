@@ -682,6 +682,11 @@ type uiState struct {
 	// debounced detailed charts rebuild scheduling
 	detailedRebuildScheduled bool
 	detailedRebuildTimer     *time.Timer
+	// detailed rebuild hardening
+	lastDetailedRebuildTime      time.Time
+	detailedRebuildCount         int
+	detailedCooldownActive       bool
+	detailedQueuedDuringCooldown bool
 	// main tabs container (for programmatic navigation)
 	tabs *container.AppTabs
 
@@ -14039,25 +14044,58 @@ func scheduleDetailedRebuild(state *uiState) {
 	if state == nil {
 		return
 	}
-	// If a timer is already running, mark that we need another rebuild pass afterwards.
+	now := time.Now()
+	// Cooldown: avoid running rebuilds more often than every 120ms actual execution.
+	if state.detailedCooldownActive {
+		// Just note that another rebuild should happen after cooldown; do not spawn more timers.
+		state.detailedQueuedDuringCooldown = true
+		return
+	}
+	// If a debounce timer is already running, simply flag that another pass is desired.
 	if state.detailedRebuildTimer != nil {
 		state.detailedRebuildScheduled = true
 		return
 	}
-	// No timer active: start one. Clear the 'another scheduled' flag (fresh cycle).
+	// Adaptive debounce: if last rebuild was very recent (<180ms) increase delay slightly to coalesce bursts.
+	baseDelay := 80 * time.Millisecond
+	since := now.Sub(state.lastDetailedRebuildTime)
+	if since < 180*time.Millisecond {
+		// scale additional delay inversely; clamp to 200ms max.
+		extra := 180*time.Millisecond - since
+		if extra > 120*time.Millisecond {
+			extra = 120 * time.Millisecond
+		}
+		baseDelay += extra / 2
+	}
 	state.detailedRebuildScheduled = false
-	state.detailedRebuildTimer = time.AfterFunc(80*time.Millisecond, func() {
+	d := baseDelay
+	if d < 60*time.Millisecond {
+		d = 60 * time.Millisecond
+	} else if d > 200*time.Millisecond {
+		d = 200 * time.Millisecond
+	}
+	state.detailedRebuildTimer = time.AfterFunc(d, func() {
 		fyne.Do(func() {
-			// Close this timer slot.
 			if state.detailedRebuildTimer != nil {
 				state.detailedRebuildTimer.Stop()
 				state.detailedRebuildTimer = nil
 			}
-			// Perform the actual rebuild now.
+			// Execute rebuild with cooldown guard.
+			state.detailedCooldownActive = true
 			rebuildDetailedCharts(state)
-			// If additional requests arrived while we were waiting, run another debounced cycle.
+			state.lastDetailedRebuildTime = time.Now()
+			state.detailedRebuildCount++
+			// Schedule cooldown release.
+			time.AfterFunc(120*time.Millisecond, func() {
+				fyne.Do(func() {
+					state.detailedCooldownActive = false
+					if state.detailedQueuedDuringCooldown {
+						state.detailedQueuedDuringCooldown = false
+						scheduleDetailedRebuild(state)
+					}
+				})
+			})
 			if state.detailedRebuildScheduled {
-				// Reset flag before chaining to avoid infinite loop if rebuild immediately requests again.
 				state.detailedRebuildScheduled = false
 				scheduleDetailedRebuild(state)
 			}
@@ -14146,7 +14184,8 @@ func rebuildDetailedCharts(state *uiState) {
 		}
 		tags = valid
 	}
-	fmt.Printf("[detailed] rebuild start: tags=%v toggles={pctl:%v speed:%v bytes:%v topSpeed:%v topBytes:%v errs:%v} hostFilter=%q groupErrs=%v\n", tags, state.showDetailedPercentiles, state.showDetailedSpeedOverTime, state.showDetailedBytesOverTime, state.showDetailedTopSessionsSpeed, state.showDetailedTopSessionsBytes, state.showDetailedErrorsByURL, state.detailedHostFilter, state.detailedErrorsGroupByHost)
+	fmt.Printf("[detailed] rebuild start #%d @%s: tags=%v toggles={pctl:%v speed:%v bytes:%v topSpeed:%v topBytes:%v errs:%v} hostFilter=%q groupErrs=%v\n",
+		state.detailedRebuildCount+1, time.Now().Format("15:04:05.000"), tags, state.showDetailedPercentiles, state.showDetailedSpeedOverTime, state.showDetailedBytesOverTime, state.showDetailedTopSessionsSpeed, state.showDetailedTopSessionsBytes, state.showDetailedErrorsByURL, state.detailedHostFilter, state.detailedErrorsGroupByHost)
 	state.detailedChartsBox.Objects = nil
 	if len(tags) == 0 || len(rows) == 0 {
 		msg := "No batches available."
