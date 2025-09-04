@@ -677,7 +677,6 @@ type uiState struct {
 	filePath     string
 	loadingPrefs bool // guard to prevent re-entrant loadPrefs
 	// debounced menu rebuild scheduling
-	menuRebuildPending bool
 	menuRebuildTimer   *time.Timer
 	// debounced detailed charts rebuild scheduling
 	detailedRebuildScheduled bool
@@ -785,6 +784,7 @@ type uiState struct {
 	showDetailedTopSessionsSpeed bool
 	showDetailedTopSessionsBytes bool
 	showDetailedErrorsByURL      bool
+	showDetailedTTFBMarkers      bool // new: toggle vertical TTFB marker lines in detailed charts
 	// Detailed per-host/domain filter
 	detailedHostFilter string // "All" or specific host
 	// Errors grouping mode
@@ -1784,6 +1784,7 @@ func main() {
 		showDetailedTopSessionsSpeed: true,
 		showDetailedTopSessionsBytes: true,
 		showDetailedErrorsByURL:      true,
+		showDetailedTTFBMarkers:      true,
 		detailedHostFilter:           "All",
 		showRolling:                  true,
 		showRollingBand:              true,
@@ -4416,6 +4417,17 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		}))
 		items = append(items, fyne.NewMenuItem(checkLabel("Show Errors by URL", state.showDetailedErrorsByURL), func() {
 			state.showDetailedErrorsByURL = !state.showDetailedErrorsByURL
+			savePrefs(state)
+			if state.firstDataLoadDone {
+				scheduleDetailedRebuild(state)
+			} else {
+				state.pendingDetailedRebuild = true
+			}
+			scheduleMenuRebuild(state, fileLabel)
+		}))
+		// Overlay toggles
+		items = append(items, fyne.NewMenuItem(checkLabel("Show TTFB Markers", state.showDetailedTTFBMarkers), func() {
+			state.showDetailedTTFBMarkers = !state.showDetailedTTFBMarkers
 			savePrefs(state)
 			if state.firstDataLoadDone {
 				scheduleDetailedRebuild(state)
@@ -11364,10 +11376,10 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	if err != nil {
 		return blank(cw, chh)
 	}
-	// Overlays: TTFB markers and stall bands per series
+	// Overlays: (optional) TTFB markers and stall bands per series
 	if xMaxDom > 0 {
 		for _, meta := range seriesMeta {
-			if meta.TraceTTFBMs > 0 {
+			if state.showDetailedTTFBMarkers && meta.TraceTTFBMs > 0 {
 				img = drawVerticalMarker(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180))
 			}
 			if meta.TransferStalled && meta.StallElapsedMs > 0 {
@@ -11550,7 +11562,7 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 		if len(xs) > 0 {
 			xMaxDom = xs[len(xs)-1]
 		}
-		if s.TraceTTFBMs > 0 && xMaxDom > 0 {
+		if state.showDetailedTTFBMarkers && s.TraceTTFBMs > 0 && xMaxDom > 0 {
 			img = drawVerticalMarker(img, float64(s.TraceTTFBMs)/1000.0, chart.Box{Top: 12, Left: 16, Right: 12, Bottom: 28}, 0, xMaxDom, chart.ColorRed.WithAlpha(220))
 		}
 		if s.TransferStalled && s.StallElapsedMs > 0 && xMaxDom > 0 {
@@ -11660,7 +11672,7 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	}
 	if xMaxDom > 0 {
 		for _, meta := range seriesMeta {
-			if meta.TraceTTFBMs > 0 {
+			if state.showDetailedTTFBMarkers && meta.TraceTTFBMs > 0 {
 				img = drawVerticalMarker(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180))
 			}
 			if meta.TransferStalled && meta.StallElapsedMs > 0 {
@@ -11751,7 +11763,7 @@ func renderBytesOverTimeTopSessionsChart(state *uiState) image.Image {
 		if len(xs) > 0 {
 			xMaxDom = xs[len(xs)-1]
 		}
-		if s.TraceTTFBMs > 0 && xMaxDom > 0 {
+		if state.showDetailedTTFBMarkers && s.TraceTTFBMs > 0 && xMaxDom > 0 {
 			img = drawVerticalMarker(img, float64(s.TraceTTFBMs)/1000.0, chart.Box{Top: 12, Left: 16, Right: 12, Bottom: 28}, 0, xMaxDom, chart.ColorRed.WithAlpha(220))
 		}
 		if s.TransferStalled && s.StallElapsedMs > 0 && xMaxDom > 0 {
@@ -15598,6 +15610,8 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showDetailedTopSessionsSpeed", state.showDetailedTopSessionsSpeed)
 	prefs.SetBool("showDetailedTopSessionsBytes", state.showDetailedTopSessionsBytes)
 	prefs.SetBool("showDetailedErrorsByURL", state.showDetailedErrorsByURL)
+	// Detailed overlays
+	prefs.SetBool("showDetailedTTFBMarkers", state.showDetailedTTFBMarkers)
 	// Detailed filter & grouping
 	prefs.SetString("detailedHostFilter", strings.TrimSpace(state.detailedHostFilter))
 	prefs.SetBool("detailedErrorsGroupByHost", state.detailedErrorsGroupByHost)
@@ -15836,6 +15850,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showDetailedTopSessionsSpeed = prefs.BoolWithFallback("showDetailedTopSessionsSpeed", state.showDetailedTopSessionsSpeed)
 	state.showDetailedTopSessionsBytes = prefs.BoolWithFallback("showDetailedTopSessionsBytes", state.showDetailedTopSessionsBytes)
 	state.showDetailedErrorsByURL = prefs.BoolWithFallback("showDetailedErrorsByURL", state.showDetailedErrorsByURL)
+	state.showDetailedTTFBMarkers = prefs.BoolWithFallback("showDetailedTTFBMarkers", state.showDetailedTTFBMarkers)
 	// Detailed filters
 	state.detailedHostFilter = strings.TrimSpace(prefs.StringWithFallback("detailedHostFilter", state.detailedHostFilter))
 	state.detailedErrorsGroupByHost = prefs.BoolWithFallback("detailedErrorsGroupByHost", state.detailedErrorsGroupByHost)
