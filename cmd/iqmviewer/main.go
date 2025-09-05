@@ -645,6 +645,11 @@ type uiState struct {
 	showDetailedErrorsByURL      bool
 	showDetailedTTFBMarkers      bool // new: toggle vertical TTFB marker lines in detailed charts
 	showDetailedLegends          bool // new: toggle custom legends in detailed detailed charts
+	// In-memory series data for detailed per-session hover (populated on render)
+	detailedSpeedSeriesData []sessionSeriesData // time (s) -> speed (already scaled to chosen unit)
+	detailedSpeedXMaxSec    float64
+	detailedBytesSeriesData []sessionSeriesData // time (s) -> cumulative MB
+	detailedBytesXMaxSec    float64
 	// Detailed per-host/domain filter
 	detailedHostFilter string // "All" or specific host
 	// Errors grouping mode
@@ -1670,8 +1675,9 @@ func main() {
 	state.slaTTFBThresholdMs = 200      // 200 ms P95 TTFB target
 	// Calibration tolerance default (10%)
 	state.calibTolerancePct = 10
-	// Ensure crosshair preference is loaded before creating overlays/controls
-	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", false)
+	// Ensure crosshair preference is loaded before creating overlays/controls.
+	// Default changed to true so new users immediately see hover tooltips.
+	state.crosshairEnabled = a.Preferences().BoolWithFallback("crosshair", true)
 	// Load showHints early so the checkbox reflects it on creation
 	state.showHints = a.Preferences().BoolWithFallback("showHints", false)
 	// Initialize DNS legacy overlay preference early (used by menus)
@@ -3455,6 +3461,31 @@ func buildMenus(state *uiState, fileLabel *widget.Label) {
 		if state.microStallCountOverlay != nil {
 			state.microStallCountOverlay.enabled = b
 			state.microStallCountOverlay.Refresh()
+		}
+		// Detailed overlays
+		if state.detailedPercentilesOverlay != nil {
+			state.detailedPercentilesOverlay.enabled = b
+			state.detailedPercentilesOverlay.Refresh()
+		}
+		if state.detailedSpeedOverTimeOverlay != nil {
+			state.detailedSpeedOverTimeOverlay.enabled = b
+			state.detailedSpeedOverTimeOverlay.Refresh()
+		}
+		if state.detailedBytesOverTimeOverlay != nil {
+			state.detailedBytesOverTimeOverlay.enabled = b
+			state.detailedBytesOverTimeOverlay.Refresh()
+		}
+		if state.detailedTopSessionsSpeedOverlay != nil {
+			state.detailedTopSessionsSpeedOverlay.enabled = b
+			state.detailedTopSessionsSpeedOverlay.Refresh()
+		}
+		if state.detailedTopSessionsBytesOverlay != nil {
+			state.detailedTopSessionsBytesOverlay.enabled = b
+			state.detailedTopSessionsBytesOverlay.Refresh()
+		}
+		if state.detailedErrorsByURLOverlay != nil {
+			state.detailedErrorsByURLOverlay.enabled = b
+			state.detailedErrorsByURLOverlay.Refresh()
 		}
 		// refresh menu label
 		scheduleMenuRebuild(state, fileLabel)
@@ -11231,6 +11262,9 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	minY := 0.0
 	maxY := -math.MaxFloat64
 	xMaxDom := 0.0
+	// Prepare container for hover data
+	state.detailedSpeedSeriesData = state.detailedSpeedSeriesData[:0]
+	state.detailedSpeedXMaxSec = 0
 	for i, meta := range seriesMeta {
 		ss := meta.Samples
 		xs := make([]float64, 0, len(ss))
@@ -11243,6 +11277,9 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 		if len(xs) > 0 && xs[len(xs)-1] > xMaxDom {
 			xMaxDom = xs[len(xs)-1]
 		}
+		if len(xs) > 0 && xs[len(xs)-1] > state.detailedSpeedXMaxSec {
+			state.detailedSpeedXMaxSec = xs[len(xs)-1]
+		}
 		// Track Y range
 		for _, v := range ys {
 			if v > maxY {
@@ -11250,6 +11287,7 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 			}
 		}
 		name := fmt.Sprintf("Req #%d", i+1)
+		state.detailedSpeedSeriesData = append(state.detailedSpeedSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys})
 		col := palette[i%len(palette)].WithAlpha(200)
 		// When only a single point exists, pad to render
 		if len(xs) == 1 {
@@ -11322,6 +11360,14 @@ type sessionTS struct {
 	TransferStalled   bool
 	StallElapsedMs    int64
 	Samples           []monitor.SpeedSample
+}
+
+// sessionSeriesData holds preprocessed X,Y slices for a per-request series used for crosshair hover.
+// X values are in seconds. For speed chart, Y is speed in user-selected unit. For bytes chart, Y is cumulative MB.
+type sessionSeriesData struct {
+	Name string
+	X    []float64
+	Y    []float64
 }
 
 // loadPerRequestSessionsForRunTag returns up to maxSessions sessions with samples and metadata for a runTag.
@@ -11529,6 +11575,8 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	var series []chart.Series
 	maxY := -math.MaxFloat64
 	xMaxDom := 0.0
+	state.detailedBytesSeriesData = state.detailedBytesSeriesData[:0]
+	state.detailedBytesXMaxSec = 0
 	for i, meta := range seriesMeta {
 		ss := meta.Samples
 		var cum int64
@@ -11542,12 +11590,16 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 		if len(xs) > 0 && xs[len(xs)-1] > xMaxDom {
 			xMaxDom = xs[len(xs)-1]
 		}
+		if len(xs) > 0 && xs[len(xs)-1] > state.detailedBytesXMaxSec {
+			state.detailedBytesXMaxSec = xs[len(xs)-1]
+		}
 		for _, v := range ys {
 			if v > maxY {
 				maxY = v
 			}
 		}
 		name := fmt.Sprintf("Req #%d", i+1)
+		state.detailedBytesSeriesData = append(state.detailedBytesSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys})
 		col := palette[i%len(palette)].WithAlpha(200)
 		if len(xs) == 1 {
 			x2 := xs[0] + 0.001
@@ -15717,7 +15769,8 @@ func resetViewerDefaults(state *uiState) {
 	state.showIPv6 = true
 	state.showPreTTFB = true
 	state.autoHidePreTTFB = false
-	state.crosshairEnabled = false
+	// Default crosshair now enabled so users immediately get interactive hover.
+	state.crosshairEnabled = true
 	state.showHints = false
 	state.showDNSLegacy = false
 	state.hideOtherCategories = false
@@ -16204,6 +16257,18 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			imgCanvas = r.c.state.errorReasonsDetailedImgCanvas
 		case "selftest_speed":
 			imgCanvas = r.c.state.selfTestImgCanvas
+		case "detailed_speed_over_time":
+			imgCanvas = r.c.state.detailedSpeedOverTimeImgCanvas
+		case "detailed_bytes_over_time":
+			imgCanvas = r.c.state.detailedBytesOverTimeImgCanvas
+		case "detailed_top_sessions_speed":
+			imgCanvas = r.c.state.detailedTopSessionsImgCanvas
+		case "detailed_top_sessions_bytes":
+			imgCanvas = r.c.state.detailedBytesTopSessionsCanvas
+		case "detailed_errors_by_url":
+			imgCanvas = r.c.state.detailedErrorsByURLImgCanvas
+		case "detailed_percentiles":
+			imgCanvas = r.c.state.detailedPctlImgCanvas
 		}
 		if imgCanvas != nil && imgCanvas.Image != nil {
 			b := imgCanvas.Image.Bounds()
@@ -16860,6 +16925,37 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			} else {
 				lines = append(lines, "Insufficient family data")
 			}
+		case "detailed_speed_over_time":
+			// Map crosshair X (lineX) to domain seconds and list nearest point for each request series.
+			if r.c.state != nil && r.c.state.detailedSpeedXMaxSec > 0 && len(r.c.state.detailedSpeedSeriesData) > 0 {
+				lines = append(lines, "Per-Request:")
+				// Recover domain X from pixel: lineX lies within drawX..drawX+drawW
+				// We recompute here minimal projection similar to earlier logic.
+				sec := projectLineXToDomain(lineX, drawX, drawW, r.c.state.detailedSpeedXMaxSec)
+				for _, sd := range r.c.state.detailedSpeedSeriesData {
+					if len(sd.X) == 0 {
+						continue
+					}
+					j := nearestIndex(sd.X, sec)
+					if j >= 0 && j < len(sd.Y) {
+						lines = append(lines, fmt.Sprintf("%s: %.1f", sd.Name, sd.Y[j]))
+					}
+				}
+			}
+		case "detailed_bytes_over_time":
+			if r.c.state != nil && r.c.state.detailedBytesXMaxSec > 0 && len(r.c.state.detailedBytesSeriesData) > 0 {
+				lines = append(lines, "Per-Request (MB):")
+				sec := projectLineXToDomain(lineX, drawX, drawW, r.c.state.detailedBytesXMaxSec)
+				for _, sd := range r.c.state.detailedBytesSeriesData {
+					if len(sd.X) == 0 {
+						continue
+					}
+					j := nearestIndex(sd.X, sec)
+					if j >= 0 && j < len(sd.Y) {
+						lines = append(lines, fmt.Sprintf("%s: %.2f", sd.Name, sd.Y[j]))
+					}
+				}
+			}
 		case "ttfb_delta_pct":
 			if bs.IPv4 != nil && bs.IPv6 != nil && bs.IPv6.AvgTTFB > 0 {
 				pct := (bs.IPv4.AvgTTFB - bs.IPv6.AvgTTFB) / bs.IPv6.AvgTTFB * 100
@@ -17096,6 +17192,39 @@ func (r *crosshairRenderer) Refresh() {
 		r.labelBG.Refresh()
 	}
 	r.label.Refresh()
+}
+
+// projectLineXToDomain converts a snapped line X pixel to domain seconds for detailed charts.
+// drawX/drawW are the contained image draw rectangle in overlay coordinates and maxSec is the max X domain.
+func projectLineXToDomain(lineX, drawX, drawW float32, maxSec float64) float64 {
+	if drawW <= 0 || maxSec <= 0 {
+		return 0
+	}
+	fx := (lineX - drawX) / drawW
+	if fx < 0 {
+		fx = 0
+	}
+	if fx > 1 {
+		fx = 1
+	}
+	return float64(fx) * maxSec
+}
+
+// nearestIndex returns index of X slice element nearest to target (assuming slice length small/medium).
+func nearestIndex(xs []float64, target float64) int {
+	if len(xs) == 0 {
+		return -1
+	}
+	best := 0
+	bestD := math.Abs(xs[0] - target)
+	for i := 1; i < len(xs); i++ {
+		d := math.Abs(xs[i] - target)
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best
 }
 
 // Implement mouse movement handling
