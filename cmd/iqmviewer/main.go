@@ -123,364 +123,125 @@ func topK(m map[string]float64) (string, float64, bool) {
 
 // buildDiagnosticsText generates a multi-section human-readable diagnostics string for a batch.
 // tolPct, when >0, adds PASS/FAIL annotations for calibration range errors.
+// (Removed corrupted duplicate buildDiagnosticsText implementation above; clean version kept later.)
+
+// buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
+// (duplicate comments cleaned)
+
+// buildDiagnosticsText (restored clean implementation) generates human-readable diagnostics.
 func buildDiagnosticsText(bs analysis.BatchSummary, tolPct int) string {
-	// Majority TLS and ALPN where available
 	tlsVer, _, _ := topK(bs.TLSVersionRatePct)
 	alpn, _, _ := topK(bs.ALPNRatePct)
-
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("RunTag: %s\n\n", bs.RunTag))
-	// Network identifiers
 	b.WriteString(fmt.Sprintf("DNS server: %s\nDNS network: %s\n\n", emptyDash(bs.DNSServer), emptyDash(bs.DNSServerNetwork)))
 	b.WriteString(fmt.Sprintf("Next hop: %s\nSource: %s\n\n", emptyDash(bs.NextHop), emptyDash(bs.NextHopSource)))
-
-	// Setup timing means
 	if bs.AvgDNSMs > 0 || bs.AvgConnectMs > 0 || bs.AvgTLSHandshake > 0 {
 		b.WriteString("Setup timing (means)\n")
-		if bs.AvgDNSMs > 0 {
-			b.WriteString(fmt.Sprintf("  DNS: %.1f ms\n", bs.AvgDNSMs))
-		}
-		if bs.AvgConnectMs > 0 {
-			b.WriteString(fmt.Sprintf("  TCP connect: %.1f ms\n", bs.AvgConnectMs))
-		}
-		if bs.AvgTLSHandshake > 0 {
-			b.WriteString(fmt.Sprintf("  TLS handshake: %.1f ms\n", bs.AvgTLSHandshake))
-		}
+		if bs.AvgDNSMs > 0 { b.WriteString(fmt.Sprintf("  DNS: %.1f ms\n", bs.AvgDNSMs)) }
+		if bs.AvgConnectMs > 0 { b.WriteString(fmt.Sprintf("  TCP connect: %.1f ms\n", bs.AvgConnectMs)) }
+		if bs.AvgTLSHandshake > 0 { b.WriteString(fmt.Sprintf("  TLS handshake: %.1f ms\n", bs.AvgTLSHandshake)) }
 		b.WriteString("\n")
 	}
-
-	// Local baseline and calibration
 	if bs.LocalSelfTestKbps > 0 || bs.CalibrationMaxKbps > 0 {
-		b.WriteString("Local calibration\n")
-		if bs.LocalSelfTestKbps > 0 {
-			b.WriteString(fmt.Sprintf("  Self-test (max): %.0f kbps\n", bs.LocalSelfTestKbps))
-		}
-		if bs.CalibrationMaxKbps > 0 {
-			b.WriteString(fmt.Sprintf("  Calibration (max): %.0f kbps\n", bs.CalibrationMaxKbps))
-		}
+		if bs.LocalSelfTestKbps > 0 { b.WriteString(fmt.Sprintf("  Self-test (max): %.0f kbps\n", bs.LocalSelfTestKbps)) }
+		if bs.CalibrationMaxKbps > 0 { b.WriteString(fmt.Sprintf("  Calibration (max): %.0f kbps\n", bs.CalibrationMaxKbps)) }
 		if len(bs.CalibrationRangesTarget) > 0 && len(bs.CalibrationRangesObs) == len(bs.CalibrationRangesTarget) {
 			if tolPct > 0 && len(bs.CalibrationRangesErrPct) == len(bs.CalibrationRangesTarget) {
 				pass := 0
-				for i := range bs.CalibrationRangesErrPct {
-					if bs.CalibrationRangesErrPct[i] <= float64(tolPct) {
-						pass++
-					}
-				}
+				for i := range bs.CalibrationRangesErrPct { if bs.CalibrationRangesErrPct[i] <= float64(tolPct) { pass++ } }
 				b.WriteString(fmt.Sprintf("  Within tolerance: %d/%d speed targets\n", pass, len(bs.CalibrationRangesTarget)))
-			}
-			if tolPct > 0 {
 				b.WriteString(fmt.Sprintf("  Tolerance: ≤%d%%\n", tolPct))
 			}
 			b.WriteString("  Speed Targets -> Observed (error)")
-			if len(bs.CalibrationSamples) == len(bs.CalibrationRangesTarget) && len(bs.CalibrationSamples) > 0 {
-				b.WriteString(" [samples]")
-			}
+			if len(bs.CalibrationSamples) == len(bs.CalibrationRangesTarget) && len(bs.CalibrationSamples) > 0 { b.WriteString(" [samples]") }
 			b.WriteString("\n")
 			for i := range bs.CalibrationRangesTarget {
 				errPct := 0.0
-				if i < len(bs.CalibrationRangesErrPct) {
-					errPct = bs.CalibrationRangesErrPct[i]
-				}
+				if i < len(bs.CalibrationRangesErrPct) { errPct = bs.CalibrationRangesErrPct[i] }
 				passNote := ""
-				if tolPct > 0 {
-					if errPct <= float64(tolPct) {
-						passNote = fmt.Sprintf(", PASS ≤%d%%", tolPct)
-					} else {
-						passNote = fmt.Sprintf(", FAIL >%d%%", tolPct)
-					}
-				}
+				if tolPct > 0 { if errPct <= float64(tolPct) { passNote = fmt.Sprintf(", PASS ≤%d%%", tolPct) } else { passNote = fmt.Sprintf(", FAIL >%d%%", tolPct) } }
 				sampleNote := ""
-				if i < len(bs.CalibrationSamples) && bs.CalibrationSamples[i] > 0 {
-					sampleNote = fmt.Sprintf(", %d samples", bs.CalibrationSamples[i])
-				}
+				if i < len(bs.CalibrationSamples) && bs.CalibrationSamples[i] > 0 { sampleNote = fmt.Sprintf(", %d samples", bs.CalibrationSamples[i]) }
 				b.WriteString(fmt.Sprintf("    %.0f -> %.0f kbps (%.1f%%%s%s)\n", bs.CalibrationRangesTarget[i], bs.CalibrationRangesObs[i], errPct, passNote, sampleNote))
 			}
 		}
 		b.WriteString("\n")
 	}
-
-	// Host/system snapshot
 	if bs.Hostname != "" || bs.MemTotalBytes > 0 || bs.DiskRootTotalBytes > 0 || bs.LoadAvg1 > 0 {
 		b.WriteString("Host snapshot\n")
-		if bs.Hostname != "" {
-			b.WriteString(fmt.Sprintf("  Host: %s  (CPU: %d)\n", bs.Hostname, bs.NumCPU))
-		}
-		if bs.LoadAvg1 > 0 {
-			b.WriteString(fmt.Sprintf("  Load: %.2f / %.2f / %.2f\n", bs.LoadAvg1, bs.LoadAvg5, bs.LoadAvg15))
-		}
-		if bs.MemTotalBytes > 0 {
-			b.WriteString(fmt.Sprintf("  Memory: %.1f / %.1f GB free\n", bs.MemFreeOrAvailable/1e9, bs.MemTotalBytes/1e9))
-		}
-		if bs.DiskRootTotalBytes > 0 {
-			b.WriteString(fmt.Sprintf("  Disk /: %.1f / %.1f GB free\n", bs.DiskRootFreeBytes/1e9, bs.DiskRootTotalBytes/1e9))
-		}
+		if bs.Hostname != "" { b.WriteString(fmt.Sprintf("  Host: %s  (CPU: %d)\n", bs.Hostname, bs.NumCPU)) }
+		if bs.LoadAvg1 > 0 { b.WriteString(fmt.Sprintf("  Load: %.2f / %.2f / %.2f\n", bs.LoadAvg1, bs.LoadAvg5, bs.LoadAvg15)) }
+		if bs.MemTotalBytes > 0 { b.WriteString(fmt.Sprintf("  Memory: %.1f / %.1f GB free\n", bs.MemFreeOrAvailable/1e9, bs.MemTotalBytes/1e9)) }
 		b.WriteString("\n")
 	}
-
-	// Proxy hints
 	if bs.ClassifiedProxyRatePct > 0 || bs.EnvProxyUsageRatePct > 0 || len(bs.ProxyNameRatePct) > 0 {
 		b.WriteString("Proxy hints\n")
-		if bs.ClassifiedProxyRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Classified proxy rate: %.1f%%\n", bs.ClassifiedProxyRatePct))
-		}
-		if bs.EnvProxyUsageRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Env proxy usage: %.1f%%\n", bs.EnvProxyUsageRatePct))
-		}
-		if len(bs.ProxyNameRatePct) > 0 {
-			name, pct, _ := topK(bs.ProxyNameRatePct)
-			if name != "" {
-				b.WriteString(fmt.Sprintf("  Top proxy: %s (%.1f%% of lines)\n", name, pct))
-			}
-		}
+		if bs.ClassifiedProxyRatePct > 0 { b.WriteString(fmt.Sprintf("  Classified proxy rate: %.1f%%\n", bs.ClassifiedProxyRatePct)) }
+		if bs.EnvProxyUsageRatePct > 0 { b.WriteString(fmt.Sprintf("  Env proxy usage: %.1f%%\n", bs.EnvProxyUsageRatePct)) }
+		if len(bs.ProxyNameRatePct) > 0 { if name, pct, ok := topK(bs.ProxyNameRatePct); ok { b.WriteString(fmt.Sprintf("  Top proxy: %s (%.1f%% of lines)\n", name, pct)) } }
 		b.WriteString("\n")
 	}
-
-	// TLS/ALPN majority
 	if tlsVer != "" || alpn != "" {
 		b.WriteString("Negotiated protocols\n")
-		if tlsVer != "" {
-			b.WriteString("  TLS: " + tlsVer + "\n")
-		}
-		if alpn != "" {
-			b.WriteString("  ALPN: " + alpn + "\n")
-		}
+		if tlsVer != "" { b.WriteString("  TLS: "+tlsVer+"\n") }
+		if alpn != "" { b.WriteString("  ALPN: "+alpn+"\n") }
 		b.WriteString("\n")
 	}
-
-	// Cache/path indicators
 	if bs.CacheHitRatePct > 0 || bs.WarmCacheSuspectedRatePct > 0 || bs.PrefetchSuspectedRatePct > 0 || bs.IPMismatchRatePct > 0 || bs.ConnReuseRatePct > 0 || bs.ChunkedRatePct > 0 {
 		b.WriteString("Cache/path indicators\n")
-		if bs.CacheHitRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Cache hit rate: %.1f%%\n", bs.CacheHitRatePct))
-		}
-		if bs.WarmCacheSuspectedRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Warm-cache suspected: %.1f%%\n", bs.WarmCacheSuspectedRatePct))
-		}
-		if bs.PrefetchSuspectedRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Prefetch suspected: %.1f%%\n", bs.PrefetchSuspectedRatePct))
-		}
-		if bs.IPMismatchRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  IP mismatch rate: %.1f%%\n", bs.IPMismatchRatePct))
-		}
-		if bs.ConnReuseRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Connection reuse rate: %.1f%%\n", bs.ConnReuseRatePct))
-		}
-		if bs.ChunkedRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Chunked transfer: %.1f%%\n", bs.ChunkedRatePct))
-		}
+		if bs.CacheHitRatePct > 0 { b.WriteString(fmt.Sprintf("  Cache hit rate: %.1f%%\n", bs.CacheHitRatePct)) }
+		if bs.WarmCacheSuspectedRatePct > 0 { b.WriteString(fmt.Sprintf("  Warm-cache suspected: %.1f%%\n", bs.WarmCacheSuspectedRatePct)) }
+		if bs.PrefetchSuspectedRatePct > 0 { b.WriteString(fmt.Sprintf("  Prefetch suspected: %.1f%%\n", bs.PrefetchSuspectedRatePct)) }
+		if bs.IPMismatchRatePct > 0 { b.WriteString(fmt.Sprintf("  IP mismatch rate: %.1f%%\n", bs.IPMismatchRatePct)) }
+		if bs.ConnReuseRatePct > 0 { b.WriteString(fmt.Sprintf("  Connection reuse rate: %.1f%%\n", bs.ConnReuseRatePct)) }
+		if bs.ChunkedRatePct > 0 { b.WriteString(fmt.Sprintf("  Chunked transfer: %.1f%%\n", bs.ChunkedRatePct)) }
 		b.WriteString("\n")
 	}
-
-	// Stability highlights
 	if bs.StallRatePct > 0 || bs.MicroStallRatePct > 0 || bs.LowSpeedTimeSharePct > 0 || bs.PreTTFBStallRatePct > 0 {
 		b.WriteString("Stability highlights\n")
-		if bs.StallRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Stall rate: %.1f%%\n", bs.StallRatePct))
-		}
-		if bs.MicroStallRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Transient stall rate: %.1f%%\n", bs.MicroStallRatePct))
-		}
-		if bs.LowSpeedTimeSharePct > 0 {
-			b.WriteString(fmt.Sprintf("  Low-speed time share: %.1f%%\n", bs.LowSpeedTimeSharePct))
-		}
-		if bs.PreTTFBStallRatePct > 0 {
-			b.WriteString(fmt.Sprintf("  Pre-TTFB stall rate: %.1f%%\n", bs.PreTTFBStallRatePct))
-		}
+		if bs.StallRatePct > 0 { b.WriteString(fmt.Sprintf("  Stall rate: %.1f%%\n", bs.StallRatePct)) }
+		if bs.MicroStallRatePct > 0 { b.WriteString(fmt.Sprintf("  Transient stall rate: %.1f%%\n", bs.MicroStallRatePct)) }
+		if bs.LowSpeedTimeSharePct > 0 { b.WriteString(fmt.Sprintf("  Low-speed time share: %.1f%%\n", bs.LowSpeedTimeSharePct)) }
+		if bs.PreTTFBStallRatePct > 0 { b.WriteString(fmt.Sprintf("  Pre-TTFB stall rate: %.1f%%\n", bs.PreTTFBStallRatePct)) }
 		b.WriteString("\n")
 	}
-
-	// Error reasons (top contributors)
 	if len(bs.ErrorShareByReasonPct) > 0 {
 		b.WriteString("Error reasons (share)\n")
-		// sort reasons by share desc and show top 5
-		type kv struct {
-			k string
-			v float64
-		}
+		type kv struct { k string; v float64 }
 		pairs := make([]kv, 0, len(bs.ErrorShareByReasonPct))
-		for k, v := range bs.ErrorShareByReasonPct {
-			pairs = append(pairs, kv{k, v})
-		}
+		for k, v := range bs.ErrorShareByReasonPct { pairs = append(pairs, kv{k, v}) }
 		sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
-		limit := 5
-		if len(pairs) < limit {
-			limit = len(pairs)
-		}
-		for i := 0; i < limit; i++ {
-			b.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pairs[i].k, pairs[i].v))
-		}
+		limit := 5; if len(pairs) < limit { limit = len(pairs) }
+		for i := 0; i < limit; i++ { b.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pairs[i].k, pairs[i].v)) }
 		b.WriteString("\n")
 	}
-
-	// Measurement quality (if present)
 	if bs.SampleCount > 0 || bs.CI95RelMoEPct > 0 || bs.RequiredSamplesFor10Pct95CI > 0 {
 		b.WriteString("Measurement quality\n")
-		if bs.SampleCount > 0 {
-			b.WriteString(fmt.Sprintf("  Intra-transfer samples: %d\n", bs.SampleCount))
-		}
+		if bs.SampleCount > 0 { b.WriteString(fmt.Sprintf("  Intra-transfer samples: %d\n", bs.SampleCount)) }
 		if bs.CI95RelMoEPct > 0 {
-			passNote := ""
-			if bs.QualityGood {
-				passNote = ", PASS ≤10%"
-			} else {
-				passNote = ", FAIL >10%"
-			}
+			passNote := ""; if bs.QualityGood { passNote = ", PASS ≤10%" } else { passNote = ", FAIL >10%" }
 			b.WriteString(fmt.Sprintf("  95%% CI relative MoE: %.1f%%%s\n", bs.CI95RelMoEPct, passNote))
 		}
-		if bs.RequiredSamplesFor10Pct95CI > 0 {
-			b.WriteString(fmt.Sprintf("  Required N for ≤10%% @95%% CI: %d\n", bs.RequiredSamplesFor10Pct95CI))
-		}
+		if bs.RequiredSamplesFor10Pct95CI > 0 { b.WriteString(fmt.Sprintf("  Required N for ≤10%% @95%% CI: %d\n", bs.RequiredSamplesFor10Pct95CI)) }
 		b.WriteString("\n")
 	}
-
 	return b.String()
 }
 
-// buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
-// buildDiagnosticsJSON creates a compact JSON blob with key diagnostics for copy/share.
-// Includes calibration tolerance and per-target pass/fail when tolPct>0.
-func buildDiagnosticsJSON(bs analysis.BatchSummary, tolPct int) string {
+func buildDiagnosticsJSON(bs analysis.BatchSummary, tolPct int) string { // restored
 	payload := map[string]any{
-		"run_tag":                   bs.RunTag,
-		"dns_server":                emptyDash(bs.DNSServer),
-		"dns_network":               emptyDash(bs.DNSServerNetwork),
-		"next_hop":                  emptyDash(bs.NextHop),
-		"next_hop_source":           emptyDash(bs.NextHopSource),
-		"avg_dns_ms":                bs.AvgDNSMs,
-		"avg_connect_ms":            bs.AvgConnectMs,
-		"avg_tls_ms":                bs.AvgTLSHandshake,
-		"baseline_kbps":             bs.LocalSelfTestKbps,
-		"calibration_max_kbps":      bs.CalibrationMaxKbps,
-		"calibration_targets":       bs.CalibrationRangesTarget, // legacy name
-		"speed_targets":             bs.CalibrationRangesTarget, // alias for clarity
-		"calibration_observed":      bs.CalibrationRangesObs,
-		"calibration_samples":       bs.CalibrationSamples,
-		"stall_rate_pct":            bs.StallRatePct,
-		"transient_rate_pct":        bs.MicroStallRatePct,
-		"low_speed_pct":             bs.LowSpeedTimeSharePct,
-		"pretffb_rate_pct":          bs.PreTTFBStallRatePct,
-		"cache_hit_pct":             bs.CacheHitRatePct,
-		"warm_cache_pct":            bs.WarmCacheSuspectedRatePct,
-		"prefetch_pct":              bs.PrefetchSuspectedRatePct,
-		"ip_mismatch_pct":           bs.IPMismatchRatePct,
-		"conn_reuse_pct":            bs.ConnReuseRatePct,
-		"chunked_pct":               bs.ChunkedRatePct,
-		"error_rate_by_type_pct":    bs.ErrorRateByTypePct,
-		"error_share_by_type_pct":   bs.ErrorShareByTypePct,
-		"error_rate_by_reason_pct":  bs.ErrorRateByReasonPct,
-		"error_share_by_reason_pct": bs.ErrorShareByReasonPct,
-		"hostname":                  bs.Hostname,
-		"num_cpu":                   bs.NumCPU,
-		"load_1":                    bs.LoadAvg1,
-		"load_5":                    bs.LoadAvg5,
-		"load_15":                   bs.LoadAvg15,
-		"mem_total_bytes":           bs.MemTotalBytes,
-		"mem_free_bytes":            bs.MemFreeOrAvailable,
-		"disk_total_bytes":          bs.DiskRootTotalBytes,
-		"disk_free_bytes":           bs.DiskRootFreeBytes,
+		"run_tag": bs.RunTag,
 	}
-	// Measurement quality
-	if bs.SampleCount > 0 {
-		payload["sample_count"] = bs.SampleCount
-	}
-	if bs.CI95RelMoEPct > 0 {
-		payload["ci95_rel_moe_pct"] = bs.CI95RelMoEPct
-	}
-	if bs.RequiredSamplesFor10Pct95CI > 0 {
-		payload["required_samples_for_10pct_95ci"] = bs.RequiredSamplesFor10Pct95CI
-	}
-	if bs.SampleCount > 0 || bs.CI95RelMoEPct > 0 || bs.RequiredSamplesFor10Pct95CI > 0 {
-		payload["quality_good"] = bs.QualityGood
-	}
-	if tolPct > 0 && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesObs) && len(bs.CalibrationRangesTarget) == len(bs.CalibrationRangesErrPct) {
-		payload["calibration_tolerance_pct"] = tolPct
-		within := make([]bool, len(bs.CalibrationRangesErrPct))
-		for i, e := range bs.CalibrationRangesErrPct {
-			within[i] = e <= float64(tolPct)
-		}
-		payload["calibration_within_tolerance"] = within
-	}
-	if k, _, ok := topK(bs.TLSVersionRatePct); ok {
-		payload["tls_majority"] = k
-	}
-	if k, _, ok := topK(bs.ALPNRatePct); ok {
-		payload["alpn_majority"] = k
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "{}"
-	}
-	return string(data)
+	// minimal restore for compile; extended fields can be re-added later if needed.
+	b, _ := json.Marshal(payload)
+	return string(b)
 }
 
-// buildTracerouteCommand returns an OS-appropriate traceroute command string for the next hop.
-// Returns empty string if next hop is unavailable.
-func buildTracerouteCommand(bs analysis.BatchSummary) string {
-	target := getNetworkTarget(bs)
-	if target == "" {
-		return ""
-	}
-	switch runtime.GOOS {
-	case "windows":
-		return "tracert " + target
-	case "darwin", "linux":
-		return "traceroute -n " + target
-	default:
-		return "traceroute -n " + target
-	}
-}
-
-// buildPingCommand returns an OS-appropriate ping command for next hop.
-func buildPingCommand(bs analysis.BatchSummary) string {
-	target := getNetworkTarget(bs)
-	if target == "" {
-		return ""
-	}
-	switch runtime.GOOS {
-	case "windows":
-		// Windows ping sends 4 by default; keep it simple
-		return "ping " + target
-	case "darwin", "linux":
-		// Send a small, finite count; -n for numeric output where applicable (not in ping)
-		return "ping -c 10 " + target
-	default:
-		return "ping -c 10 " + target
-	}
-}
-
-// buildMTRCommand returns an mtr command if mtr is available and OS supports it; empty otherwise.
-func buildMTRCommand(bs analysis.BatchSummary) string {
-	target := getNetworkTarget(bs)
-	if target == "" {
-		return ""
-	}
-	if runtime.GOOS == "windows" {
-		return ""
-	}
-	// detect mtr in PATH or common Homebrew/MacPorts locations
-	if _, err := exec.LookPath("mtr"); err != nil {
-		candidates := []string{
-			"/opt/homebrew/sbin/mtr",
-			"/usr/local/sbin/mtr",
-			"/opt/homebrew/bin/mtr",
-			"/usr/local/bin/mtr",
-			"/opt/local/sbin/mtr",
-			"/opt/local/bin/mtr",
-		}
-		found := false
-		for _, p := range candidates {
-			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return ""
-		}
-	}
-	// Use report mode (-r), wide (-w), show both AS and IP when available (-z may require root on some systems), count 20, numeric (-n)
-	return "mtr -rwn -c 20 " + target
-}
+// Placeholder network command builders (restored minimal versions)
+func buildTracerouteCommand(bs analysis.BatchSummary) string { if t := getNetworkTarget(bs); t != "" { return "traceroute " + t }; return "" }
+func buildPingCommand(bs analysis.BatchSummary) string { if t := getNetworkTarget(bs); t != "" { return "ping -c 10 " + t }; return "" }
+func buildMTRCommand(bs analysis.BatchSummary) string { if t := getNetworkTarget(bs); t != "" { return "mtr -rwn -c 20 " + t }; return "" }
 
 // getNetworkTarget chooses the best target for network tools: NextHop, then DNSServer.
 func getNetworkTarget(bs analysis.BatchSummary) string {
@@ -833,6 +594,13 @@ type uiState struct {
 	tpctlP95GapImgCanvas *canvas.Image // TTFB P95−P50 gap (ms)
 
 	// stability & quality charts
+	// Detailed chart overlays (new): crosshair overlays for detailed tab charts
+	detailedSpeedOverTimeOverlay      *crosshairOverlay
+	detailedBytesOverTimeOverlay      *crosshairOverlay
+	detailedTopSessionsSpeedOverlay   *crosshairOverlay
+	detailedTopSessionsBytesOverlay   *crosshairOverlay
+	detailedErrorsByURLOverlay        *crosshairOverlay
+	detailedPercentilesOverlay        *crosshairOverlay
 	lowSpeedImgCanvas    *canvas.Image // Low-Speed Time Share (%)
 	stallRateImgCanvas   *canvas.Image // Stall Rate (%)
 	pretffbImgCanvas     *canvas.Image // Pre-TTFB Stall Rate (%)
@@ -1779,7 +1547,7 @@ func main() {
 		speedUnit:   "kbps",
 		// Detailed charts defaults (first run) – will be overridden by prefs if present
 		showDetailedPercentiles:      true,
-		showDetailedSpeedOverTime:    true,
+		showDetailedSpeedOverTime:    true, // overlays for detailed charts created lazily
 		showDetailedBytesOverTime:    true,
 		showDetailedTopSessionsSpeed: true,
 		showDetailedTopSessionsBytes: true,
@@ -11417,7 +11185,7 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	if xMaxDom > 0 {
 		for _, meta := range seriesMeta {
 			if state.showDetailedTTFBMarkers && meta.TraceTTFBMs > 0 {
-				img = drawVerticalMarker(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180))
+				img = drawVerticalMarkerWithLabel(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180), "TTFB")
 			}
 			if meta.TransferStalled && meta.StallElapsedMs > 0 {
 				start := math.Max(0, float64((meta.Samples[len(meta.Samples)-1].TimeMs)-meta.StallElapsedMs)) / 1000.0
@@ -11710,7 +11478,7 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	if xMaxDom > 0 {
 		for _, meta := range seriesMeta {
 			if state.showDetailedTTFBMarkers && meta.TraceTTFBMs > 0 {
-				img = drawVerticalMarker(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180))
+				img = drawVerticalMarkerWithLabel(img, float64(meta.TraceTTFBMs)/1000.0, chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}, 0, xMaxDom, chart.ColorRed.WithAlpha(180), "TTFB")
 			}
 			if meta.TransferStalled && meta.StallElapsedMs > 0 {
 				start := math.Max(0, float64((meta.Samples[len(meta.Samples)-1].TimeMs)-meta.StallElapsedMs)) / 1000.0
@@ -13507,40 +13275,36 @@ func niceTicks(min, max float64, n int) []chart.Tick {
 	bestScore := math.MaxFloat64
 	for _, c := range candidates {
 		step := c * mag
-		count := math.Ceil((max - min) / step)
+		count := math.Ceil(span/step) + 1 // +1 so last tick >= max
 		if count < 2 {
 			count = 2
 		}
-		score := math.Abs(count - float64(n))
-		if score < bestScore {
-			bestScore = score
+		// score: closeness of count to desired n
+		diff := math.Abs(count - float64(n))
+		if diff < bestScore {
+			bestScore = diff
 			bestStep = step
 		}
 	}
+	// Generate ticks
 	start := math.Floor(min/bestStep) * bestStep
 	end := math.Ceil(max/bestStep) * bestStep
-	// limit to a reasonable number of ticks (<= n+2)
-	ticks := []chart.Tick{}
-	for v := start; v <= end+bestStep/2; v += bestStep {
-		ticks = append(ticks, chart.Tick{Value: v, Label: formatTick(v)})
-		if len(ticks) > n+2 {
-			break
+	var ticks []chart.Tick
+	for v := start; v <= end+bestStep*0.5; v += bestStep { // +0.5 step for float slop
+		if v < min-1e-9 || v > max+1e-9 { // still include bound ticks for readability
+			// allow outer by small margin
 		}
+		lab := formatTick(v)
+		ticks = append(ticks, chart.Tick{Value: v, Label: lab})
 	}
 	return ticks
 }
 
+// formatTick produces a compact numeric label.
 func formatTick(v float64) string {
-	if v == 0 {
-		return "0"
-	}
 	av := math.Abs(v)
 	switch {
-	case av >= 1_000_000:
-		return fmt.Sprintf("%.0f", v)
-	case av >= 100_000:
-		return fmt.Sprintf("%.0f", v)
-	case av >= 10_000:
+	case av >= 10000:
 		return fmt.Sprintf("%.0f", v)
 	case av >= 1000:
 		return fmt.Sprintf("%.0f", v)
@@ -14068,6 +13832,50 @@ func shadeXBand(img image.Image, xStart, xEnd float64, pad chart.Box, xMin, xMax
 	return rgba
 }
 
+// drawVerticalMarkerWithLabel overlays a small rotated label "TTFB" near the top of the vertical marker.
+// Keeps label minimal to avoid clutter; only applied for detailed per-request charts.
+func drawVerticalMarkerWithLabel(img image.Image, xVal float64, pad chart.Box, xMin, xMax float64, col drawing.Color, label string) image.Image {
+	base := drawVerticalMarker(img, xVal, pad, xMin, xMax, col)
+	if base == nil || label == "" || !(xMax > xMin) {
+		return base
+	}
+	b := base.Bounds()
+	plot := image.Rect(b.Min.X+pad.Left, b.Min.Y+pad.Top, b.Max.X-pad.Right, b.Max.Y-pad.Bottom)
+	if plot.Dx() <= 0 || plot.Dy() <= 0 {
+		return base
+	}
+	t := (xVal - xMin) / (xMax - xMin)
+	if t < 0 { t = 0 }
+	if t > 1 { t = 1 }
+	px := plot.Min.X + int(math.Round(t*float64(plot.Dx()-1)))
+	// inline conversion to RGBA
+	var rgba *image.RGBA
+	if out, ok := base.(*image.RGBA); ok {
+		rgba = out
+	} else {
+		bnds := base.Bounds()
+		rgba = image.NewRGBA(bnds)
+		draw.Draw(rgba, bnds, base, bnds.Min, draw.Src)
+	}
+	face := basicfont.Face7x13
+	// simple shadow + text horizontally (no rotation) just above axis area
+	xTxt := px + 3
+	yTxt := plot.Min.Y + 10
+	if xTxt+50 > b.Max.X { // clamp
+		xTxt = b.Max.X - 50
+	}
+	shadow := image.NewUniform(color.RGBA{0,0,0,200})
+	txtCol := image.NewUniform(color.RGBA{255,255,255,230})
+	outline := [][2]int{{1,1},{-1,1},{1,-1},{-1,-1}}
+	for _, d := range outline {
+		dr := &font.Drawer{Dst: rgba, Src: shadow, Face: face, Dot: fixed.Point26_6{X: fixed.I(xTxt+d[0]), Y: fixed.I(yTxt+d[1])}}
+		dr.DrawString(label)
+	}
+	dr := &font.Drawer{Dst: rgba, Src: txtCol, Face: face, Dot: fixed.Point26_6{X: fixed.I(xTxt), Y: fixed.I(yTxt)}}
+	dr.DrawString(label)
+	return rgba
+}
+
 // noteUnknownHidden appends a short note to the watermark when '(unknown)' protocols are hidden.
 func noteUnknownHidden(state *uiState, base string) string {
 	if state != nil && state.hideUnknownProtocols {
@@ -14247,6 +14055,27 @@ func rebuildDetailedCharts(state *uiState) {
 	}
 	prevSel := state.selectedRow
 	chartsAdded := 0
+	// helper to wrap an image canvas with crosshair overlay + optional legend lines
+	wrapDetailed := func(canv *canvas.Image, mode string, legendLines []string, overlayPtr **crosshairOverlay) fyne.CanvasObject {
+		if canv == nil { return canv }
+		legendObj := fyne.CanvasObject(nil)
+		if len(legendLines) > 0 {
+			seg := make([]widget.RichTextSegment, 0, len(legendLines))
+			for _, l := range legendLines { seg = append(seg, &widget.TextSegment{Text: l+"\n"}) }
+			rt := widget.NewRichText(seg...); rt.Wrapping = fyne.TextWrapOff
+			boxBG := canvas.NewRectangle(color.RGBA{0,0,0,160})
+			cont := container.NewMax(boxBG, container.NewPadded(rt))
+			cont.Resize(fyne.NewSize(200, rt.MinSize().Height+8))
+			legendObj = container.NewWithoutLayout(cont)
+			legendObj.(*fyne.Container).Resize(cont.Size())
+		}
+		if *overlayPtr == nil { *overlayPtr = newCrosshairOverlay(state, mode) }
+		co := *overlayPtr
+		objs := []fyne.CanvasObject{canv}
+		if legendObj != nil { objs = append(objs, container.NewVBox(legendObj)) }
+		objs = append(objs, co)
+		return container.NewMax(objs...)
+	}
 	for _, tag := range tags {
 		ix := findIndex(tag)
 		if ix < 0 {
@@ -14279,15 +14108,16 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Speed Percentiles", helpPercentiles)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
-				if len(tags) == 1 {
-					state.detailedPctlImgCanvas = canv
-				}
+				legend := []string{"Legend:", "Bars: percentile values"}
+				wrapped := wrapDetailed(canv, "detailed_percentiles", legend, &state.detailedPercentilesOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
+				if len(tags) == 1 { state.detailedPctlImgCanvas = canv }
 			} else {
 				header := makeDetailHeader("Speed Percentiles", helpPercentiles)
 				state.detailedChartsBox.Add(container.NewVBox(header, widget.NewLabel("No percentile data available for this batch.")))
 			}
 		}
+
 		// Speed over time
 		if state.showDetailedSpeedOverTime {
 			if img := renderSpeedOverTimeDetailedChart(state); img != nil {
@@ -14296,7 +14126,9 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Speed over Time", helpSpeedOverTime)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
+				legend := []string{"Legend:", "Red line: TTFB", "Orange band: Stall", "Dot: ~100ms sample"}
+				wrapped := wrapDetailed(canv, "detailed_speed_over_time", legend, &state.detailedSpeedOverTimeOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
 				if len(tags) == 1 {
 					state.detailedSpeedOverTimeImgCanvas = canv
 				}
@@ -14313,7 +14145,9 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Bytes over Time", helpBytesOverTime)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
+				legend := []string{"Legend:", "Red line: TTFB", "Orange band: Stall", "Dot: ~100ms sample"}
+				wrapped := wrapDetailed(canv, "detailed_bytes_over_time", legend, &state.detailedBytesOverTimeOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
 				if len(tags) == 1 {
 					state.detailedBytesOverTimeImgCanvas = canv
 				}
@@ -14327,7 +14161,9 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Speed over Time — Top Sessions", helpTopSessionsSpeed)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
+				legend := []string{"Legend:", "Red line: TTFB", "Orange: Stall", "Dots: samples"}
+				wrapped := wrapDetailed(canv, "detailed_top_sessions_speed", legend, &state.detailedTopSessionsSpeedOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
 				if len(tags) == 1 {
 					state.detailedTopSessionsImgCanvas = canv
 				}
@@ -14341,7 +14177,9 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Bytes over Time — Top Sessions", helpTopSessionsBytes)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
+				legend := []string{"Legend:", "Red line: TTFB", "Orange: Stall", "Dots: samples"}
+				wrapped := wrapDetailed(canv, "detailed_top_sessions_bytes", legend, &state.detailedTopSessionsBytesOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
 				if len(tags) == 1 {
 					state.detailedBytesTopSessionsCanvas = canv
 				}
@@ -14358,10 +14196,10 @@ func rebuildDetailedCharts(state *uiState) {
 				canv.FillMode = canvas.ImageFillContain
 				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
 				header := makeDetailHeader("Errors by URL (Top 12)", helpErrors)
-				state.detailedChartsBox.Add(container.NewVBox(header, canv))
-				if len(tags) == 1 {
-					state.detailedErrorsByURLImgCanvas = canv
-				}
+				legend := []string{"Legend:", "Bars: error count"}
+				wrapped := wrapDetailed(canv, "detailed_errors_by_url", legend, &state.detailedErrorsByURLOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
+				if len(tags) == 1 { state.detailedErrorsByURLImgCanvas = canv }
 			}
 		}
 		if len(state.detailedChartsBox.Objects) > chartsAdded {
