@@ -39,6 +39,12 @@ Tip: To seed the Pre‑TTFB chart visibility on launch, use `--show-pretffb=true
  - Keyboard shortcuts: Open (Cmd/Ctrl+O), Reload (Cmd/Ctrl+R), Close window (Cmd/Ctrl+W), Find (Cmd/Ctrl+F), Diagnostics (Cmd/Ctrl+D), Find Next (Cmd/Ctrl+G), Find Prev (Shift+Cmd/Ctrl+G).
  - New setup timing charts: DNS Lookup Time (ms), TCP Connect Time (ms), TLS Handshake Time (ms), each split Overall/IPv4/IPv6.
  - Error analytics: “Error Types (%)” composition chart showing share of total errors by type (DNS, TCP, TLS, HEAD, HTTP, Range) per batch; complements per‑protocol error charts.
+ - Per‑URL errors: “Errors by URL (Top 12)” bar chart showing the top URLs by error count in the currently selected batch. Pick a row in the table to update it. Useful to quickly spot problematic endpoints.
+ - Detailed Batch Charts tab:
+	 - Speed Percentiles — <RunTag>: P25, P50, P75, P90, P95, P99 for the selected or compared batches. Unit-aware.
+	 - Speed over Time — <RunTag>: time‑series of measured throughput per 100 ms sample across requests in the batch; thin lines per request (up to 8). Theme- and unit‑aware, with hints and watermark.
+	 - Speed over Time — Top Sessions — <RunTag>: small multiples (top 4 sessions by transfer size). Each panel shows a single HTTP session’s speed vs time; title includes host/path and size/time. Useful to inspect shape and stability.
+	 - Errors by URL (Top 12) — <RunTag>: horizontal bars of most error‑prone URLs for the batch.
 - Cache/proxy analytics: split Enterprise Proxy Rate and Server-side Proxy Rate charts. The legacy combined "Proxy Suspected Rate" chart is deprecated and hidden in the UI (kept in analysis data for compatibility).
  - Info popups follow consistent design criteria; see `docs/ui/info_popup_design_criteria.md`.
 
@@ -119,10 +125,20 @@ Notes:
 	 - When Min/Max is hidden, the Min/Max panels display a subtle inline hint explaining how to enable them.
 - Visible Charts: quickly show/hide individual charts. Your choices persist across sessions.
 - Visibility Presets:
+- Detailed tab behavior
+	- The top bar shows a Batch selector and a Compare button. You can compare up to 4 RunTags; charts are stacked per selected RunTag.
+	- Settings → “Auto‑open Detailed tab when selection exists” opens the Detailed tab after load when a stored selection (or compare list) is present.
+	- Selections persist: the selected RunTag and compare list are saved across restarts.
+
 	- Built-in presets (Everything, Setup Timings, Errors Focus, etc.).
 	- Save current as custom preset… stores your current visible set (by stable chart IDs) with a name. Presets persist across restarts.
 	- Apply/Rename/Delete Custom Preset submenus appear when you have custom presets. The menu title shows the active preset name when your current visibility exactly matches a preset.
-	- Combined export can optionally include only visible charts via Chart Options → "Export only visible charts". You can also hide generic 'Other' categories from Error Reasons charts via Chart Options.
+	- Combined export can optionally include only visible charts via Chart Options → "Export only visible charts". You can also:
+		- Hide generic 'Other' categories from Error Reasons charts via Chart Options → "Hide 'Other' categories".
+		- Hide “(unknown)” protocols across Protocol/TLS/ALPN charts via Chart Options → "Hide '(unknown)' protocols". When enabled:
+			- Chart titles show a suffix “— (unknown hidden)”.
+			- Watermarks note the hidden state.
+			- Legends omit the “(unknown)” series.
 
 ### Selection
 - Selection is session-only: the last clicked batch (RunTag) is remembered only within the current session and restored after reloads during the session. It is not persisted across app restarts.
@@ -132,6 +148,26 @@ Notes:
 - Full-width charts: images use a stretch fill to visually occupy the entire available width.
 - Flexible window size: the window can be made narrow; the toolbar scrolls horizontally when there’s not enough space.
 - Debounced resize: viewer redraws on meaningful width changes only (guarded to prevent jitter-driven redraw loops).
+
+#### Unified sizing & tick helpers (developer note)
+Reusable logic lives in `cmd/iqmviewer/uihelpers`:
+
+| Helper | Purpose |
+| ------ | ------- |
+| `ComputeChartDimensions(rawW)` | Applies minimum width (800) and aspect-derived height (≈33%) with clamp (280–520). Used by all primary & detailed charts. |
+| `ComputeMiniChartHeight(fullH)` | Half of full chart height, clamped 180–360, for stacked Top Sessions mini panels. |
+| `ComputeTableColumnWidths(winW)` | Breakpoint-driven responsive column widths (900 / 760 / 520). Hidden columns become width 0. |
+| `BuildTimeAxisTicks(maxSeconds, n)` | Generates time-axis tick positions (1/2/2.5/5×10^k pattern) for detailed per-request time-series charts (Speed/Bytes + mini charts). |
+| `BuildNumericTicks(min, max, n)` | Shared numeric axis tick generator (same 1/2/2.5/5×10^k pattern) used for Batch X axis and ALL numeric Y axes (legacy `niceTicks` removed). |
+
+Axis unification status:
+- Batch (index) X axis uses helper-driven tick spacing (sparse, consistent with detailed charts) with RunTag labels when <=50 batches.
+- Time-series detailed charts use `BuildTimeAxisTicks` for X.
+- All numeric Y axes derive their domain directly from the first/last values returned by `BuildNumericTicks` (no separate "nice bounds" helper) and use `FormatNumericTick`; legacy `niceTicks`/`formatTick` + range padding helper have been removed.
+
+Testing:
+- Core helper tests live in `uihelpers/uihelpers_test.go`.
+- Batch axis integration tests gated behind build tag `ticks` (`go test -tags ticks -run TestBuildXAxis ./cmd/iqmviewer`). This keeps default test runs fast and side‑effect free.
 
 ### Theme selection
 - Settings → Screenshot Theme: Auto (default), Dark, Light.
@@ -278,6 +314,8 @@ Examples:
 - ALPN Mix (%): share of requests by negotiated ALPN (e.g., h2, http/1.1). Sums to ~100% across ALPN values.
 - Chunked Transfer Rate (%): percentage of responses using chunked transfer encoding. Does not add to 100% (a rate, not a share).
 
+Tip: If you enable Chart Options → "Hide '(unknown)' protocols", the affected chart titles will include “— (unknown hidden)”, legends will omit the series, and exports retain the same indication in the watermark.
+
 All are crosshair-enabled, theme-aware, and available in combined exports.
 
 ### Rates vs Shares: how to read percent charts
@@ -384,6 +422,7 @@ Additional protocol/error screenshots:
 - `stall_share_by_http_protocol.png`
 - `partial_share_by_http_protocol.png`
 - `error_types.png`
+ - `errors_by_url.png`
 
 SLA examples:
 
@@ -443,10 +482,45 @@ Run with a results file to open the UI:
 - Nice time ticks via `pickTimeStep` + `makeNiceTimeTicks`, actual data timestamps are preserved.
 
 ## Tests
-- Width determinism (headless):
-	- `TestScreenshotWidths_BaseSet` ensures all generated screenshots share the same width.
+The test suite is split into fast pure unit tests and optional heavier integration tests using build tags.
+
+Fast (default `go test`):
+* Pure helpers (responsive sizing) live in `cmd/iqmviewer/uihelpers` and always run.
+* GUI / crosshair logic tests are excluded by default behind the `crosshair` build tag.
+* Screenshot + command builder integration tests are excluded by default behind the `integration` build tag.
+
+Helper functions:
+* `ComputeChartDimensions(rawW)` – clamps chart width/height and enforces aspect ratio (moved to `uihelpers` for testability).
+* `ComputeTableColumnWidths(windowWidth)` – returns 10 column widths for summary table across responsive breakpoints (900px, 760px, 520px tiers).
+
+Build tag matrix:
+* Default: only pure helper tests run (`uihelpers_test.go`).
+* `-tags=crosshair` adds crosshair interaction / mapping tests (no heavy I/O, but depend on chart math).
+* `-tags=integration` adds screenshot rendering and external command builder tests (file I/O, PNG decoding, synthetic JSONL generation).
+* Combine tags to run everything: `-tags='crosshair integration'`.
+
+Examples:
+```bash
+# Fast sanity (helpers only)
+go test ./cmd/iqmviewer/... -count=1
+
+# Crosshair logic tests too
+go test -tags=crosshair ./cmd/iqmviewer -run TestIndexModeMapping_CentersAndSelection -count=1
+
+# All integration (screenshots + commands)
+go test -tags=integration ./cmd/iqmviewer -run TestScreenshotWidths_ -count=1
+
+# Full suite
+go test -tags='crosshair integration' ./cmd/iqmviewer/... -count=1
+```
+
+Width determinism (headless):
+* `TestScreenshotWidths_BaseSet` ensures all generated screenshots share the same width under forced `screenshotWidthOverride`.
+
+Manual screenshot run (headless):
+```bash
 go run ./cmd/iqmviewer -screenshot -file monitor_results.jsonl -screenshot-outdir docs/images
-- Run:
+```
 
 Flags:
 - -file: Path to monitor_results.jsonl (defaults to ./monitor_results.jsonl if omitted in screenshot mode)
@@ -461,8 +535,9 @@ Flags:
 - -screenshot-variants: 'none' | 'averages' (default 'averages')
 - -screenshot-dns-legacy: Overlay dashed legacy dns_time_ms on the DNS chart (default false)
 - -screenshot-selftest: Include the Local Throughput Self-Test chart (default true)
-```
-go test ./cmd/iqmviewer -run TestScreenshotWidths_ -v
+For just the screenshot width tests use:
+```bash
+go test -tags=integration ./cmd/iqmviewer -run TestScreenshotWidths_ -v
 ```
 
 ## Troubleshooting

@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package main
 
 import (
@@ -210,5 +213,28 @@ func TestScreenshots_IncludesStallAndPartialShares(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing screenshot %s: %v", name, err)
 		}
+	}
+}
+
+// TestScreenshots_IncludesErrorsByURL ensures the per-URL errors chart is rendered to disk.
+func TestScreenshots_IncludesErrorsByURL(t *testing.T) {
+	screenshotWidthOverride = 800
+	tmpResults, err := os.CreateTemp(t.TempDir(), "results-*.jsonl")
+	if err != nil {
+		t.Fatalf("create temp results: %v", err)
+	}
+	// Minimal data; per-URL chart renders even if empty, but presence of file matters
+	writeResultLine(t, tmpResults, "20250101_000000", 1200, 80)
+	writeResultLine(t, tmpResults, "20250102_000000", 900, 90)
+	if err := tmpResults.Close(); err != nil {
+		t.Fatalf("close results: %v", err)
+	}
+	outDir := t.TempDir()
+	if err := RunScreenshotsMode(tmpResults.Name(), outDir, "All", 5, false, 10, 1000, "none", "light", false, false, false, false, true, true, true, true); err != nil {
+		t.Fatalf("RunScreenshotsMode: %v", err)
+	}
+	path := filepath.Join(outDir, "errors_by_url.png")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("missing errors by url screenshot: %v", err)
 	}
 }

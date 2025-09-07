@@ -183,6 +183,9 @@ type BatchSummary struct {
 	// tls_alert_handshake_failure, timeout_connect, timeout_tls, timeout_ttfb, timeout_read, other_eof, etc.
 	ErrorRateByReasonDetailedPct  map[string]float64 `json:"error_rate_by_reason_detailed_pct,omitempty"`
 	ErrorShareByReasonDetailedPct map[string]float64 `json:"error_share_by_reason_detailed_pct,omitempty"`
+	// Errors by input URL: raw counts of lines with errors per URL within this batch.
+	// Useful for identifying problematic endpoints. Only populated when there are errors.
+	ErrorLinesByURL map[string]int `json:"error_lines_by_url,omitempty"`
 }
 
 // FamilySummary mirrors BatchSummary's metric fields for a single IP family subset.
@@ -1391,6 +1394,8 @@ readLoop:
 		errReasonCounts := map[string]int{}
 		// detailed error reason counters (more granular)
 		errReasonDetailedCounts := map[string]int{}
+		// per-URL error counts (within this batch)
+		errByURL := map[string]int{}
 		var lowMsSumAll, totalMsSumAll int64
 		var stallCntAll int
 		var preTTFBCntAll int
@@ -1549,6 +1554,9 @@ readLoop:
 				}
 				if dreason := strings.TrimSpace(r.errorReasonDetailed); dreason != "" {
 					errReasonDetailedCounts[dreason]++
+				}
+				if u := strings.TrimSpace(r.url); u != "" {
+					errByURL[u]++
 				}
 			}
 			// stability accumulators (overall)
@@ -1709,6 +1717,10 @@ readLoop:
 				summary.ErrorRateByReasonDetailedPct[k] = float64(c) / float64(recCount) * 100
 				summary.ErrorShareByReasonDetailedPct[k] = float64(c) / float64(errorLines) * 100
 			}
+		}
+		// Attach per-URL error counts (raw) for this batch
+		if errorLines > 0 && len(errByURL) > 0 {
+			summary.ErrorLinesByURL = errByURL
 		}
 		// Attach diagnostics
 		summary.DNSServer = latestDNS
