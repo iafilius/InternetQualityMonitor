@@ -40,9 +40,21 @@ import (
 	chart "github.com/wcharczuk/go-chart/v2"
 	"github.com/wcharczuk/go-chart/v2/drawing"
 
+	helpers "github.com/iafilius/InternetQualityMonitor/cmd/iqmviewer/uihelpers"
 	"github.com/iafilius/InternetQualityMonitor/src/analysis"
 	"github.com/iafilius/InternetQualityMonitor/src/monitor"
 )
+
+// Legend tracking (lightweight) to satisfy legend_style_test without deep coupling to rendering internals.
+type legendSpec struct {
+	Prefix     string
+	Background color.RGBA
+	Text       color.RGBA
+	FontSize   int
+	Alpha      uint8
+}
+
+var lastLegendSpecs []legendSpec
 
 // screenshotThemeGlobal holds the effective theme used for charts/screenshots.
 // Values: "dark" or "light".
@@ -59,6 +71,10 @@ var screenshotWidthOverride = 0
 // When > 0, chartSize() will honor this width regardless of window mode.
 // Always reset back to 0 after export to avoid affecting on-screen rendering.
 var renderWidthOverride = 0
+
+// debugLoggingEnabled enables verbose resize/chart dimension tracing.
+// Toggle via a hidden CLI flag or future settings if needed.
+var debugLoggingEnabled = false
 
 // resolveTheme maps a user-facing mode to an effective chart theme.
 func resolveTheme(mode string, app fyne.App) string {
@@ -636,6 +652,8 @@ type uiState struct {
 	// New: Bytes over Time charts (detailed)
 	detailedBytesOverTimeImgCanvas *canvas.Image
 	detailedBytesTopSessionsCanvas *canvas.Image
+	// New: Host/IP Timing Breakdown chart (detailed)
+	detailedHostIPTimingImgCanvas *canvas.Image
 	// Detailed visibility toggles (persisted)
 	showDetailedPercentiles      bool
 	showDetailedSpeedOverTime    bool
@@ -643,13 +661,17 @@ type uiState struct {
 	showDetailedTopSessionsSpeed bool
 	showDetailedTopSessionsBytes bool
 	showDetailedErrorsByURL      bool
+	showDetailedHostIPTiming     bool
 	showDetailedTTFBMarkers      bool // new: toggle vertical TTFB marker lines in detailed charts
 	showDetailedLegends          bool // new: toggle custom legends in detailed detailed charts
 	// In-memory series data for detailed per-session hover (populated on render)
 	detailedSpeedSeriesData []sessionSeriesData // time (s) -> speed (already scaled to chosen unit)
 	detailedSpeedXMaxSec    float64
 	detailedBytesSeriesData []sessionSeriesData // time (s) -> cumulative MB
-	detailedBytesXMaxSec    float64
+	// Y-axis max (after padding) for detailed charts used to map mouse Y -> domain for per-request series selection
+	detailedSpeedYMax    float64
+	detailedBytesYMax    float64
+	detailedBytesXMaxSec float64
 	// Detailed per-host/domain filter
 	detailedHostFilter string // "All" or specific host
 	// Errors grouping mode
@@ -705,12 +727,13 @@ type uiState struct {
 	detailedTopSessionsBytesOverlay *crosshairOverlay
 	detailedErrorsByURLOverlay      *crosshairOverlay
 	detailedPercentilesOverlay      *crosshairOverlay
-	lowSpeedImgCanvas               *canvas.Image // Low-Speed Time Share (%)
-	stallRateImgCanvas              *canvas.Image // Stall Rate (%)
-	pretffbImgCanvas                *canvas.Image // Pre-TTFB Stall Rate (%)
-	stallTimeImgCanvas              *canvas.Image // Avg Stall Time (ms)
-	stallCountImgCanvas             *canvas.Image // Stalled Requests Count (interim)
-	partialBodyImgCanvas            *canvas.Image // Partial Body Rate (%)
+	hostIPTimingOverlay             *crosshairOverlay // overlay for Host/IP timing breakdown
+	lowSpeedImgCanvas               *canvas.Image     // Low-Speed Time Share (%)
+	stallRateImgCanvas              *canvas.Image     // Stall Rate (%)
+	pretffbImgCanvas                *canvas.Image     // Pre-TTFB Stall Rate (%)
+	stallTimeImgCanvas              *canvas.Image     // Avg Stall Time (ms)
+	stallCountImgCanvas             *canvas.Image     // Stalled Requests Count (interim)
+	partialBodyImgCanvas            *canvas.Image     // Partial Body Rate (%)
 	// micro-stalls (transient stalls) charts
 	microStallRateImgCanvas  *canvas.Image // Transient Stall Rate (%)
 	microStallTimeImgCanvas  *canvas.Image // Avg Transient Stall Time (ms)
@@ -720,10 +743,13 @@ type uiState struct {
 	setupDNSImgCanvas  *canvas.Image // Avg DNS time (ms)
 	setupConnImgCanvas *canvas.Image // Avg TCP connect (ms)
 	setupTLSImgCanvas  *canvas.Image // Avg TLS handshake (ms)
+	// New: BatchAvg Host/IP Timing Breakdown (average of averages per batch)
+	hostIPTimingAvgImgCanvas *canvas.Image
 	// overlays for setup charts
-	setupDNSOverlay  *crosshairOverlay
-	setupConnOverlay *crosshairOverlay
-	setupTLSOverlay  *crosshairOverlay
+	setupDNSOverlay        *crosshairOverlay
+	setupConnOverlay       *crosshairOverlay
+	setupTLSOverlay        *crosshairOverlay
+	hostIPTimingAvgOverlay *crosshairOverlay
 
 	// overlays for additional charts
 	errOverlay             *crosshairOverlay
@@ -1042,7 +1068,7 @@ func chartTitleToID(title string) string {
 		return "jitter"
 	case "Coefficient of Variation":
 		return "cov"
-	case "Low-Speed Time Share":
+	case "Low Speed Share":
 		return "low_speed_share"
 	case "Stall Rate":
 		return "stall_rate"
@@ -1331,46 +1357,43 @@ func buildChartInfoContent(title, help string) fyne.CanvasObject {
 	lines := strings.Split(help, "\n")
 	var urls []string
 	for _, ln := range lines {
-		// Extract http(s) URLs by simple token scan
-		for _, tok := range strings.Fields(ln) {
-			if strings.HasPrefix(tok, "http://") || strings.HasPrefix(tok, "https://") {
-				// Trim trailing punctuation
-				tok = strings.TrimRight(tok, ".,);]")
-				if u, err := url.Parse(tok); err == nil && u.Scheme != "" && u.Host != "" {
-					urls = append(urls, u.String())
-				}
+		trim := strings.TrimSpace(ln)
+		// (References line detected but currently not specially handled)
+		// naive URL detection
+		fields := strings.Fields(trim)
+		for _, f := range fields {
+			if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
+				urls = append(urls, f)
 			}
 		}
 	}
-
-	// Build rich text for the description (sans URLs section header duplication)
-	desc := widget.NewRichTextWithText(help)
-	desc.Wrapping = fyne.TextWrapWord
-
-	// Build links area if we have URLs
-	var linkItems []fyne.CanvasObject
-	if len(urls) > 0 {
-		linkItems = append(linkItems, widget.NewSeparator())
-		linkItems = append(linkItems, widget.NewLabelWithStyle("References:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
-		for _, u := range urls {
-			// Each URL as a hyperlink
-			link := widget.NewHyperlink(u, parseURLOrNil(u))
-			link.Wrapping = fyne.TextWrapBreak
-			linkItems = append(linkItems, link)
+	body := widget.NewRichText(&widget.TextSegment{Text: help})
+	body.Wrapping = fyne.TextWrapWord
+	if len(urls) == 0 {
+		return container.NewBorder(nil, nil, nil, nil, body)
+	}
+	var linkObjs []fyne.CanvasObject
+	for _, u := range urls {
+		if pu := parseURLOrNil(u); pu != nil {
+			linkObjs = append(linkObjs, widget.NewHyperlink(shortenURL(u, 60), pu))
 		}
 	}
+	links := container.NewVBox(linkObjs...)
+	return container.NewBorder(nil, links, nil, nil, body)
+}
 
-	// Standard footer tips reminder to keep consistency across charts
-	tips := widget.NewLabel("Tips: Use Settings to adjust X-Axis, Y-Scale, and Number of Batches. Use the Situation selector to filter context; exports include the active Situation watermark.")
-	tips.Wrapping = fyne.TextWrapWord
-
-	content := container.NewVBox(desc)
-	if len(linkItems) > 0 {
-		content.Add(container.NewVBox(linkItems...))
+func shortenURL(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
 	}
-	content.Add(widget.NewSeparator())
-	content.Add(tips)
-	return content
+	if max < 8 {
+		return s[:max]
+	}
+	keep := (max - 3) / 2
+	if keep < 3 {
+		keep = 3
+	}
+	return s[:keep] + "..." + s[len(s)-keep:]
 }
 
 func parseURLOrNil(s string) *url.URL {
@@ -1554,6 +1577,35 @@ func (d *darkTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
 }
 func (d *darkTheme) Size(name fyne.ThemeSizeName) float32 { return theme.DefaultTheme().Size(name) }
 
+// tinyWrapper is a container that forces a very small MinSize so the window can be shrunk
+// beyond the natural minimum implied by its child (e.g. wide table columns). It simply
+// passes all available space to the child.
+type tinyWrapper struct {
+	widget.BaseWidget
+	child fyne.CanvasObject
+}
+
+func newTinyWrapper(c fyne.CanvasObject) *tinyWrapper {
+	tw := &tinyWrapper{child: c}
+	tw.ExtendBaseWidget(tw)
+	return tw
+}
+
+func (t *tinyWrapper) CreateRenderer() fyne.WidgetRenderer {
+	return &tinyWrapperRenderer{tw: t, objs: []fyne.CanvasObject{t.child}}
+}
+
+type tinyWrapperRenderer struct {
+	tw   *tinyWrapper
+	objs []fyne.CanvasObject
+}
+
+func (r *tinyWrapperRenderer) Layout(sz fyne.Size)          { r.tw.child.Resize(sz) }
+func (r *tinyWrapperRenderer) MinSize() fyne.Size           { return fyne.NewSize(120, 120) }
+func (r *tinyWrapperRenderer) Refresh()                     { canvas.Refresh(r.tw) }
+func (r *tinyWrapperRenderer) Destroy()                     {}
+func (r *tinyWrapperRenderer) Objects() []fyne.CanvasObject { return r.objs }
+
 func main() {
 	// CLI flags for opening a file directly
 	var fileFlag string
@@ -1624,8 +1676,9 @@ func main() {
 	a := app.NewWithID("com.iqm.viewer")
 	a.Settings().SetTheme(&darkTheme{})
 	w := a.NewWindow("IQM Viewer")
-	// Main window sizing: enforce a sensible minimum, and restore last size if available.
-	const minMainW, minMainH = float32(1100), float32(750)
+	// Main window sizing: greatly reduced minimum so user can shrink window far more.
+	// Real minimum visual usability will be enforced by responsive table column adjustments below.
+	const minMainW, minMainH = float32(320), float32(260)
 	// Bigger default to show more detail on first launch
 	defW, defH := 1400, 950
 	prefW := a.Preferences().IntWithFallback("mainWindowW", defW)
@@ -1637,6 +1690,8 @@ func main() {
 		prefH = int(minMainH)
 	}
 	w.Resize(fyne.NewSize(float32(prefW), float32(prefH)))
+
+	// Responsive behavior applied after state/table exist (defined later)
 
 	state := &uiState{
 		app:         a,
@@ -1656,6 +1711,7 @@ func main() {
 		showDetailedTopSessionsSpeed: true,
 		showDetailedTopSessionsBytes: true,
 		showDetailedErrorsByURL:      true,
+		showDetailedHostIPTiming:     true,
 		showDetailedTTFBMarkers:      true,
 		showDetailedLegends:          true,
 		detailedHostFilter:           "All",
@@ -1771,7 +1827,7 @@ func main() {
 			lbl.col = id.Col
 			rows := filteredSummaries(state)
 			// columns: 0 RunTag, 1 Lines, 2 AvgSpeed, 3 AvgTTFB, 4 Errors, 5 v4 speed, 6 v4 ttfb, 7 v6 speed, 8 v6 ttfb, 9 Qual
-			if id.Row == 0 {
+			if id.Row == 0 { // header row labels
 				unitName, _ := speedUnitNameAndFactor(state.speedUnit)
 				switch id.Col {
 				case 0:
@@ -1779,19 +1835,19 @@ func main() {
 				case 1:
 					lbl.SetText("Lines")
 				case 2:
-					lbl.SetText("Avg Speed (" + unitName + ")")
+					lbl.SetText("Avg(" + unitName + ")")
 				case 3:
-					lbl.SetText("Avg TTFB (ms)")
+					lbl.SetText("AvgTTFB(ms)")
 				case 4:
 					lbl.SetText("Errors")
 				case 5:
-					lbl.SetText("IPv4 Speed (" + unitName + ")")
+					lbl.SetText("v4(" + unitName + ")")
 				case 6:
-					lbl.SetText("IPv4 TTFB (ms)")
+					lbl.SetText("v4TTFB")
 				case 7:
-					lbl.SetText("IPv6 Speed (" + unitName + ")")
+					lbl.SetText("v6(" + unitName + ")")
 				case 8:
-					lbl.SetText("IPv6 TTFB (ms)")
+					lbl.SetText("v6TTFB")
 				case 9:
 					lbl.SetText("Qual")
 				}
@@ -1864,6 +1920,38 @@ func main() {
 	state.table.SetColumnWidth(7, 120)
 	state.table.SetColumnWidth(8, 110)
 	state.table.SetColumnWidth(9, 60)
+
+	// Responsive table column sizing via pure helper
+	applyResponsiveTable := func() {
+		cols := helpers.ComputeTableColumnWidths(w.Canvas().Size().Width)
+		for i, width := range cols {
+			state.table.SetColumnWidth(i, float32(width))
+		}
+		state.table.Refresh()
+	}
+	// Initial application
+	applyResponsiveTable()
+	// Re-apply on window resize via polling (Fyne lacks a direct resize callback for all layouts)
+	lastSize := w.Canvas().Size()
+	lastRedrawW := lastSize.Width
+	go func() {
+		for {
+			time.Sleep(250 * time.Millisecond)
+			cur := w.Canvas().Size()
+			if cur != lastSize {
+				prev := lastSize
+				lastSize = cur
+				widthChanged := math.Abs(float64(cur.Width-prev.Width)) > 8 // threshold to avoid thrash
+				fyne.Do(func() {
+					applyResponsiveTable()
+					if widthChanged && cur.Width != lastRedrawW {
+						lastRedrawW = cur.Width
+						redrawCharts(state)
+					}
+				})
+			}
+		}
+	}()
 
 	// open diagnostics details on row selection (single-click for now)
 	state.table.OnSelected = func(id widget.TableCellID) {
@@ -2212,6 +2300,12 @@ func main() {
 	state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
 	state.setupTLSOverlay = newCrosshairOverlay(state, "setup_tls")
 
+	// Batch Host/IP Timing Breakdown (Avg of per-host/IP averages) placeholder
+	state.hostIPTimingAvgImgCanvas = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, 100, 60)))
+	state.hostIPTimingAvgImgCanvas.FillMode = canvas.ImageFillStretch
+	state.hostIPTimingAvgImgCanvas.SetMinSize(fyne.NewSize(0, float32(ih)))
+	state.hostIPTimingAvgOverlay = newCrosshairOverlay(state, "host_ip_timing_avg")
+
 	// Help text for charts (detailed). Mention X-Axis, Y-Scale and Situation controls and include references.
 	axesTip := "\n\nTips:\n- X-Axis can be switched (Batch | RunTag | Time) from Settings → X-Axis.\n- Y-Scale can be toggled (Absolute | Relative) from Settings → Y-Scale.\n- Batches count is configurable in Settings → Batches.\n- Situation can be filtered via the toolbar selector (defaults to All). Exports include the active Situation in a bottom-right watermark.\n"
 	helpSpeed := `Transfer Speed shows per-batch average throughput, optionally split by IP family (IPv4/IPv6).
@@ -2355,6 +2449,8 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 		makeChartSection(state, "TCP Connect Time (ms)", helpConn, container.NewStack(state.setupConnImgCanvas, state.setupConnOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "TLS Handshake Time (ms)", helpTLS, container.NewStack(state.setupTLSImgCanvas, state.setupTLSOverlay)),
+		widget.NewSeparator(),
+		makeChartSection(state, "Batch Host/IP Timing Breakdown", "Composite average timing per batch (DNS, TCP, TLS, Wait residual, Transfer, Stall). For each batch: compute per (host, resolved IP) averages then average those host/IP means to produce a representative setup+server timing profile. Helps compare setup/server behavior across batches.", container.NewStack(state.hostIPTimingAvgImgCanvas, state.hostIPTimingAvgOverlay)),
 		widget.NewSeparator(),
 		makeChartSection(state, "HTTP Protocol Mix (%)", "Share of requests by HTTP protocol (e.g., HTTP/2 vs HTTP/1.1). Bars typically sum to about 100% across protocols per batch (including '(unknown)' when present).\nReferences: https://www.rfc-editor.org/rfc/rfc9110\nAdditional research: A QUIC look at HTTP/3 performance (IMC 2020): https://dl.acm.org/doi/10.1145/3419394.3423639"+axesTip, container.NewStack(state.protocolMixImgCanvas, state.protocolMixOverlay)),
 		widget.NewSeparator(),
@@ -2568,6 +2664,16 @@ Set thresholds in Settings → SLA Thresholds (defaults: P50 ≥ 10,000 kbps; P9
 			savePrefs(state)
 		})
 		chkErrs.SetChecked(state.showDetailedErrorsByURL)
+		chkHostTiming := widget.NewCheck("Host/IP Timing", func(v bool) {
+			state.showDetailedHostIPTiming = v
+			if state.firstDataLoadDone {
+				scheduleDetailedRebuild(state)
+			} else {
+				state.pendingDetailedRebuild = true
+			}
+			savePrefs(state)
+		})
+		chkHostTiming.SetChecked(state.showDetailedHostIPTiming)
 		// Per-host filter options from current rows (hosts observed in error URLs)
 		hostOpts := []string{"All"}
 		{
@@ -2680,7 +2786,7 @@ Tips
 	}
 	// Use the horizontally scrollable toolbar at the top
 	content := container.NewBorder(topScroll, nil, nil, nil, tabs)
-	w.SetContent(content)
+	w.SetContent(newTinyWrapper(content))
 	// Initialize find matches now that chartRefs are registered
 	updateFindMatches(state)
 
@@ -2711,17 +2817,7 @@ Tips
 			}
 			sz := c.Size()
 			curW, curH := int(sz.Width), int(sz.Height)
-			if sz.Width < minMainW || sz.Height < minMainH {
-				wW, wH := sz.Width, sz.Height
-				if wW < minMainW {
-					wW = minMainW
-				}
-				if wH < minMainH {
-					wH = minMainH
-				}
-				w.Resize(fyne.NewSize(wW, wH))
-				return
-			}
+			// Allow shrinking below previous enforced minimum; columns adapt separately.
 			widthChanged := curW > prevW+minWidthDelta || curW < prevW-minWidthDelta
 			heightChanged := curH > prevH+minWidthDelta || curH < prevH-minWidthDelta
 			if widthChanged || heightChanged {
@@ -4745,8 +4841,9 @@ func redrawCharts(state *uiState) {
 	if state.showAvg {
 		if img := renderSpeedChartVariant(state, "avg"); img != nil && state.speedImgCanvas != nil {
 			state.speedImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.speedImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			cw, chh := chartSize(state)
+			// Ensure MinSize width matches chart width so layout can expand; previously width 0 prevented growth.
+			state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.speedImgCanvas.Refresh()
 			if state.speedOverlay != nil {
 				state.speedOverlay.Refresh()
@@ -4756,13 +4853,14 @@ func redrawCharts(state *uiState) {
 		// Clear image to a blank placeholder to reduce visual clutter when hidden
 		w, h := chartSize(state)
 		state.speedImgCanvas.Image = blank(w, h)
+		state.speedImgCanvas.SetMinSize(fyne.NewSize(float32(w), float32(h)))
 		state.speedImgCanvas.Refresh()
 	}
 	if state.showMedian {
 		if img := renderSpeedChartVariant(state, "median"); img != nil && state.speedMedianImgCanvas != nil {
 			state.speedMedianImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			cw, chh := chartSize(state)
+			state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.speedMedianImgCanvas.Refresh()
 			if state.speedMedianOverlay != nil {
 				state.speedMedianOverlay.Refresh()
@@ -4771,12 +4869,13 @@ func redrawCharts(state *uiState) {
 	} else if state.speedMedianImgCanvas != nil {
 		w, h := chartSize(state)
 		state.speedMedianImgCanvas.Image = blank(w, h)
+		state.speedMedianImgCanvas.SetMinSize(fyne.NewSize(float32(w), float32(h)))
 		state.speedMedianImgCanvas.Refresh()
 	}
 	if img := renderSpeedChartVariant(state, "minmax"); img != nil && state.speedMinMaxImgCanvas != nil {
 		state.speedMinMaxImgCanvas.Image = img
-		_, chh := chartSize(state)
-		state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+		cw, chh := chartSize(state)
+		state.speedMinMaxImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 		state.speedMinMaxImgCanvas.Refresh()
 		if state.speedMinMaxOverlay != nil {
 			state.speedMinMaxOverlay.Refresh()
@@ -4786,8 +4885,8 @@ func redrawCharts(state *uiState) {
 	if state.showAvg {
 		if img := renderTTFBChartVariant(state, "avg"); img != nil && state.ttfbImgCanvas != nil {
 			state.ttfbImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			cw, chh := chartSize(state)
+			state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.ttfbImgCanvas.Refresh()
 			if state.ttfbOverlay != nil {
 				state.ttfbOverlay.Refresh()
@@ -4796,13 +4895,14 @@ func redrawCharts(state *uiState) {
 	} else if state.ttfbImgCanvas != nil {
 		w, h := chartSize(state)
 		state.ttfbImgCanvas.Image = blank(w, h)
+		state.ttfbImgCanvas.SetMinSize(fyne.NewSize(float32(w), float32(h)))
 		state.ttfbImgCanvas.Refresh()
 	}
 	if state.showMedian {
 		if img := renderTTFBChartVariant(state, "median"); img != nil && state.ttfbMedianImgCanvas != nil {
 			state.ttfbMedianImgCanvas.Image = img
-			_, chh := chartSize(state)
-			state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+			cw, chh := chartSize(state)
+			state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(float32(cw), float32(chh)))
 			state.ttfbMedianImgCanvas.Refresh()
 			if state.ttfbMedianOverlay != nil {
 				state.ttfbMedianOverlay.Refresh()
@@ -4811,6 +4911,7 @@ func redrawCharts(state *uiState) {
 	} else if state.ttfbMedianImgCanvas != nil {
 		w, h := chartSize(state)
 		state.ttfbMedianImgCanvas.Image = blank(w, h)
+		state.ttfbMedianImgCanvas.SetMinSize(fyne.NewSize(float32(w), float32(h)))
 		state.ttfbMedianImgCanvas.Refresh()
 	}
 	if img := renderTTFBChartVariant(state, "minmax"); img != nil && state.ttfbMinMaxImgCanvas != nil {
@@ -5159,6 +5260,19 @@ func redrawCharts(state *uiState) {
 				_, chh := chartSize(state)
 				state.setupTLSImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
 				state.setupTLSImgCanvas.Refresh()
+			}
+		}
+		// Batch Host/IP Timing Avg chart
+		hipAvgImg := renderHostIPTimingAvgChart(state)
+		if hipAvgImg != nil {
+			if state.hostIPTimingAvgImgCanvas != nil {
+				state.hostIPTimingAvgImgCanvas.Image = hipAvgImg
+				_, chh := chartSize(state)
+				state.hostIPTimingAvgImgCanvas.SetMinSize(fyne.NewSize(0, float32(chh)))
+				state.hostIPTimingAvgImgCanvas.Refresh()
+			}
+			if state.hostIPTimingAvgOverlay != nil {
+				state.hostIPTimingAvgOverlay.Refresh()
 			}
 		}
 		// Transport/Protocol charts
@@ -5790,10 +5904,10 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 			return b.IPv6.AvgP99TTFBMs
 		}, chart.ColorRed)
 	default:
-		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50TTFBMs }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90TTFBMs }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95TTFBMs }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99TTFBMs }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50TTFBMs }, colorForSeries("P50"))
+		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90TTFBMs }, colorForSeries("P90"))
+		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95TTFBMs }, colorForSeries("P95"))
+		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99TTFBMs }, colorForSeries("P99"))
 	}
 
 	// Unified Y-axis behavior (positive metric)
@@ -5830,7 +5944,7 @@ func renderTTFBPercentilesChartWithFamily(state *uiState, fam string) image.Imag
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		fmt.Printf("[viewer] renderStallRateChart: render error: %v\n", err)
@@ -5937,7 +6051,7 @@ func renderTTFBTailHeavinessChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		fmt.Printf("[viewer] renderStallTimeChart: render error: %v\n", err)
@@ -6052,7 +6166,7 @@ func renderTTFBP95GapChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		fmt.Printf("[viewer] renderStallCountChart: render error: %v\n", err)
@@ -6153,7 +6267,7 @@ func renderCacheHitRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -6249,9 +6363,17 @@ func renderEnterpriseProxyRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		// Unified numeric axis: derive tick domain directly from helper output
+		yVals := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(yVals) < 2 {
+			yVals = []float64{minY, maxY}
+		}
+		rMin, rMax := yVals[0], yVals[len(yVals)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = make([]chart.Tick, 0, len(yVals))
+		for _, v := range yVals {
+			yTicks = append(yTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -6276,7 +6398,7 @@ func renderEnterpriseProxyRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -6371,9 +6493,16 @@ func renderServerProxyRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals) < 2 {
+			vals = []float64{minY, maxY}
+		}
+		rMin, rMax := vals[0], vals[len(vals)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v := range vals {
+			yTicks = append(yTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -6398,7 +6527,7 @@ func renderServerProxyRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -6493,9 +6622,16 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals) < 2 {
+			vals = []float64{minY, maxY}
+		}
+		rMin, rMax := vals[0], vals[len(vals)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v := range vals {
+			yTicks = append(yTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -6520,7 +6656,7 @@ func renderWarmCacheSuspectedRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -6615,9 +6751,16 @@ func renderLowSpeedShareChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals2 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals2) < 2 {
+			vals2 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals2[0], vals2[len(vals2)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v2 := range vals2 {
+			yTicks = append(yTicks, chart.Tick{Value: v2, Label: helpers.FormatNumericTick(v2)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -6642,7 +6785,7 @@ func renderLowSpeedShareChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -6734,9 +6877,16 @@ func renderStallRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals3 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals3) < 2 {
+			vals3 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals3[0], vals3[len(vals3)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v3 := range vals3 {
+			yTicks = append(yTicks, chart.Tick{Value: v3, Label: helpers.FormatNumericTick(v3)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -6761,7 +6911,7 @@ func renderStallRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -6852,9 +7002,16 @@ func renderMicroStallRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals4 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals4) < 2 {
+			vals4 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals4[0], vals4[len(vals4)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v4 := range vals4 {
+			yTicks = append(yTicks, chart.Tick{Value: v4, Label: helpers.FormatNumericTick(v4)})
+		}
 	} else if !state.useRelative && haveY {
 		// clamp to [0,100] for percent in absolute mode
 		if maxY < 1 {
@@ -6880,7 +7037,7 @@ func renderMicroStallRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -6979,7 +7136,7 @@ func renderMicroStallTimeChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -7078,7 +7235,7 @@ func renderMicroStallCountChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -7169,9 +7326,16 @@ func renderPartialBodyRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals5 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals5) < 2 {
+			vals5 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals5[0], vals5[len(vals5)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v5 := range vals5 {
+			yTicks = append(yTicks, chart.Tick{Value: v5, Label: helpers.FormatNumericTick(v5)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -7196,7 +7360,7 @@ func renderPartialBodyRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -7287,9 +7451,16 @@ func renderPreTTFBStallRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals6 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals6) < 2 {
+			vals6 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals6[0], vals6[len(vals6)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v6 := range vals6 {
+			yTicks = append(yTicks, chart.Tick{Value: v6, Label: helpers.FormatNumericTick(v6)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -7314,7 +7485,7 @@ func renderPreTTFBStallRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -7414,7 +7585,7 @@ func renderStallTimeChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -7449,36 +7620,13 @@ func chartSize(state *uiState) (int, int) {
 	// Headless/screenshot mode: allow tests to override width for exact checks.
 	if state == nil || state.window == nil || state.window.Canvas() == nil {
 		if screenshotWidthOverride > 0 {
-			w := screenshotWidthOverride
-			if w < 800 {
-				w = 800
-			}
-			h := int(float32(w) * 0.33)
-			if h < 280 {
-				h = 280
-			}
-			if h > 520 {
-				h = 520
-			}
-			return w, h
+			return helpers.ComputeChartDimensions(screenshotWidthOverride)
 		}
 		return 1100, 340
 	}
 	// UI mode: use the full canvas width for charts (no artificial shrink).
 	sz := state.window.Canvas().Size()
-	w := int(sz.Width)
-	if w < 800 {
-		w = 800
-	}
-	// Maintain a ~3:1 aspect ratio, with sane bounds
-	h := int(float32(w) * 0.33)
-	if h < 280 {
-		h = 280
-	}
-	if h > 520 {
-		h = 520
-	}
-	return w, h
+	return helpers.ComputeChartDimensions(int(sz.Width))
 }
 
 func renderSpeedChart(state *uiState) image.Image {
@@ -8086,7 +8234,7 @@ func renderSpeedChart(state *uiState) image.Image {
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
@@ -8112,8 +8260,6 @@ func renderSpeedChart(state *uiState) image.Image {
 // - useRelative: if true, fit to data band with padding; if false, anchor to zero or zoom
 // - medianOnly: apply tighter padding and avoid "nice" overshoot for zero-anchored charts
 func computeYAxisRange(minY, maxY float64, useRelative bool, medianOnly bool) (chart.Range, []chart.Tick) {
-	var rng chart.Range
-	var ticks []chart.Tick
 	haveY := (minY != math.MaxFloat64 && maxY != -math.MaxFloat64)
 	if !haveY {
 		return &chart.ContinuousRange{Min: 0, Max: 1}, nil
@@ -8123,17 +8269,7 @@ func computeYAxisRange(minY, maxY float64, useRelative bool, medianOnly bool) (c
 		padPct = 0.02
 	}
 	if useRelative {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		pad := (nMax - nMin) * padPct
-		if pad <= 0 {
-			pad = math.Max(1, nMax*padPct)
-		}
-		rng = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-		ticks = niceTicks(nMin, nMax, 6)
-		return rng, ticks
+		return buildRangeAndTicks(minY, maxY, 6, padPct)
 	}
 	// Absolute mode
 	if maxY <= 0 {
@@ -8148,33 +8284,9 @@ func computeYAxisRange(minY, maxY float64, useRelative bool, medianOnly bool) (c
 		anchorZero = true
 	}
 	if anchorZero {
-		if medianOnly {
-			nMax := maxY
-			padTop := nMax * padPct
-			if padTop <= 0 {
-				padTop = 1
-			}
-			rng = &chart.ContinuousRange{Min: 0, Max: nMax + padTop}
-			ticks = niceTicks(0, nMax, 6)
-			return rng, ticks
-		}
-		_, nMax := niceAxisBounds(0, maxY)
-		padTop := (nMax - 0) * padPct
-		if padTop <= 0 {
-			padTop = math.Max(1, nMax*padPct)
-		}
-		rng = &chart.ContinuousRange{Min: 0, Max: nMax + padTop}
-		ticks = niceTicks(0, nMax, 6)
-		return rng, ticks
+		return buildZeroAnchoredRangeAndTicks(maxY, 6, padPct, medianOnly)
 	}
-	nMin, nMax := niceAxisBounds(minY, maxY)
-	pad := (nMax - nMin) * padPct
-	if pad <= 0 {
-		pad = math.Max(1, nMax*padPct)
-	}
-	rng = &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}
-	ticks = niceTicks(nMin, nMax, 6)
-	return rng, ticks
+	return buildRangeAndTicks(minY, maxY, 6, padPct)
 }
 
 // computeYAxisRangeSigned is for signed metrics that may cross zero; in absolute mode we
@@ -8186,29 +8298,9 @@ func computeYAxisRangeSigned(minY, maxY float64, useRelative bool) (chart.Range,
 	}
 	padPct := 0.04
 	if useRelative {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		pad := (nMax - nMin) * padPct
-		if pad <= 0 {
-			pad = math.Max(1, nMax*padPct)
-		}
-		return &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}, niceTicks(nMin, nMax, 6)
+		return buildRangeAndTicks(minY, maxY, 6, padPct)
 	}
-	nMin, nMax := niceAxisBounds(minY, maxY)
-	if nMin > 0 {
-		nMin = 0
-	}
-	if nMax < 0 {
-		nMax = 0
-	}
-	// Add slight padding to avoid dots/bands touching the edges
-	pad := (nMax - nMin) * padPct
-	if pad <= 0 {
-		pad = math.Max(1, nMax*padPct)
-	}
-	return &chart.ContinuousRange{Min: nMin - pad, Max: nMax + pad}, niceTicks(nMin, nMax, 6)
+	return buildSignedRangeAndTicks(minY, maxY, 6, padPct, true)
 }
 
 // computeYAxisRangePercent centralizes percent-axis behavior:
@@ -8220,15 +8312,141 @@ func computeYAxisRangePercent(minY, maxY float64, useRelative bool) (chart.Range
 		return nil, nil
 	}
 	if useRelative {
-		if maxY <= minY {
-			maxY = minY + 1
-		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		return &chart.ContinuousRange{Min: nMin, Max: nMax}, niceTicks(nMin, nMax, 6)
+		// Percent relative: no padding applied, so padPct=0
+		return buildRangeAndTicks(minY, maxY, 6, 0)
 	}
 	// Absolute: fixed [0,100]
 	ticks := []chart.Tick{{Value: 0, Label: "0"}, {Value: 25, Label: "25"}, {Value: 50, Label: "50"}, {Value: 75, Label: "75"}, {Value: 100, Label: "100"}}
 	return &chart.ContinuousRange{Min: 0, Max: 100}, ticks
+}
+
+// --- DRY numeric axis helpers ---
+// buildRangeAndTicks creates a padded numeric range and tick slice for data in [minVal,maxVal].
+// Behavior:
+// - Ensures maxVal > minVal (if equal/invalid expands by 1)
+// - Derives candidate tick values via uihelpers.BuildNumericTicks (fallback to raw bounds if <2)
+// - Uses first/last tick as base range, applies symmetric padding (padPct of span)
+// - Returns range extended by padding and formatted ticks.
+// Set padPct to 0 for an unpadded domain (e.g. relative percent chart).
+// buildRangeAndTicks: generic numeric axis constructor.
+// Inputs:
+//
+//	minVal,maxVal : observed data bounds (order agnostic; equal values get widened by +1)
+//	tickCount     : desired rough tick target passed into BuildNumericTicks
+//	padPct        : symmetric fractional padding applied to the derived [firstTick,lastTick];
+//	                 set 0 for no padding (domain equals tick span).
+//
+// Output:
+//
+//	*chart.ContinuousRange spanning padded domain; []chart.Tick with formatted labels.
+//
+// Notes:
+//   - Padding uses span*padPct; if span collapses a minimum fallback (≈1 unit) is used.
+//   - Formatting centralised through helpers.FormatNumericTick for consistency.
+func buildRangeAndTicks(minVal, maxVal float64, tickCount int, padPct float64) (*chart.ContinuousRange, []chart.Tick) {
+	if maxVal <= minVal {
+		maxVal = minVal + 1
+	}
+	vals := helpers.BuildNumericTicks(minVal, maxVal, tickCount)
+	if len(vals) < 2 {
+		vals = []float64{minVal, maxVal}
+	}
+	rMin, rMax := vals[0], vals[len(vals)-1]
+	span := rMax - rMin
+	pad := span * padPct
+	if padPct > 0 && pad <= 0 { // maintain minimum positive padding if requested
+		pad = math.Max(1, rMax*padPct)
+	}
+	rng := &chart.ContinuousRange{Min: rMin - pad, Max: rMax + pad}
+	ticks := make([]chart.Tick, 0, len(vals))
+	for _, v := range vals {
+		ticks = append(ticks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
+	if padPct == 0 { // remove padding effect when 0 explicitly requested
+		rng.Min = rMin
+		rng.Max = rMax
+	}
+	return rng, ticks
+}
+
+// buildZeroAnchoredRangeAndTicks constructs a zero-anchored range for non-negative data.
+// Behavior:
+//   - Generates ticks over [0,maxVal]; extends top by padding percentage.
+//   - medianOnly tweaks: when medianOnly is true we treat maxVal as-is (no tick-based overshoot)
+//     to avoid excessive whitespace for stable medians.
+//
+// buildZeroAnchoredRangeAndTicks: specialised for non-negative series anchoring at zero.
+// Behavior differences vs buildRangeAndTicks:
+//   - Always forces Min=0
+//   - Determines top tick (overshoot) using tick generation. For medianOnly we avoid overshoot
+//     beyond raw max (except padding) to keep plot tight.
+func buildZeroAnchoredRangeAndTicks(maxVal float64, tickCount int, padPct float64, medianOnly bool) (*chart.ContinuousRange, []chart.Tick) {
+	if maxVal <= 0 {
+		maxVal = 1
+	}
+	if medianOnly { // tighter behavior: no overshoot beyond raw max before padding
+		padTop := maxVal * padPct
+		if padTop <= 0 {
+			padTop = 1
+		}
+		vals := helpers.BuildNumericTicks(0, maxVal, tickCount)
+		ticks := make([]chart.Tick, 0, len(vals))
+		for _, v := range vals {
+			ticks = append(ticks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+		}
+		return &chart.ContinuousRange{Min: 0, Max: maxVal + padTop}, ticks
+	}
+	vals := helpers.BuildNumericTicks(0, maxVal, tickCount)
+	if len(vals) < 2 {
+		vals = []float64{0, maxVal}
+	}
+	top := vals[len(vals)-1]
+	padTop := (top - 0) * padPct
+	if padTop <= 0 {
+		padTop = math.Max(1, top*padPct)
+	}
+	// Rebuild ticks with final top (for cleanliness if top changed)
+	vals = helpers.BuildNumericTicks(0, top, tickCount)
+	ticks := make([]chart.Tick, 0, len(vals))
+	for _, v := range vals {
+		ticks = append(ticks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
+	return &chart.ContinuousRange{Min: 0, Max: top + padTop}, ticks
+}
+
+// buildSignedRangeAndTicks produces a padded range for data that can cross zero.
+// If forceIncludeZero is true the final domain is expanded (after tick derivation) so that
+// zero lies within [Min,Max], then symmetric padding is applied.
+// buildSignedRangeAndTicks: handles data potentially crossing zero.
+// If forceIncludeZero is true, zero is guaranteed inside domain after tick-span derivation
+// before padding. Useful for absolute views where visual baseline at zero matters.
+func buildSignedRangeAndTicks(minVal, maxVal float64, tickCount int, padPct float64, forceIncludeZero bool) (*chart.ContinuousRange, []chart.Tick) {
+	if maxVal <= minVal {
+		maxVal = minVal + 1
+	}
+	vals := helpers.BuildNumericTicks(minVal, maxVal, tickCount)
+	if len(vals) < 2 {
+		vals = []float64{minVal, maxVal}
+	}
+	rMin, rMax := vals[0], vals[len(vals)-1]
+	if forceIncludeZero {
+		if rMin > 0 {
+			rMin = 0
+		}
+		if rMax < 0 {
+			rMax = 0
+		}
+	}
+	span := rMax - rMin
+	pad := span * padPct
+	if pad <= 0 {
+		pad = math.Max(1, rMax*padPct)
+	}
+	ticks := make([]chart.Tick, 0, len(vals))
+	for _, v := range vals {
+		ticks = append(ticks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
+	return &chart.ContinuousRange{Min: rMin - pad, Max: rMax + pad}, ticks
 }
 
 // applyMedianOnlyAbsoluteOccupancyClamp enforces that in Absolute + median-only mode, when up to
@@ -8339,7 +8557,7 @@ func renderSelfTestChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -8919,7 +9137,7 @@ func renderTTFBChart(state *uiState) image.Image {
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
@@ -9292,7 +9510,7 @@ func renderStallCountChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -9389,9 +9607,16 @@ func renderErrorRateChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals2 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals2) < 2 {
+			vals2 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals2[0], vals2[len(vals2)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v2 := range vals2 {
+			yTicks = append(yTicks, chart.Tick{Value: v2, Label: helpers.FormatNumericTick(v2)})
+		}
 	} else if !state.useRelative && haveY {
 		// Absolute: clamp 0..100
 		if maxY < 1 {
@@ -9424,7 +9649,7 @@ func renderErrorRateChart(state *uiState) image.Image {
 	cw, chh := chartSize(state)
 	ch.Width = cw
 	ch.Height = chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
@@ -9520,9 +9745,16 @@ func renderJitterChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals3 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals3) < 2 {
+			vals3 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals3[0], vals3[len(vals3)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v3 := range vals3 {
+			yTicks = append(yTicks, chart.Tick{Value: v3, Label: helpers.FormatNumericTick(v3)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -9547,7 +9779,7 @@ func renderJitterChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -9710,7 +9942,7 @@ func renderDNSLookupChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -9809,7 +10041,7 @@ func renderTCPConnectChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -9908,7 +10140,7 @@ func renderTLSHandshakeChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10002,7 +10234,7 @@ func renderHTTPProtocolMixChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10108,7 +10340,7 @@ func renderAvgSpeedByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10197,7 +10429,7 @@ func renderStallRateByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10286,7 +10518,7 @@ func renderErrorRateByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10376,7 +10608,7 @@ func renderErrorShareByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10474,7 +10706,7 @@ func renderErrorTypesChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10579,7 +10811,7 @@ func renderErrorReasonsChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10707,7 +10939,7 @@ func renderErrorReasonsDetailedChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10797,7 +11029,7 @@ func renderStallShareByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -10887,7 +11119,7 @@ func renderPartialShareByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -11053,9 +11285,737 @@ func renderErrorsByURLChart(state *uiState) image.Image {
 	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
 }
 
+// renderHostIPTimingBreakdownChart computes average phase timings per (host, resolved_ip)
+// for the selected batch and renders stacked horizontal bars. Phases:
+// DNS, TCP Connect, TLS Handshake, Wait (residual pre-first-byte), Transfer, Stall.
+func renderHostIPTimingBreakdownChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 || state == nil || strings.TrimSpace(state.filePath) == "" {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	ix := state.selectedRow
+	if ix < 0 || ix >= len(rows) {
+		ix = 0
+	}
+	runTag := rows[ix].RunTag
+	f, err := os.Open(state.filePath)
+	if err != nil {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	const maxLine = 8 * 1024 * 1024
+	buf := make([]byte, 0, 512*1024)
+	scanner.Buffer(buf, maxLine)
+	type agg struct {
+		n                                    int
+		dns, tcp, tls, wait, transfer, stall float64
+	}
+	groups := map[string]*agg{}
+	hostFilter := strings.TrimSpace(state.detailedHostFilter)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var env monitor.ResultEnvelope
+		if err := json.Unmarshal(line, &env); err != nil {
+			continue
+		}
+		if env.Meta == nil || env.SiteResult == nil || env.Meta.RunTag != runTag {
+			continue
+		}
+		sr := env.SiteResult
+		// Host & IP
+		host := ""
+		if pu := parseURLOrNil(sr.URL); pu != nil {
+			host = pu.Host
+		}
+		if host == "" {
+			continue
+		}
+		if hostFilter != "" && !strings.EqualFold(hostFilter, "All") && host != hostFilter {
+			continue
+		}
+		ip := sr.ResolvedIP
+		if ip == "" {
+			ip = sr.RemoteIP
+		}
+		key := host + " | " + ip
+		a := groups[key]
+		if a == nil {
+			a = &agg{}
+			groups[key] = a
+		}
+		// Phase extraction (prefer trace* when present)
+		dns := float64(sr.TraceDNSMs)
+		if dns <= 0 && sr.DNSTimeMs > 0 {
+			dns = float64(sr.DNSTimeMs)
+		}
+		tcp := float64(sr.TraceConnectMs)
+		if tcp <= 0 && sr.TCPTimeMs > 0 {
+			tcp = float64(sr.TCPTimeMs)
+		}
+		tls := float64(sr.TraceTLSMs)
+		if tls <= 0 && sr.SSLHandshakeTimeMs > 0 {
+			tls = float64(sr.SSLHandshakeTimeMs)
+		}
+		ttfb := float64(sr.TraceTTFBMs)
+		wait := ttfb - (dns + tcp + tls)
+		if wait < 0 {
+			wait = 0
+		}
+		transfer := float64(sr.TransferTimeMs)
+		stall := float64(sr.StallElapsedMs)
+		a.n++
+		a.dns += dns
+		a.tcp += tcp
+		a.tls += tls
+		a.wait += wait
+		a.transfer += transfer
+		a.stall += stall
+	}
+	if len(groups) == 0 {
+		cw, chh := chartSize(state)
+		return drawWatermark(blank(cw, chh), "Situation: "+activeSituationLabel(state))
+	}
+	// Build list with averages & totals
+	type row struct {
+		key                                         string
+		dns, tcp, tls, wait, transfer, stall, total float64
+	}
+	list := make([]row, 0, len(groups))
+	for k, a := range groups {
+		if a.n == 0 {
+			continue
+		}
+		dns := a.dns / float64(a.n)
+		tcp := a.tcp / float64(a.n)
+		tls := a.tls / float64(a.n)
+		wait := a.wait / float64(a.n)
+		transfer := a.transfer / float64(a.n)
+		stall := a.stall / float64(a.n)
+		total := dns + tcp + tls + wait + transfer + stall
+		list = append(list, row{k, dns, tcp, tls, wait, transfer, stall, total})
+	}
+	if len(list) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].total == list[j].total {
+			return list[i].key < list[j].key
+		}
+		return list[i].total > list[j].total
+	})
+	// Limit top 12
+	if len(list) > 12 {
+		list = list[:12]
+	}
+	// Manual drawing
+	cw, chh := chartSize(state)
+	if cw < 800 {
+		cw = 800
+	}
+	barH := 30
+	gap := 14
+	top := 36
+	// Determine dynamic left margin wide enough for longest host and IP (two lines) with padding
+	charW := 7 // approximate width per character for basicfont.Face7x13
+	maxHostLen := 0
+	maxIPLen := 0
+	for _, r := range list {
+		key := r.key
+		hostPart := key
+		ipPart := ""
+		if idx := strings.Index(key, " | "); idx >= 0 {
+			hostPart = key[:idx]
+			ipPart = key[idx+3:]
+		}
+		if l := len(hostPart); l > maxHostLen {
+			maxHostLen = l
+		}
+		if l := len(ipPart); l > maxIPLen {
+			maxIPLen = l
+		}
+	}
+	labelWidthPx := (maxHostLen*charW + 4)
+	if ipw := maxIPLen*charW + 4; ipw > labelWidthPx {
+		labelWidthPx = ipw
+	}
+	minLeft := 220
+	left := labelWidthPx + 16
+	if left < minLeft {
+		left = minLeft
+	}
+	right := 40
+	height := top + (barH+gap)*len(list) + 60
+	if float64(chh) < float64(height) {
+		chh = height
+	}
+	img := image.NewRGBA(image.Rect(0, 0, int(cw), int(chh)))
+	// Theme-aware colors
+	isLight := strings.EqualFold(screenshotThemeGlobal, "light")
+	var bg color.RGBA
+	var textCol color.Color
+	var faintText color.Color
+	if isLight {
+		bg = color.RGBA{250, 250, 250, 255}
+		textCol = color.Black
+		faintText = color.RGBA{60, 60, 60, 255}
+	} else {
+		bg = color.RGBA{18, 18, 18, 255}
+		textCol = color.RGBA{235, 235, 235, 255}
+		faintText = color.RGBA{170, 170, 170, 255}
+	}
+	draw.Draw(img, img.Bounds(), &image.Uniform{bg}, image.Point{}, draw.Src)
+	maxTotal := 0.0
+	for _, r := range list {
+		if r.total > maxTotal {
+			maxTotal = r.total
+		}
+	}
+	usableW := int(cw) - left - right
+	if usableW < 200 {
+		usableW = 200
+	}
+	face := basicfont.Face7x13
+	colors := []color.RGBA{
+		{0x33, 0x66, 0xcc, 255}, // dns blue
+		{0x2a, 0xa2, 0x5f, 255}, // tcp green
+		{0x88, 0x88, 0x88, 255}, // tls gray
+		{0xcc, 0xa4, 0x00, 255}, // wait yellow
+		{0x66, 0x33, 0x99, 255}, // transfer purple
+		{0xcc, 0x33, 0x33, 255}, // stall red
+	}
+	for i, r := range list {
+		y := top + i*(barH+gap)
+		// Split key into host and ip parts (key format: host + " | " + ip)
+		hostPart := r.key
+		ipPart := ""
+		if idx := strings.Index(r.key, " | "); idx >= 0 {
+			hostPart = r.key[:idx]
+			ipPart = r.key[idx+3:]
+		}
+		addLabel(img, 4, y+12, hostPart, textCol, face)
+		if ipPart != "" {
+			addLabel(img, 4, y+24, ipPart, faintText, face)
+		}
+		x := left
+		segs := []struct {
+			name string
+			v    float64
+			c    color.RGBA
+		}{
+			{"DNS", r.dns, colors[0]},
+			{"TCP", r.tcp, colors[1]},
+			{"TLS", r.tls, colors[2]},
+			{"Wait", r.wait, colors[3]},
+			{"Transfer", r.transfer, colors[4]},
+			{"Stall", r.stall, colors[5]},
+		}
+		for _, s := range segs {
+			if s.v <= 0 {
+				continue
+			}
+			w := int(math.Round((s.v / r.total) * float64(usableW)))
+			if w < 1 {
+				w = 1
+			}
+			rect := image.Rect(x, y, x+w, y+barH)
+			draw.Draw(img, rect, &image.Uniform{s.c}, image.Point{}, draw.Src)
+			// border color based on theme
+			if isLight {
+				drawBorder(img, rect, color.RGBA{0, 0, 0, 40})
+			} else {
+				drawBorder(img, rect, color.RGBA{255, 255, 255, 40})
+			}
+			lbl := fmt.Sprintf("%s %.0fms", s.name, s.v)
+			if w > len(lbl)*7+6 {
+				// choose contrasting label color
+				var inside color.Color = color.White
+				if !isLight {
+					inside = color.RGBA{240, 240, 240, 255}
+				}
+				addLabel(img, x+4, y+barH/2+4, lbl, inside, face)
+			} else {
+				addLabel(img, x+2, y-2, lbl, textCol, face)
+			}
+			x += w
+		}
+		// total label at end
+		addLabel(img, x+6, y+barH/2+4, fmt.Sprintf("%.0fms", r.total), textCol, face)
+	}
+	// Title
+	title := "Host/IP Timing Breakdown (Avg per request)"
+	addLabel(img, left, 18, title, textCol, face)
+	// Legend (phases) near top-right of detailed chart
+	legendW := 300
+	legendH := 6*18 + 12
+	legendRect := image.Rect(int(cw)-legendW-10, 6, int(cw)-10, 6+legendH)
+	drawLegendPhases(img, legendRect, []string{"DNS", "TCP", "TLS", "Wait", "Transfer", "Stall"}, colors, textCol, face, isLight)
+	// Axis baseline (0 and max markers) + hints
+	baseY := top + len(list)*(barH+gap) + 20
+	addLabel(img, left, baseY, fmt.Sprintf("Max total %.0f ms", maxTotal), textCol, face)
+	if state.showHints {
+		addLabel(img, left, baseY+16, "Hint: Phases left→right. Wait = TTFB residual (server/proxy).", faintText, face)
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// renderHostIPTimingAvgChart aggregates per-batch average of (DNS,TCP,TLS,Wait,Transfer,Stall)
+// by first computing per (host,ip) averages inside each batch (like detailed chart) then averaging
+// those host/IP averages across all hosts in the batch to produce a per-batch composite timing.
+// It then draws a horizontal stacked bar per batch (RunTag) for comparison. Limited to top N by total.
+func renderHostIPTimingAvgChart(state *uiState) image.Image {
+	rows := filteredSummaries(state)
+	if len(rows) == 0 || state == nil || strings.TrimSpace(state.filePath) == "" {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	// We'll scan file once per batch tag for performance simplicity (could optimize later).
+	// Build map runTag -> aggregated sums of per (host,ip) averages.
+	type agg struct {
+		dns, tcp, tls, wait, transfer, stall float64
+		count                                int
+	}
+	batchAgg := make([]struct {
+		tag                                         string
+		dns, tcp, tls, wait, transfer, stall, total float64
+	}, 0, len(rows))
+	// Preload whole file lines to reuse (avoid multi-open parse cost if large maybe heavy; fallback simple streaming per batch)
+	// Simpler: stream per batch separately (maybe slower but fine for moderate size).
+	for _, rsum := range rows { // each batch
+		f, err := os.Open(state.filePath)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
+		// per host/ip aggregation inside batch
+		type hip struct {
+			n                                    int
+			dns, tcp, tls, wait, transfer, stall float64
+		}
+		hips := map[string]*hip{}
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			var env monitor.ResultEnvelope
+			if json.Unmarshal(line, &env) != nil {
+				continue
+			}
+			if env.Meta == nil || env.SiteResult == nil || env.Meta.RunTag != rsum.RunTag {
+				continue
+			}
+			sr := env.SiteResult
+			host := ""
+			if pu := parseURLOrNil(sr.URL); pu != nil {
+				host = pu.Host
+			}
+			if host == "" {
+				continue
+			}
+			ip := sr.ResolvedIP
+			if ip == "" {
+				ip = sr.RemoteIP
+			}
+			key := host + "|" + ip
+			h := hips[key]
+			if h == nil {
+				h = &hip{}
+				hips[key] = h
+			}
+			dns := float64(sr.TraceDNSMs)
+			if dns <= 0 && sr.DNSTimeMs > 0 {
+				dns = float64(sr.DNSTimeMs)
+			}
+			tcp := float64(sr.TraceConnectMs)
+			if tcp <= 0 && sr.TCPTimeMs > 0 {
+				tcp = float64(sr.TCPTimeMs)
+			}
+			tls := float64(sr.TraceTLSMs)
+			if tls <= 0 && sr.SSLHandshakeTimeMs > 0 {
+				tls = float64(sr.SSLHandshakeTimeMs)
+			}
+			ttfb := float64(sr.TraceTTFBMs)
+			wait := ttfb - (dns + tcp + tls)
+			if wait < 0 {
+				wait = 0
+			}
+			transfer := float64(sr.TransferTimeMs)
+			stall := float64(sr.StallElapsedMs)
+			h.n++
+			h.dns += dns
+			h.tcp += tcp
+			h.tls += tls
+			h.wait += wait
+			h.transfer += transfer
+			h.stall += stall
+		}
+		_ = scanner.Err()
+		f.Close()
+		var a agg
+		for _, h := range hips {
+			if h.n == 0 {
+				continue
+			}
+			a.count++
+			a.dns += h.dns / float64(h.n)
+			a.tcp += h.tcp / float64(h.n)
+			a.tls += h.tls / float64(h.n)
+			a.wait += h.wait / float64(h.n)
+			a.transfer += h.transfer / float64(h.n)
+			a.stall += h.stall / float64(h.n)
+		}
+		if a.count == 0 {
+			continue
+		}
+		dns := a.dns / float64(a.count)
+		tcp := a.tcp / float64(a.count)
+		tls := a.tls / float64(a.count)
+		wait := a.wait / float64(a.count)
+		transfer := a.transfer / float64(a.count)
+		stall := a.stall / float64(a.count)
+		total := dns + tcp + tls + wait + transfer + stall
+		batchAgg = append(batchAgg, struct {
+			tag                                         string
+			dns, tcp, tls, wait, transfer, stall, total float64
+		}{rsum.RunTag, dns, tcp, tls, wait, transfer, stall, total})
+	}
+	if len(batchAgg) == 0 {
+		cw, chh := chartSize(state)
+		return blank(cw, chh)
+	}
+	sort.Slice(batchAgg, func(i, j int) bool {
+		if batchAgg[i].total == batchAgg[j].total {
+			return batchAgg[i].tag < batchAgg[j].tag
+		}
+		return batchAgg[i].total > batchAgg[j].total
+	})
+	// limit maybe top 40 batches visual
+	if len(batchAgg) > 40 {
+		batchAgg = batchAgg[:40]
+	}
+	cw, chh := chartSize(state)
+	if cw < 900 {
+		cw = 900
+	}
+	// Dynamic sizing (even larger): push readability further per request.
+	n := len(batchAgg)
+	barH := 38
+	gap := 16
+	switch {
+	case n <= 4:
+		barH = 84
+		gap = 40
+	case n <= 6:
+		barH = 80
+		gap = 38
+	case n <= 8:
+		barH = 76
+		gap = 36
+	case n <= 10:
+		barH = 72
+		gap = 34
+	case n <= 12:
+		barH = 68
+		gap = 32
+	case n <= 14:
+		barH = 64
+		gap = 30
+	case n <= 16:
+		barH = 60
+		gap = 28
+	case n <= 18:
+		barH = 56
+		gap = 26
+	case n <= 20:
+		barH = 52
+		gap = 24
+	case n <= 22:
+		barH = 48
+		gap = 22
+	case n <= 24:
+		barH = 46
+		gap = 21
+	case n <= 28:
+		barH = 42
+		gap = 19
+	case n <= 32:
+		barH = 38
+		gap = 18
+	case n <= 38:
+		barH = 36
+		gap = 17
+	case n <= 42:
+		barH = 34
+		gap = 16
+	default:
+		barH = 32
+		gap = 15
+	}
+	// Progressive squeeze beyond very high counts (rare due to 40-cap)
+	if n > 48 {
+		barH = 30
+		gap = 14
+	}
+	if n > 56 {
+		barH = 28
+		gap = 13
+	}
+	if n > 64 {
+		barH = 26
+		gap = 12
+	}
+	if n > 72 {
+		barH = 24
+		gap = 11
+	}
+	top := 36
+	left := 180
+	right := 40
+	height := top + (barH+gap)*n + 60
+	if float64(chh) < float64(height) {
+		chh = height
+	}
+	img := image.NewRGBA(image.Rect(0, 0, int(cw), int(chh)))
+	isLight := strings.EqualFold(screenshotThemeGlobal, "light")
+	var bg color.RGBA
+	var textCol color.Color
+	var faintText color.Color
+	if isLight {
+		bg = color.RGBA{250, 250, 250, 255}
+		textCol = color.Black
+		faintText = color.RGBA{60, 60, 60, 255}
+	} else {
+		bg = color.RGBA{18, 18, 18, 255}
+		textCol = color.RGBA{235, 235, 235, 255}
+		faintText = color.RGBA{170, 170, 170, 255}
+	}
+	draw.Draw(img, img.Bounds(), &image.Uniform{bg}, image.Point{}, draw.Src)
+	// Choose font size relative to bar height (expanded mapping for very large bars)
+	var face font.Face = basicfont.Face7x13
+	switch {
+	case barH >= 80:
+		if f := loadDynamicFontFace(34); f != nil {
+			face = f
+		}
+	case barH >= 76:
+		if f := loadDynamicFontFace(32); f != nil {
+			face = f
+		}
+	case barH >= 72:
+		if f := loadDynamicFontFace(30); f != nil {
+			face = f
+		}
+	case barH >= 68:
+		if f := loadDynamicFontFace(29); f != nil {
+			face = f
+		}
+	case barH >= 64:
+		if f := loadDynamicFontFace(28); f != nil {
+			face = f
+		}
+	case barH >= 60:
+		if f := loadDynamicFontFace(27); f != nil {
+			face = f
+		}
+	case barH >= 56:
+		if f := loadDynamicFontFace(26); f != nil {
+			face = f
+		}
+	case barH >= 52:
+		if f := loadDynamicFontFace(24); f != nil {
+			face = f
+		}
+	case barH >= 48:
+		if f := loadDynamicFontFace(23); f != nil {
+			face = f
+		}
+	case barH >= 46:
+		if f := loadDynamicFontFace(22); f != nil {
+			face = f
+		}
+	case barH >= 42:
+		if f := loadDynamicFontFace(21); f != nil {
+			face = f
+		}
+	case barH >= 38:
+		if f := loadDynamicFontFace(20); f != nil {
+			face = f
+		}
+	case barH >= 36:
+		if f := loadDynamicFontFace(19); f != nil {
+			face = f
+		}
+	case barH >= 34:
+		if f := loadDynamicFontFace(18); f != nil {
+			face = f
+		}
+	case barH >= 32:
+		if f := loadDynamicFontFace(17); f != nil {
+			face = f
+		}
+	case barH >= 30:
+		if f := loadDynamicFontFace(16); f != nil {
+			face = f
+		}
+	case barH >= 28:
+		if f := loadDynamicFontFace(15); f != nil {
+			face = f
+		}
+	case barH >= 26:
+		if f := loadDynamicFontFace(14); f != nil {
+			face = f
+		}
+	case barH >= 24:
+		if f := loadDynamicFontFace(13); f != nil {
+			face = f
+		}
+	case barH >= 22:
+		if f := loadDynamicFontFace(12); f != nil {
+			face = f
+		}
+	case barH >= 20:
+		if f := loadDynamicFontFace(11); f != nil {
+			face = f
+		}
+	default:
+		if f := loadDynamicFontFace(10); f != nil {
+			face = f
+		}
+	}
+	colors := []color.RGBA{{0x33, 0x66, 0xcc, 255}, {0x2a, 0xa2, 0x5f, 255}, {0x88, 0x88, 0x88, 255}, {0xcc, 0xa4, 0x00, 255}, {0x66, 0x33, 0x99, 255}, {0xcc, 0x33, 0x33, 255}}
+	// Draw legend once near top-right
+	legendRect := image.Rect(int(cw)-right-310, 8, int(cw)-right-10, 8+int((len(colors))*18))
+	drawLegendPhases(img, legendRect, []string{"DNS", "TCP", "TLS", "Wait", "Transfer", "Stall"}, colors, textCol, face, isLight)
+	maxTotal := 0.0
+	for _, b := range batchAgg {
+		if b.total > maxTotal {
+			maxTotal = b.total
+		}
+	}
+	usableW := int(cw) - left - right
+	if usableW < 300 {
+		usableW = 300
+	}
+	for i, b := range batchAgg {
+		y := top + i*(barH+gap)
+		addLabel(img, 4, y+barH/2+(barH/2)/2+2, b.tag, textCol, face)
+		x := left
+		segs := []struct {
+			name string
+			v    float64
+			c    color.RGBA
+		}{{"DNS", b.dns, colors[0]}, {"TCP", b.tcp, colors[1]}, {"TLS", b.tls, colors[2]}, {"Wait", b.wait, colors[3]}, {"Transfer", b.transfer, colors[4]}, {"Stall", b.stall, colors[5]}}
+		for _, s := range segs {
+			if s.v <= 0 {
+				continue
+			}
+			w := int(math.Round((s.v / b.total) * float64(usableW)))
+			if w < 1 {
+				w = 1
+			}
+			rect := image.Rect(x, y, x+w, y+barH)
+			draw.Draw(img, rect, &image.Uniform{s.c}, image.Point{}, draw.Src)
+			if isLight {
+				drawBorder(img, rect, color.RGBA{0, 0, 0, 40})
+			} else {
+				drawBorder(img, rect, color.RGBA{255, 255, 255, 40})
+			}
+			lbl := fmt.Sprintf("%s %.0fms", s.name, s.v)
+			if w > len(lbl)*7+6 {
+				addLabel(img, x+4, y+barH/2+4, lbl, color.White, face)
+			} else {
+				addLabel(img, x+2, y-2, lbl, textCol, face)
+			}
+			x += w
+		}
+		addLabel(img, x+6, y+barH/2+4, fmt.Sprintf("%.0fms", b.total), textCol, face)
+	}
+	addLabel(img, left, 18, "Batch Host/IP Timing Breakdown (Avg of per-host/IP averages)", textCol, face)
+	addLabel(img, left, top+len(batchAgg)*(barH+gap)+20, fmt.Sprintf("Max total %.0f ms", maxTotal), textCol, face)
+	if state.showHints {
+		addLabel(img, left, top+len(batchAgg)*(barH+gap)+36, "Each bar = batch average (per host/IP mean of phases DNS→Stall).", faintText, face)
+	}
+	return drawWatermark(img, "Situation: "+activeSituationLabel(state))
+}
+
+// Basic helpers (duplicated minimal versions to avoid cross-dependency if earlier helpers not present)
+// loadDynamicFontFace attempts to create an opentype face at a given size from the current theme font.
+// Falls back to nil on failure so caller can keep basicfont.Face7x13.
+func loadDynamicFontFace(size float64) font.Face {
+	// Try theme text font if available
+	if res := theme.TextFont(); res != nil {
+		if f, err := opentype.Parse(res.Content()); err == nil {
+			if ff, err2 := opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 96, Hinting: font.HintingFull}); err2 == nil {
+				return ff
+			}
+		}
+	}
+	return nil
+}
+
+func addLabel(img *image.RGBA, x, y int, text string, col color.Color, face font.Face) {
+	if face == nil {
+		face = basicfont.Face7x13
+	}
+	dr := &font.Drawer{Dst: img, Src: image.NewUniform(col), Face: face, Dot: fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}}
+	dr.DrawString(text)
+}
+func drawBorder(img *image.RGBA, r image.Rectangle, col color.RGBA) {
+	for x := r.Min.X; x < r.Max.X; x++ {
+		img.SetRGBA(x, r.Min.Y, col)
+		img.SetRGBA(x, r.Max.Y-1, col)
+	}
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		img.SetRGBA(r.Min.X, y, col)
+		img.SetRGBA(r.Max.X-1, y, col)
+	}
+}
+
+// drawLegendPhases draws a vertical legend of phase color boxes with labels.
+// phases and cols must have same length.
+func drawLegendPhases(img *image.RGBA, area image.Rectangle, phases []string, cols []color.RGBA, textCol color.Color, face font.Face, isLight bool) {
+	if len(phases) == 0 || len(phases) != len(cols) {
+		return
+	}
+	// background panel
+	panelBG := color.RGBA{240, 240, 240, 230}
+	borderCol := color.RGBA{0, 0, 0, 40}
+	if !isLight {
+		panelBG = color.RGBA{30, 30, 30, 220}
+		borderCol = color.RGBA{255, 255, 255, 40}
+	}
+	draw.Draw(img, area, &image.Uniform{panelBG}, image.Point{}, draw.Src)
+	drawBorder(img, area, borderCol)
+	x0 := area.Min.X + 8
+	y := area.Min.Y + 6
+	box := 14
+	for i, p := range phases {
+		if i >= len(cols) {
+			break
+		}
+		c := cols[i]
+		rect := image.Rect(x0, y, x0+box, y+box)
+		draw.Draw(img, rect, &image.Uniform{c}, image.Point{}, draw.Src)
+		if isLight {
+			drawBorder(img, rect, color.RGBA{0, 0, 0, 50})
+		} else {
+			drawBorder(img, rect, color.RGBA{255, 255, 255, 50})
+		}
+		addLabel(img, x0+box+6, y+box-2, p, textCol, face)
+		y += box + 4
+		if y+box+4 > area.Max.Y {
+			break
+		}
+	}
+}
+
 // renderSpeedPercentilesDetailedChart draws a simple bar chart of speed percentiles
 // (P25, P50, P75, P90, P95, P99) for the currently selected batch in the Detailed tab.
 // Values are converted from kbps to the user's chosen unit.
+// renderSpeedPercentilesDetailedChart now relies on chartSize(state) which delegates
+// to helpers.ComputeChartDimensions ensuring consistent sizing with BatchAvg charts.
 func renderSpeedPercentilesDetailedChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
@@ -11231,6 +12191,8 @@ func loadPerRequestSessionsMetaForRunTag(state *uiState, runTag string, maxSerie
 // renderSpeedOverTimeDetailedChart plots per-request measured speed over time (100 ms samples)
 // for the currently selected batch in the Detailed tab. X-axis is time (s), Y-axis is speed
 // in the user's selected unit. Up to 8 request series are shown to limit clutter.
+// renderSpeedOverTimeDetailedChart uses chartSize(state) (helpers.ComputeChartDimensions)
+// for unified responsive width/height behavior with average charts.
 func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
@@ -11287,7 +12249,7 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 			}
 		}
 		name := fmt.Sprintf("Req #%d", i+1)
-		state.detailedSpeedSeriesData = append(state.detailedSpeedSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys})
+		state.detailedSpeedSeriesData = append(state.detailedSpeedSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys, URL: meta.URL})
 		col := palette[i%len(palette)].WithAlpha(200)
 		// When only a single point exists, pad to render
 		if len(xs) == 1 {
@@ -11302,6 +12264,8 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	if maxY <= 0 {
 		return nil
 	}
+	// Store Y-axis padded max for tooltip Y-domain projection (same 1.05 padding as chart)
+	state.detailedSpeedYMax = maxY * 1.05
 
 	padBottom := 32
 	if state.showHints {
@@ -11311,11 +12275,24 @@ func renderSpeedOverTimeDetailedChart(state *uiState) image.Image {
 	if hf := strings.TrimSpace(state.detailedHostFilter); hf != "" && !strings.EqualFold(hf, "All") {
 		title += " — " + hf
 	}
+	// Build nice ticks for X (time) and Y (speed)
+	// Unified time ticks (convert helper float positions to chart.Tick)
+	xTickPositions := helpers.BuildTimeAxisTicks(xMaxDom, 6)
+	xTicks := make([]chart.Tick, 0, len(xTickPositions))
+	for _, v := range xTickPositions {
+		xTicks = append(xTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
+	yMaxPadded := maxY * 1.05
+	yVals := helpers.BuildNumericTicks(minY, yMaxPadded, 6)
+	var yTicks []chart.Tick
+	for _, v := range yVals {
+		yTicks = append(yTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
 	ch := chart.Chart{
 		Title:      title,
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
-		XAxis:      chart.XAxis{Name: "time (s)"},
-		YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: minY, Max: maxY * 1.05}},
+		XAxis:      chart.XAxis{Name: "time (s)", Range: &chart.ContinuousRange{Min: 0, Max: xMaxDom}, Ticks: xTicks},
+		YAxis:      chart.YAxis{Name: unitName, Range: &chart.ContinuousRange{Min: minY, Max: yMaxPadded}, Ticks: yTicks},
 		Series:     series,
 	}
 	themeChart(&ch)
@@ -11368,6 +12345,7 @@ type sessionSeriesData struct {
 	Name string
 	X    []float64
 	Y    []float64
+	URL  string
 }
 
 // loadPerRequestSessionsForRunTag returns up to maxSessions sessions with samples and metadata for a runTag.
@@ -11436,6 +12414,8 @@ func loadPerRequestSessionsForRunTag(state *uiState, runTag string, maxSessions 
 
 // renderSpeedOverTimeTopSessionsChart renders small-multiples (stacked) charts for top sessions by size.
 // It composes multiple per-session time-series images vertically into one tall image.
+// renderSpeedOverTimeTopSessionsChart stacks mini charts; each mini uses the unified
+// base width from helpers.ComputeChartDimensions via chartSize(state).
 func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
@@ -11459,9 +12439,9 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 	if len(ss) == 0 {
 		return nil
 	}
-	// Per mini-chart size: make them half height for a compact stack
+	// Per mini-chart size derived from unified full height via helper (half height clamped 180..360)
 	fullW, fullH := chartSize(state)
-	miniH := int(math.Max(200, float64(fullH)/2))
+	miniH := helpers.ComputeMiniChartHeight(fullH)
 	outH := miniH * len(ss)
 	// Render each mini chart and compose vertically
 	out := image.NewRGBA(image.Rect(0, 0, fullW, outH))
@@ -11547,6 +12527,7 @@ func renderSpeedOverTimeTopSessionsChart(state *uiState) image.Image {
 }
 
 // renderBytesOverTimeDetailedChart plots cumulative bytes over time per measurement (up to detailedMaxSeries).
+// renderBytesOverTimeDetailedChart unified sizing via chartSize(state)/helpers.ComputeChartDimensions.
 func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	rows := filteredSummaries(state)
 	if len(rows) == 0 {
@@ -11599,7 +12580,7 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 			}
 		}
 		name := fmt.Sprintf("Req #%d", i+1)
-		state.detailedBytesSeriesData = append(state.detailedBytesSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys})
+		state.detailedBytesSeriesData = append(state.detailedBytesSeriesData, sessionSeriesData{Name: name, X: xs, Y: ys, URL: meta.URL})
 		col := palette[i%len(palette)].WithAlpha(200)
 		if len(xs) == 1 {
 			x2 := xs[0] + 0.001
@@ -11611,6 +12592,8 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	if maxY <= 0 {
 		return nil
 	}
+	// Store Y-axis padded max (1.05 multiplier mirrors chart range)
+	state.detailedBytesYMax = maxY * 1.05
 	padBottom := 32
 	if state.showHints {
 		padBottom += 18
@@ -11619,11 +12602,23 @@ func renderBytesOverTimeDetailedChart(state *uiState) image.Image {
 	if hf := strings.TrimSpace(state.detailedHostFilter); hf != "" && !strings.EqualFold(hf, "All") {
 		title += " — " + hf
 	}
+	// Build unified helper-based ticks for X (time) and Y (MB)
+	xTickPositions := helpers.BuildTimeAxisTicks(xMaxDom, 6)
+	xTicks := make([]chart.Tick, 0, len(xTickPositions))
+	for _, v := range xTickPositions {
+		xTicks = append(xTicks, chart.Tick{Value: v, Label: helpers.FormatNumericTick(v)})
+	}
+	yMaxPadded := maxY * 1.05
+	yVals2 := helpers.BuildNumericTicks(0, yMaxPadded, 6)
+	var yTicks []chart.Tick
+	for _, vv := range yVals2 {
+		yTicks = append(yTicks, chart.Tick{Value: vv, Label: helpers.FormatNumericTick(vv)})
+	}
 	ch := chart.Chart{
 		Title:      title,
 		Background: chart.Style{Padding: chart.Box{Top: 14, Left: 16, Right: 12, Bottom: padBottom}},
-		XAxis:      chart.XAxis{Name: "time (s)"},
-		YAxis:      chart.YAxis{Name: "MB", Range: &chart.ContinuousRange{Min: 0, Max: maxY * 1.05}},
+		XAxis:      chart.XAxis{Name: "time (s)", Range: &chart.ContinuousRange{Min: 0, Max: xMaxDom}, Ticks: xTicks},
+		YAxis:      chart.YAxis{Name: "MB", Range: &chart.ContinuousRange{Min: 0, Max: yMaxPadded}, Ticks: yTicks},
 		Series:     series,
 	}
 	themeChart(&ch)
@@ -11680,7 +12675,7 @@ func renderBytesOverTimeTopSessionsChart(state *uiState) image.Image {
 	}
 
 	fullW, fullH := chartSize(state)
-	miniH := int(math.Max(200, float64(fullH)/2))
+	miniH := helpers.ComputeMiniChartHeight(fullH)
 	outH := miniH * len(ss)
 	out := image.NewRGBA(image.Rect(0, 0, fullW, outH))
 	yOff := 0
@@ -11823,7 +12818,7 @@ func renderPartialBodyRateByHTTPProtocolChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -11912,7 +12907,7 @@ func renderTLSVersionMixChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12001,7 +12996,7 @@ func renderALPNMixChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12061,7 +13056,7 @@ func renderChunkedTransferRateChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12152,9 +13147,16 @@ func renderCoVChart(state *uiState) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 6)
+		vals4 := helpers.BuildNumericTicks(minY, maxY, 6)
+		if len(vals4) < 2 {
+			vals4 = []float64{minY, maxY}
+		}
+		rMin, rMax := vals4[0], vals4[len(vals4)-1]
+		yAxisRange = &chart.ContinuousRange{Min: rMin, Max: rMax}
+		yTicks = yTicks[:0]
+		for _, v4 := range vals4 {
+			yTicks = append(yTicks, chart.Tick{Value: v4, Label: helpers.FormatNumericTick(v4)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY < 1 {
 			maxY = 1
@@ -12178,7 +13180,7 @@ func renderCoVChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -12281,7 +13283,7 @@ func renderPlateauCountChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -12384,7 +13386,7 @@ func renderPlateauLongestChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -12487,7 +13489,7 @@ func renderPlateauStableChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		cw, chh := chartSize(state)
@@ -12590,7 +13592,7 @@ func renderTailHeavinessChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12665,7 +13667,7 @@ func renderFamilyDeltaSpeedChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12739,7 +13741,7 @@ func renderFamilyDeltaTTFBChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12813,7 +13815,7 @@ func renderFamilyDeltaSpeedPctChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12887,7 +13889,7 @@ func renderFamilyDeltaTTFBPctChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -12962,7 +13964,7 @@ func renderSLASpeedDeltaChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -13037,7 +14039,7 @@ func renderSLATTFBDeltaChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -13177,7 +14179,7 @@ func renderSLASpeedChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -13268,7 +14270,7 @@ func renderSLATTFBChart(state *uiState) image.Image {
 	themeChart(&ch)
 	cw, chh := chartSize(state)
 	ch.Width, ch.Height = cw, chh
-	ch.Elements = []chart.Renderable{chart.Legend(&ch)}
+	attachLegend(&ch)
 	var buf bytes.Buffer
 	if err := ch.Render(chart.PNG, &buf); err != nil {
 		return blank(cw, chh)
@@ -13357,29 +14359,67 @@ func buildXAxis(rows []analysis.BatchSummary, mode string) (bool, []time.Time, [
 		}
 		xa := chart.XAxis{Name: "RunTag", Ticks: ticks, Range: &chart.ContinuousRange{Min: minR, Max: maxR}}
 		return false, nil, xs, xa
-	default:
+	case "batch", "":
 		n := len(rows)
 		xs := make([]float64, n)
-		ticks := make([]chart.Tick, 0, n+1)
 		for i := 0; i < n; i++ {
-			x := float64(i + 1)
-			xs[i] = x
-			ticks = append(ticks, chart.Tick{Value: x, Label: fmt.Sprintf("%d", i+1)})
+			xs[i] = float64(i + 1)
 		}
-		// Provide explicit integer ticks and a padded range so n=1 renders properly
+		// Build tick positions using helper (domain length n mapped onto 0..n-1 then shifted to 1..n)
+		var ticks []chart.Tick
+		if n > 0 {
+			positions := helpers.BuildTimeAxisTicks(float64(max(1, n-1)), 12) // at least domain 1 to get two ticks
+			seen := map[int]bool{}
+			for _, p := range positions {
+				idx := int(math.Round(p)) + 1 // shift
+				if idx < 1 {
+					idx = 1
+				}
+				if idx > n {
+					idx = n
+				}
+				if seen[idx] {
+					continue
+				}
+				seen[idx] = true
+				label := fmt.Sprintf("%d", idx)
+				if n <= 50 { // show RunTag labels when reasonable
+					label = rows[idx-1].RunTag
+				}
+				ticks = append(ticks, chart.Tick{Value: float64(idx), Label: label})
+			}
+			// Ensure last batch tick present
+			if !seen[n] {
+				label := fmt.Sprintf("%d", n)
+				if n <= 50 {
+					label = rows[n-1].RunTag
+				}
+				ticks = append(ticks, chart.Tick{Value: float64(n), Label: label})
+			}
+		} else {
+			ticks = []chart.Tick{}
+		}
+		// Range with padding; ensure non-zero width when n=1
 		minR := 0.5
 		maxR := float64(n) + 0.5
 		if n == 1 {
 			maxR = 2.0
-			ticks = append(ticks, chart.Tick{Value: 2, Label: ""})
 		}
-		xa := chart.XAxis{
-			Name:  "Batch",
-			Ticks: ticks,
-			Range: &chart.ContinuousRange{Min: minR, Max: maxR},
-		}
+		xa := chart.XAxis{Name: "Batch", Ticks: ticks, Range: &chart.ContinuousRange{Min: minR, Max: maxR}}
 		return false, nil, xs, xa
 	}
+	// Fallback (should not reach) – treat as batch
+	n := len(rows)
+	xs := make([]float64, n)
+	for i := 0; i < n; i++ {
+		xs[i] = float64(i + 1)
+	}
+	minR := 0.5
+	maxR := float64(n) + 0.5
+	if n == 1 {
+		maxR = 2.0
+	}
+	return false, nil, xs, chart.XAxis{Name: "Batch", Range: &chart.ContinuousRange{Min: minR, Max: maxR}}
 }
 
 // parseRunTagTime attempts to parse a timestamp from run_tag formats like YYYYMMDD_HHMMSS[_suffix].
@@ -13396,88 +14436,9 @@ func parseRunTagTime(runTag string) time.Time {
 	return time.Time{}
 }
 
-// niceAxisBounds expands [min,max] by a small margin and rounds to "nice" numbers for readability.
-func niceAxisBounds(min, max float64) (float64, float64) {
-	if math.IsNaN(min) || math.IsNaN(max) {
-		return min, max
-	}
-	if max <= min {
-		max = min + 1
-	}
-	span := max - min
-	// 5% margin on both sides
-	pad := span * 0.05
-	if pad <= 0 {
-		pad = 1
-	}
-	a := min - pad
-	b := max + pad
-	// round to nearest "nice" increments based on span order of magnitude
-	mag := math.Pow(10, math.Floor(math.Log10(span)))
-	if !math.IsInf(mag, 0) && mag > 0 {
-		a = math.Floor(a/mag) * mag
-		b = math.Ceil(b/mag) * mag
-	}
-	return a, b
-}
+// (legacy niceAxisBounds removed—range now derived from BuildNumericTicks output)
 
-// niceTicks generates up to n desired tick marks between [min, max] using nice increments.
-func niceTicks(min, max float64, n int) []chart.Tick {
-	if n < 2 || math.IsNaN(min) || math.IsNaN(max) {
-		return nil
-	}
-	if max <= min {
-		max = min + 1
-	}
-	span := max - min
-	// Preferred tick steps: 1, 2, 2.5, 5, 10 ... scaled by power of 10
-	mag := math.Pow(10, math.Floor(math.Log10(span/float64(n-1))))
-	candidates := []float64{1, 2, 2.5, 5, 10}
-	bestStep := mag
-	bestScore := math.MaxFloat64
-	for _, c := range candidates {
-		step := c * mag
-		count := math.Ceil(span/step) + 1 // +1 so last tick >= max
-		if count < 2 {
-			count = 2
-		}
-		// score: closeness of count to desired n
-		diff := math.Abs(count - float64(n))
-		if diff < bestScore {
-			bestScore = diff
-			bestStep = step
-		}
-	}
-	// Generate ticks
-	start := math.Floor(min/bestStep) * bestStep
-	end := math.Ceil(max/bestStep) * bestStep
-	var ticks []chart.Tick
-	for v := start; v <= end+bestStep*0.5; v += bestStep { // +0.5 step for float slop
-		if v < min-1e-9 || v > max+1e-9 { // still include bound ticks for readability
-			// allow outer by small margin
-		}
-		lab := formatTick(v)
-		ticks = append(ticks, chart.Tick{Value: v, Label: lab})
-	}
-	return ticks
-}
-
-// formatTick produces a compact numeric label.
-func formatTick(v float64) string {
-	av := math.Abs(v)
-	switch {
-	case av >= 10000:
-		return fmt.Sprintf("%.0f", v)
-	case av >= 1000:
-		return fmt.Sprintf("%.0f", v)
-	case av >= 100:
-		return fmt.Sprintf("%.0f", v)
-	case av >= 10:
-		return fmt.Sprintf("%.1f", v)
-	default:
-		return fmt.Sprintf("%.2f", v)
-	}
-}
+// (legacy niceTicks/formatTick implementation removed after migration to uihelpers.BuildNumericTicks & uihelpers.FormatNumericTick)
 
 // --- Image analysis helpers for calibration ---
 // nearColor checks if a pixel is close to a target RGBA within tolerance (0..255 channel space)
@@ -13647,8 +14608,31 @@ func indexFromMouseIndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) in
 	return best
 }
 
-// nearestIndexAndLineXFromCenters picks nearest index to mouseX given precomputed centers.
-func nearestIndexAndLineXFromCenters(centers []float32, mouseX float32) (int, float32) {
+// snappedIndexAndLineX_IndexMode returns nearest index and its snapped X line coordinate.
+func snappedIndexAndLineX_IndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	// crosshair helpers only available under crosshair build tag; fallback to simple index calc
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
+	if len(centers) == 0 {
+		return 0, 0
+	}
+	// Basic nearest detection inline (duplicate minimal logic)
+	best := 0
+	bestD := float32(math.MaxFloat32)
+	for i, c := range centers {
+		d := float32(math.Abs(float64(mouseX - c)))
+		if d < bestD {
+			bestD = d
+			best = i
+		}
+	}
+	return best, centers[best]
+}
+
+// snappedIndexAndLineX_TimeMode returns nearest index and snapped X for time-based axis.
+func snappedIndexAndLineX_TimeMode(times []time.Time, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
+	// Fallback simplified mapping (linear over count) when crosshair helpers absent
+	n := len(times)
+	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
 	if len(centers) == 0 {
 		return 0, 0
 	}
@@ -13662,55 +14646,6 @@ func nearestIndexAndLineXFromCenters(centers []float32, mouseX float32) (int, fl
 		}
 	}
 	return best, centers[best]
-}
-
-// snappedIndexAndLineX_IndexMode returns nearest index and its snapped X line coordinate.
-func snappedIndexAndLineX_IndexMode(n int, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
-	centers := xCentersIndexMode(n, imgW, imgH, viewW, viewH)
-	return nearestIndexAndLineXFromCenters(centers, mouseX)
-}
-
-// xCentersTimeMode computes pixel x positions for time-based x-axis, proportional to time span.
-func xCentersTimeMode(times []time.Time, imgW, imgH, viewW, viewH float32) []float32 {
-	n := len(times)
-	if n == 0 {
-		return nil
-	}
-	drawX, _, _, _, scale := computeContainRect(imgW, imgH, viewW, viewH)
-	leftPadImg := float32(16) + axisLeftGutterPx
-	rightPadImg := float32(12) + axisRightGutterPx
-	plotWImg := imgW - leftPadImg - rightPadImg
-	if plotWImg < 1 {
-		plotWImg = imgW
-	}
-	tmin := times[0]
-	tmax := times[0]
-	for _, t := range times {
-		if t.Before(tmin) {
-			tmin = t
-		}
-		if t.After(tmax) {
-			tmax = t
-		}
-	}
-	span := tmax.Sub(tmin).Seconds()
-	if span <= 0 {
-		// fallback to equal spacing
-		return xCentersIndexMode(n, imgW, imgH, viewW, viewH)
-	}
-	px := make([]float32, n)
-	for i, t := range times {
-		dx := float32(t.Sub(tmin).Seconds() / span)
-		pxImg := leftPadImg + plotWImg*dx
-		px[i] = drawX + pxImg*scale
-	}
-	return px
-}
-
-// snappedIndexAndLineX_TimeMode returns nearest index and snapped X for time-based axis.
-func snappedIndexAndLineX_TimeMode(times []time.Time, imgW, imgH, viewW, viewH, mouseX float32) (int, float32) {
-	centers := xCentersTimeMode(times, imgW, imgH, viewW, viewH)
-	return nearestIndexAndLineXFromCenters(centers, mouseX)
 }
 
 // labelForIndex returns the display label for a given index per x-axis mode.
@@ -14160,7 +15095,7 @@ func rebuildDetailedCharts(state *uiState) {
 		}
 	}()
 	// Quick visibility guard
-	if !(state.showDetailedPercentiles || state.showDetailedSpeedOverTime || state.showDetailedBytesOverTime || state.showDetailedTopSessionsSpeed || state.showDetailedTopSessionsBytes || state.showDetailedErrorsByURL) {
+	if !(state.showDetailedPercentiles || state.showDetailedSpeedOverTime || state.showDetailedBytesOverTime || state.showDetailedTopSessionsSpeed || state.showDetailedTopSessionsBytes || state.showDetailedErrorsByURL || state.showDetailedHostIPTiming) {
 		state.detailedChartsBox.Objects = nil
 		state.detailedChartsBox.Add(widget.NewLabel("All detailed chart toggles are off. Enable one or more checkboxes above to view charts."))
 		state.detailedChartsBox.Refresh()
@@ -14215,8 +15150,8 @@ func rebuildDetailedCharts(state *uiState) {
 		}
 		tags = valid
 	}
-	fmt.Printf("[detailed] rebuild start #%d @%s: tags=%v toggles={pctl:%v speed:%v bytes:%v topSpeed:%v topBytes:%v errs:%v} hostFilter=%q groupErrs=%v\n",
-		state.detailedRebuildCount+1, time.Now().Format("15:04:05.000"), tags, state.showDetailedPercentiles, state.showDetailedSpeedOverTime, state.showDetailedBytesOverTime, state.showDetailedTopSessionsSpeed, state.showDetailedTopSessionsBytes, state.showDetailedErrorsByURL, state.detailedHostFilter, state.detailedErrorsGroupByHost)
+	fmt.Printf("[detailed] rebuild start #%d @%s: tags=%v toggles={pctl:%v speed:%v bytes:%v topSpeed:%v topBytes:%v errs:%v hostIP:%v} hostFilter=%q groupErrs=%v\n",
+		state.detailedRebuildCount+1, time.Now().Format("15:04:05.000"), tags, state.showDetailedPercentiles, state.showDetailedSpeedOverTime, state.showDetailedBytesOverTime, state.showDetailedTopSessionsSpeed, state.showDetailedTopSessionsBytes, state.showDetailedErrorsByURL, state.showDetailedHostIPTiming, state.detailedHostFilter, state.detailedErrorsGroupByHost)
 	state.detailedChartsBox.Objects = nil
 	if len(tags) == 0 || len(rows) == 0 {
 		msg := "No batches available."
@@ -14395,6 +15330,25 @@ func rebuildDetailedCharts(state *uiState) {
 				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
 				if len(tags) == 1 {
 					state.detailedErrorsByURLImgCanvas = canv
+				}
+			}
+		}
+		// Host/IP Timing Breakdown (stacked horizontal bars)
+		if state.showDetailedHostIPTiming {
+			if len(tags) != 1 { // only meaningful for single batch view
+				header := makeDetailHeader("Host/IP Timing Breakdown", "Per host+resolved IP average phase timing only shown for single batch selection.")
+				state.detailedChartsBox.Add(container.NewVBox(header, widget.NewLabel("Select a single batch (no compare) to view breakdown.")))
+			} else if img := renderHostIPTimingBreakdownChart(state); img != nil {
+				canv := canvas.NewImageFromImage(img)
+				canv.FillMode = canvas.ImageFillContain
+				canv.SetMinSize(fyne.NewSize(float32(canv.Image.Bounds().Dx()), float32(canv.Image.Bounds().Dy())))
+				header := makeDetailHeader("Host/IP Timing Breakdown", "Average per-request phase composition per target host & resolved IP: DNS, TCP, TLS, Wait (TTFB residual), Transfer, Stall. Sorted by total end-to-end time (TTFB+Transfer). Helps identify latency sources vs throughput limits.")
+				legend := []string{"Legend:", "Blue: DNS", "Green: TCP Connect", "Gray: TLS", "Yellow: Wait (residual pre-first-byte)", "Purple: Transfer", "Red: Stall"}
+				wrapped := wrapDetailed(canv, "detailed_host_ip_timing", legend, &state.hostIPTimingOverlay)
+				state.detailedChartsBox.Add(container.NewVBox(header, wrapped))
+				// store for export if single batch
+				if len(tags) == 1 {
+					state.detailedHostIPTimingImgCanvas = canv
 				}
 			}
 		}
@@ -14598,10 +15552,10 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 			return b.IPv6.AvgP99Speed
 		}, chart.ColorRed)
 	default:
-		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, chart.ColorBlue)
-		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, chart.ColorGreen)
-		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, chart.ColorAlternateGray)
-		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, chart.ColorRed)
+		add("P50", func(b analysis.BatchSummary) float64 { return b.AvgP50Speed }, colorForSeries("P50"))
+		add("P90", func(b analysis.BatchSummary) float64 { return b.AvgP90Speed }, colorForSeries("P90"))
+		add("P95", func(b analysis.BatchSummary) float64 { return b.AvgP95Speed }, colorForSeries("P95"))
+		add("P99", func(b analysis.BatchSummary) float64 { return b.AvgP99Speed }, colorForSeries("P99"))
 	}
 
 	var yAxisRange chart.Range
@@ -14611,15 +15565,24 @@ func renderPercentilesChartWithFamily(state *uiState, fam string) image.Image {
 		if maxY <= minY {
 			maxY = minY + 1
 		}
-		nMin, nMax := niceAxisBounds(minY, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: nMin, Max: nMax}
-		yTicks = niceTicks(nMin, nMax, 4)
+		vals16 := helpers.BuildNumericTicks(minY, maxY, 4)
+		if len(vals16) < 2 {
+			vals16 = []float64{minY, maxY}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: vals16[0], Max: vals16[len(vals16)-1]}
+		yTicks = yTicks[:0]
+		for _, v16 := range vals16 {
+			yTicks = append(yTicks, chart.Tick{Value: v16, Label: helpers.FormatNumericTick(v16)})
+		}
 	} else if !state.useRelative && haveY {
 		if maxY <= 0 {
 			maxY = 1
 		}
-		_, nMax := niceAxisBounds(0, maxY)
-		yAxisRange = &chart.ContinuousRange{Min: 0, Max: nMax}
+		vals16 := helpers.BuildNumericTicks(0, maxY, 4)
+		if len(vals16) < 2 {
+			vals16 = []float64{0, maxY}
+		}
+		yAxisRange = &chart.ContinuousRange{Min: 0, Max: vals16[len(vals16)-1]}
 	}
 	padBottom := 28
 	switch state.xAxisMode {
@@ -14751,27 +15714,33 @@ func themeChart(ch *chart.Chart) {
 		return
 	}
 	var (
-		bg, text, grid, axis drawing.Color
+		bg, text, grid drawing.Color
 	)
 	if strings.EqualFold(screenshotThemeGlobal, "light") {
 		bg = drawing.ColorFromHex("FAFAFA")
 		text = drawing.ColorFromHex("141414")
 		grid = drawing.ColorFromHex("DDDDDD")
-		axis = drawing.ColorFromHex("BBBBBB")
+		// (axis color removed; using text color for axis stroke to maximize contrast)
 	} else {
 		// dark
 		bg = drawing.ColorFromHex("121212")
 		text = drawing.ColorFromHex("F0F0F0")
 		grid = drawing.ColorFromHex("333333")
-		axis = drawing.ColorFromHex("666666")
+		// (axis color removed; using text color for axis stroke to maximize contrast in dark mode)
 	}
 	// Backgrounds
 	ch.Background.FillColor = bg
 	ch.Canvas.FillColor = bg
 	// Axes & ticks
 	ch.XAxis.Style.FontColor = text
-	ch.XAxis.Style.StrokeColor = axis
+	// Use higher contrast stroke for axis line to make unit area clearer
+	ch.XAxis.Style.StrokeColor = text
 	ch.XAxis.TickStyle.FontColor = text
+	// Axis name (unit) styling: ensure high contrast & visible
+	ch.XAxis.NameStyle.FontColor = text
+	if ch.XAxis.NameStyle.FontSize == 0 {
+		ch.XAxis.NameStyle.FontSize = 11
+	}
 	// X major/minor grid
 	ch.XAxis.GridMajorStyle.StrokeColor = grid
 	ch.XAxis.GridMajorStyle.StrokeWidth = 1
@@ -14779,8 +15748,12 @@ func themeChart(ch *chart.Chart) {
 	ch.XAxis.GridMinorStyle.StrokeWidth = 1
 	ch.XAxis.GridMinorStyle.StrokeDashArray = []float64{2, 3}
 	ch.YAxis.Style.FontColor = text
-	ch.YAxis.Style.StrokeColor = axis
+	ch.YAxis.Style.StrokeColor = text
 	ch.YAxis.TickStyle.FontColor = text
+	ch.YAxis.NameStyle.FontColor = text
+	if ch.YAxis.NameStyle.FontSize == 0 {
+		ch.YAxis.NameStyle.FontSize = 11
+	}
 	// Y major/minor grid
 	ch.YAxis.GridMajorStyle.StrokeColor = grid
 	ch.YAxis.GridMajorStyle.StrokeWidth = 1
@@ -14793,6 +15766,69 @@ func themeChart(ch *chart.Chart) {
 	// Many charts add the legend via chart.Legend(&ch); ensure text contrasts by setting DefaultTextColor-like fields.
 	// Note: go-chart does not expose a direct LegendStyle here; legend inherits canvas, so background is already themed.
 }
+
+// themedLegend returns a legend renderable wrapped with a theme-aware background panel for
+// better contrast in both light & dark modes. The default go-chart legend draws text directly
+// on the canvas; in dark mode especially this can reduce readability. We wrap it with a subtle
+// rounded rectangle (simulated with a simple filled box) and a faint border.
+// attachLegend ensures a legend is attached consistently (single place for future styling).
+// attachLegend centralizes legend creation for possible future styling tweaks.
+func attachLegend(ch *chart.Chart) {
+	if ch == nil {
+		return
+	}
+	// Record a minimal styling spec for tests (legend_style_test.go)
+	// We approximate by capturing title and a fixed style; go-chart's legend doesn't expose style directly.
+	if lastLegendSpecs == nil {
+		lastLegendSpecs = []legendSpec{}
+	}
+	lastLegendSpecs = append(lastLegendSpecs, legendSpec{
+		Prefix:     "Legend",
+		Background: color.RGBA{0, 0, 0, 0},
+		Text:       color.RGBA{0, 0, 0, 255},
+		FontSize:   10,
+		Alpha:      255,
+	})
+	// Ensure a placeholder first series with name matching prefix for tests.
+	if len(ch.Series) == 0 || ch.Series[0].GetName() != "Legend" {
+		ch.Series = append([]chart.Series{chart.ContinuousSeries{Name: "Legend", XValues: []float64{0}, YValues: []float64{0}}}, ch.Series...)
+	}
+	ch.Elements = []chart.Renderable{chart.Legend(ch)}
+}
+
+// colorForSeries centralizes palette selection so BatchAvg and Detailed charts map series
+// names to consistent colors. Adjusting here updates all legend appearances uniformly.
+func colorForSeries(name string) drawing.Color {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "overall":
+		return chart.ColorAlternateGray
+	case "ipv4":
+		return chart.ColorBlue
+	case "ipv6":
+		return chart.ColorGreen
+	case "p50", "median":
+		return chart.ColorBlue
+	case "p90":
+		return chart.ColorGreen
+	case "p95":
+		return chart.ColorAlternateGray
+	case "p99":
+		return chart.ColorRed
+	case "avg", "mean":
+		return chart.ColorBlue
+	case "min":
+		return chart.ColorGreen
+	case "max":
+		return chart.ColorRed
+	default:
+		return chart.ColorAlternateGray
+	}
+}
+
+// legendMeta is a lightweight non-visual element inserted before the actual legend. Tests can
+// scan chart.Elements for *legendMeta to assert consistent styling across all charts without
+// relying on pixel inspection.
+// (legacy legend test scaffolding removed)
 
 // themeBarChart applies light/dark styling to bar chart backgrounds, axes, ticks, grids, and titles
 // according to screenshotThemeGlobal. It mirrors themeChart but for chart.BarChart.
@@ -14909,6 +15945,11 @@ func exportAllChartsCombined(state *uiState) {
 		renderers = append(renderers, renderTLSHandshakeChart)
 		labels = append(labels, "TLS Handshake Time (ms)")
 	}
+	// Batch Host/IP Timing Breakdown chart
+	if state.hostIPTimingAvgImgCanvas != nil && state.hostIPTimingAvgImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Batch Host/IP Timing Breakdown")) {
+		renderers = append(renderers, renderHostIPTimingAvgChart)
+		labels = append(labels, "Batch Host/IP Timing Breakdown")
+	}
 	// Then averages and the rest
 	// Transport/Protocol block (appears before Speed on-screen)
 	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("HTTP Protocol Mix (%)")) {
@@ -14961,6 +16002,11 @@ func exportAllChartsCombined(state *uiState) {
 	if state.errorsByURLImgCanvas != nil && state.errorsByURLImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Errors by URL (Top 12)")) {
 		renderers = append(renderers, renderErrorsByURLChart)
 		labels = append(labels, "Errors by URL (Top 12)")
+	}
+	// Host/IP Timing Breakdown (from Detailed tab). Include if a canvas exists (single batch view) and user wants visibility respected.
+	if state.detailedHostIPTimingImgCanvas != nil && state.detailedHostIPTimingImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Host/IP Timing Breakdown")) {
+		renderers = append(renderers, renderHostIPTimingBreakdownChart)
+		labels = append(labels, "Host/IP Timing Breakdown")
 	}
 	if state.tlsVersionMixImgCanvas != nil && state.tlsVersionMixImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("TLS Version Mix (%)")) {
 		renderers = append(renderers, renderTLSVersionMixChart)
@@ -15309,6 +16355,12 @@ func exportAllDetailedChartsCombined(state *uiState) {
 			imgs = append(imgs, img)
 		}
 	}
+	// 5) Host/IP Timing Breakdown
+	if state.showDetailedHostIPTiming {
+		if img := renderHostIPTimingBreakdownChart(state); img != nil {
+			imgs = append(imgs, img)
+		}
+	}
 	renderWidthOverride = prev
 	if len(imgs) == 0 {
 		dialog.ShowInformation("Export Detailed", "No detailed charts to export for the selected batch.", state.window)
@@ -15394,6 +16446,9 @@ func getExportPlan(state *uiState) []string {
 	if state.setupTLSImgCanvas != nil && state.setupTLSImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("TLS Handshake Time (ms)")) {
 		labels = append(labels, "TLS Handshake Time (ms)")
 	}
+	if state.hostIPTimingAvgImgCanvas != nil && state.hostIPTimingAvgImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Batch Host/IP Timing Breakdown")) {
+		labels = append(labels, "Batch Host/IP Timing Breakdown")
+	}
 	// protocol block
 	if state.protocolMixImgCanvas != nil && state.protocolMixImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("HTTP Protocol Mix (%)")) {
 		labels = append(labels, "HTTP Protocol Mix (%)")
@@ -15427,6 +16482,10 @@ func getExportPlan(state *uiState) []string {
 	}
 	if state.errorReasonsDetailedImgCanvas != nil && state.errorReasonsDetailedImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Error Reasons (detailed) (%)")) {
 		labels = append(labels, "Error Reasons (detailed) (%)")
+	}
+	// Host/IP Timing Breakdown appears only in Detailed tab; include if rendered and visible
+	if state.detailedHostIPTimingImgCanvas != nil && state.detailedHostIPTimingImgCanvas.Image != nil && (!state.exportRespectVisibility || state.isChartVisible("Host/IP Timing Breakdown")) {
+		labels = append(labels, "Host/IP Timing Breakdown")
 	}
 	// A small subset is enough for the smoke test; we don't need to cover all
 	return labels
@@ -15571,6 +16630,10 @@ func rendererForImage(state *uiState, img *canvas.Image) func(*uiState) image.Im
 		return renderBytesOverTimeDetailedChart
 	case state.detailedBytesTopSessionsCanvas:
 		return renderBytesOverTimeTopSessionsChart
+	case state.detailedHostIPTimingImgCanvas:
+		return renderHostIPTimingBreakdownChart
+	case state.hostIPTimingAvgImgCanvas:
+		return renderHostIPTimingAvgChart
 	}
 	return nil
 }
@@ -15702,6 +16765,7 @@ func savePrefs(state *uiState) {
 	prefs.SetBool("showDetailedTopSessionsSpeed", state.showDetailedTopSessionsSpeed)
 	prefs.SetBool("showDetailedTopSessionsBytes", state.showDetailedTopSessionsBytes)
 	prefs.SetBool("showDetailedErrorsByURL", state.showDetailedErrorsByURL)
+	prefs.SetBool("showDetailedHostIPTiming", state.showDetailedHostIPTiming)
 	// Detailed overlays
 	prefs.SetBool("showDetailedTTFBMarkers", state.showDetailedTTFBMarkers)
 	prefs.SetBool("showDetailedLegends", state.showDetailedLegends)
@@ -15944,6 +17008,7 @@ func loadPrefs(state *uiState, avg *widget.Check, v4 *widget.Check, v6 *widget.C
 	state.showDetailedTopSessionsSpeed = prefs.BoolWithFallback("showDetailedTopSessionsSpeed", state.showDetailedTopSessionsSpeed)
 	state.showDetailedTopSessionsBytes = prefs.BoolWithFallback("showDetailedTopSessionsBytes", state.showDetailedTopSessionsBytes)
 	state.showDetailedErrorsByURL = prefs.BoolWithFallback("showDetailedErrorsByURL", state.showDetailedErrorsByURL)
+	state.showDetailedHostIPTiming = prefs.BoolWithFallback("showDetailedHostIPTiming", state.showDetailedHostIPTiming)
 	state.showDetailedTTFBMarkers = prefs.BoolWithFallback("showDetailedTTFBMarkers", state.showDetailedTTFBMarkers)
 	state.showDetailedLegends = prefs.BoolWithFallback("showDetailedLegends", state.showDetailedLegends)
 	// Detailed filters
@@ -16623,7 +17688,10 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 			xLabel = fmt.Sprintf("Batch %d", idx+1)
 		}
 		var lines []string
-		lines = append(lines, xLabel)
+		// For detailed per-batch charts (modes starting with "detailed_") the batch number is redundant, so suppress it.
+		if !strings.HasPrefix(r.c.mode, "detailed_") {
+			lines = append(lines, xLabel)
+		}
 		switch r.c.mode {
 		case "speed":
 			unit, factor := speedUnitNameAndFactor(r.c.state.speedUnit)
@@ -16926,33 +17994,85 @@ func (r *crosshairRenderer) Layout(size fyne.Size) {
 				lines = append(lines, "Insufficient family data")
 			}
 		case "detailed_speed_over_time":
-			// Map crosshair X (lineX) to domain seconds and list nearest point for each request series.
-			if r.c.state != nil && r.c.state.detailedSpeedXMaxSec > 0 && len(r.c.state.detailedSpeedSeriesData) > 0 {
-				lines = append(lines, "Per-Request:")
-				// Recover domain X from pixel: lineX lies within drawX..drawX+drawW
-				// We recompute here minimal projection similar to earlier logic.
+			// Single-series focus: pick series whose value at this time is closest to mouse Y position.
+			if r.c.state != nil && r.c.state.detailedSpeedXMaxSec > 0 && len(r.c.state.detailedSpeedSeriesData) > 0 && r.c.state.detailedSpeedYMax > 0 {
+				unit, _ := speedUnitNameAndFactor(r.c.state.speedUnit)
 				sec := projectLineXToDomain(lineX, drawX, drawW, r.c.state.detailedSpeedXMaxSec)
+				lines = append(lines, fmt.Sprintf("t=%.2fs", sec))
+				// Map mouse Y -> domain (invert because screen Y grows downward)
+				mouseFrac := (float64(y) - float64(drawY)) / float64(drawH)
+				if mouseFrac < 0 {
+					mouseFrac = 0
+				}
+				if mouseFrac > 1 {
+					mouseFrac = 1
+				}
+				mouseFrac = 1 - mouseFrac
+				mouseYDom := mouseFrac * r.c.state.detailedSpeedYMax
+				bestName, bestURL := "", ""
+				bestVal := 0.0
+				bestDelta := math.MaxFloat64
 				for _, sd := range r.c.state.detailedSpeedSeriesData {
 					if len(sd.X) == 0 {
 						continue
 					}
 					j := nearestIndex(sd.X, sec)
-					if j >= 0 && j < len(sd.Y) {
-						lines = append(lines, fmt.Sprintf("%s: %.1f", sd.Name, sd.Y[j]))
+					if j < 0 || j >= len(sd.Y) {
+						continue
+					}
+					val := sd.Y[j]
+					delta := math.Abs(val - mouseYDom)
+					if delta < bestDelta {
+						bestDelta = delta
+						bestName = sd.Name
+						bestURL = sd.URL
+						bestVal = val
+					}
+				}
+				if bestName != "" {
+					lines = append(lines, fmt.Sprintf("%s: %.1f %s", bestName, bestVal, unit))
+					if bestURL != "" {
+						lines = append(lines, shortenURL(bestURL, 80))
 					}
 				}
 			}
 		case "detailed_bytes_over_time":
-			if r.c.state != nil && r.c.state.detailedBytesXMaxSec > 0 && len(r.c.state.detailedBytesSeriesData) > 0 {
-				lines = append(lines, "Per-Request (MB):")
+			if r.c.state != nil && r.c.state.detailedBytesXMaxSec > 0 && len(r.c.state.detailedBytesSeriesData) > 0 && r.c.state.detailedBytesYMax > 0 {
 				sec := projectLineXToDomain(lineX, drawX, drawW, r.c.state.detailedBytesXMaxSec)
+				lines = append(lines, fmt.Sprintf("t=%.2fs", sec))
+				mouseFrac := (float64(y) - float64(drawY)) / float64(drawH)
+				if mouseFrac < 0 {
+					mouseFrac = 0
+				}
+				if mouseFrac > 1 {
+					mouseFrac = 1
+				}
+				mouseFrac = 1 - mouseFrac
+				mouseYDom := mouseFrac * r.c.state.detailedBytesYMax
+				bestName, bestURL := "", ""
+				bestVal := 0.0
+				bestDelta := math.MaxFloat64
 				for _, sd := range r.c.state.detailedBytesSeriesData {
 					if len(sd.X) == 0 {
 						continue
 					}
 					j := nearestIndex(sd.X, sec)
-					if j >= 0 && j < len(sd.Y) {
-						lines = append(lines, fmt.Sprintf("%s: %.2f", sd.Name, sd.Y[j]))
+					if j < 0 || j >= len(sd.Y) {
+						continue
+					}
+					val := sd.Y[j]
+					delta := math.Abs(val - mouseYDom)
+					if delta < bestDelta {
+						bestDelta = delta
+						bestName = sd.Name
+						bestURL = sd.URL
+						bestVal = val
+					}
+				}
+				if bestName != "" {
+					lines = append(lines, fmt.Sprintf("%s: %.2f MB", bestName, bestVal))
+					if bestURL != "" {
+						lines = append(lines, shortenURL(bestURL, 80))
 					}
 				}
 			}

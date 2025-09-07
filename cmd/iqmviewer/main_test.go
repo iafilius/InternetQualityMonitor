@@ -1,3 +1,6 @@
+//go:build crosshair
+// +build crosshair
+
 package main
 
 import (
@@ -353,6 +356,36 @@ func TestCrosshair_RenderedChartAlignment_IndexMode(t *testing.T) {
 		if lblR != runTags[i+1] {
 			t.Fatalf("label right mismatch: got %q want %q", lblR, runTags[i+1])
 		}
+	}
+}
+
+// Test oversized geometry helpers for batch host/IP chart.
+func TestComputeBatchHostIPGeometryAndFont(t *testing.T) {
+	samples := []int{1, 2, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 36, 40}
+	prevH := 9999
+	for _, n := range samples {
+		barH, gap := computeBatchHostIPBarGeometry(n)
+		if barH > prevH { // Should not grow when n increases
+			t.Fatalf("bar height increased for n=%d: %d -> %d", n, prevH, barH)
+		}
+		if gap <= 0 {
+			t.Fatalf("gap <=0 for n=%d", n)
+		}
+		fs := computeBatchHostIPFontSize(barH)
+		if fs <= 0 {
+			t.Fatalf("font size invalid for barH=%d", barH)
+		}
+		// Expect large bars to correlate with large fonts
+		if barH >= 64 && fs < 24 {
+			t.Fatalf("expected font >=24 for barH=%d got %.1f", barH, fs)
+		}
+		prevH = barH
+	}
+	// Idempotence
+	b1, g1 := computeBatchHostIPBarGeometry(8)
+	b2, g2 := computeBatchHostIPBarGeometry(8)
+	if b1 != b2 || g1 != g2 {
+		t.Fatalf("geometry not stable for repeated n=8")
 	}
 }
 

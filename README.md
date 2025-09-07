@@ -130,6 +130,33 @@ go test ./...
 
 If both commands succeed, you’re ready to run the monitor.
 
+### Test Suite Structure & Build Tags
+
+The repository splits tests into fast pure units and opt-in heavier suites using Go build tags:
+
+| Tag | Included Tests | Excluded By Default | Notes |
+|-----|----------------|---------------------|-------|
+| (none) | Pure helper / analysis unit tests (including `uihelpers` sizing logic) | yes (crosshair, integration) | Fast CI signal |
+| `crosshair` | Crosshair interaction & coordinate mapping tests in the viewer | no | Pure math / rendering logic, no file I/O |
+| `integration` | Screenshot rendering, command builder tests (network command strings), PNG width determinism | no | Generates temp JSONL + images |
+
+Examples:
+```bash
+# Fast default
+go test ./cmd/iqmviewer/... -count=1
+
+# Add crosshair logic
+go test -tags=crosshair ./cmd/iqmviewer -run TestIndexModeMapping_CentersAndSelection -count=1
+
+# Integration (screenshots, command builders)
+go test -tags=integration ./cmd/iqmviewer -run TestScreenshotWidths_ -count=1
+
+# Full viewer suite
+go test -tags='crosshair integration' ./cmd/iqmviewer/... -count=1
+```
+
+Helper refactor (viewer): `ComputeChartDimensions` and `ComputeTableColumnWidths` moved to `cmd/iqmviewer/uihelpers` so their tests run without spinning up GUI code.
+
 Fedora:
 
 ```bash

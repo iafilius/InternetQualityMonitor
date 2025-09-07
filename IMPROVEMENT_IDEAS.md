@@ -138,3 +138,41 @@ This document captures ideas for extracting richer telemetry (with or without a 
 		- Likely a repaint race or image cache edge when dimensions don’t change. Possible fix: force a two-step image swap (set Image=nil and Refresh, then set new image and Refresh) or swap to a 1px different MinSize before setting back.
 		- Also check Time axis path for single timestamp and verify legend/series changes trigger a repaint.
 
+### Backlog / Sizing & Font Uniformity
+
+1. Chart Font Uniformity Test & Enforcement
+	- Add a lightweight test in `cmd/iqmviewer/main_test.go` that invokes the custom renderers (detailed Host/IP and batch Host/IP timing charts) and inspects chosen font sizes (e.g., by wrapping `loadDynamicFontFace` or exposing selected size via a debug hook) to ensure they do not regress below a minimum readable threshold (e.g., 14pt for medium bars, 20pt for large bars).
+	- Provide a central mapping for (barHeight -> fontSize) to avoid duplicate switch statements; simplifies future global adjustments.
+	- Consider an environment var override (e.g., `IQM_VIEWER_FONT_SCALE=1.2`) for quick user scaling.
+
+2. User-Selectable Sizing Modes
+	- Add a dropdown or settings dialog (Compact / Normal / Large / Huge) that influences bar height & gap scaling factors across all custom charts for consistent look.
+	- Persist preference in existing viewer prefs.
+
+3. Scroll vs. Compress Strategy
+	- For > 40 batches, optionally allow a vertical scroll container instead of shrinking bar heights; preserves legibility for large historical windows.
+	- Add toggle: "Auto Compress" vs "Scroll".
+
+4. Legend / Phase Key Panel
+	- Provide a small legend panel (DNS/TCP/TLS/Wait/Transfer/Stall colors) reused by both detailed and batch Host/IP charts; reduces need for repeated inline labels when bars become very wide.
+
+5. Export Font Consistency
+	- Ensure export re-render path uses same sizing logic but can optionally upscale font slightly (e.g., +2pt) for high-DPI clarity.
+	- Add integration test: export all charts to a temp dir and validate PNG dimensions & presence; future enhancement could parse PNG text chunk to confirm watermark.
+
+6. Performance Optimization (Single-Pass Aggregation)
+	- Replace per-batch file rescans with a single streaming pass building structures for all batches, then compute both detailed and batch aggregate timing charts. Improves load time for large result sets.
+
+7. Accessibility / High Contrast Mode
+	- Offer alt color palette for color-blind accessibility (e.g., ColorBrewer Set2 or Tol palette) selectable via settings.
+
+8. Optional Global Font Override
+	- Config field to specify a TTF path; load once and propagate to all chart renderers for uniform typography.
+
+9. Unit Tests for Sizing Regression
+	- Store representative synthetic batch counts (e.g., 4, 8, 16, 32, 40) and assert computed bar height & font size pairs against expected golden values.
+
+10. Watermark & Title Scaling
+	- Scale watermark and title text proportionally to base font to avoid tiny watermark on very tall charts.
+
+

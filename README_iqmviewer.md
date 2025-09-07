@@ -149,6 +149,26 @@ Notes:
 - Flexible window size: the window can be made narrow; the toolbar scrolls horizontally when there’s not enough space.
 - Debounced resize: viewer redraws on meaningful width changes only (guarded to prevent jitter-driven redraw loops).
 
+#### Unified sizing & tick helpers (developer note)
+Reusable logic lives in `cmd/iqmviewer/uihelpers`:
+
+| Helper | Purpose |
+| ------ | ------- |
+| `ComputeChartDimensions(rawW)` | Applies minimum width (800) and aspect-derived height (≈33%) with clamp (280–520). Used by all primary & detailed charts. |
+| `ComputeMiniChartHeight(fullH)` | Half of full chart height, clamped 180–360, for stacked Top Sessions mini panels. |
+| `ComputeTableColumnWidths(winW)` | Breakpoint-driven responsive column widths (900 / 760 / 520). Hidden columns become width 0. |
+| `BuildTimeAxisTicks(maxSeconds, n)` | Generates time-axis tick positions (1/2/2.5/5×10^k pattern) for detailed per-request time-series charts (Speed/Bytes + mini charts). |
+| `BuildNumericTicks(min, max, n)` | Shared numeric axis tick generator (same 1/2/2.5/5×10^k pattern) used for Batch X axis and ALL numeric Y axes (legacy `niceTicks` removed). |
+
+Axis unification status:
+- Batch (index) X axis uses helper-driven tick spacing (sparse, consistent with detailed charts) with RunTag labels when <=50 batches.
+- Time-series detailed charts use `BuildTimeAxisTicks` for X.
+- All numeric Y axes derive their domain directly from the first/last values returned by `BuildNumericTicks` (no separate "nice bounds" helper) and use `FormatNumericTick`; legacy `niceTicks`/`formatTick` + range padding helper have been removed.
+
+Testing:
+- Core helper tests live in `uihelpers/uihelpers_test.go`.
+- Batch axis integration tests gated behind build tag `ticks` (`go test -tags ticks -run TestBuildXAxis ./cmd/iqmviewer`). This keeps default test runs fast and side‑effect free.
+
 ### Theme selection
 - Settings → Screenshot Theme: Auto (default), Dark, Light.
 - Auto follows the system appearance on macOS; other OSes default to Light unless you pick Dark.
@@ -462,10 +482,45 @@ Run with a results file to open the UI:
 - Nice time ticks via `pickTimeStep` + `makeNiceTimeTicks`, actual data timestamps are preserved.
 
 ## Tests
-- Width determinism (headless):
-	- `TestScreenshotWidths_BaseSet` ensures all generated screenshots share the same width.
+The test suite is split into fast pure unit tests and optional heavier integration tests using build tags.
+
+Fast (default `go test`):
+* Pure helpers (responsive sizing) live in `cmd/iqmviewer/uihelpers` and always run.
+* GUI / crosshair logic tests are excluded by default behind the `crosshair` build tag.
+* Screenshot + command builder integration tests are excluded by default behind the `integration` build tag.
+
+Helper functions:
+* `ComputeChartDimensions(rawW)` – clamps chart width/height and enforces aspect ratio (moved to `uihelpers` for testability).
+* `ComputeTableColumnWidths(windowWidth)` – returns 10 column widths for summary table across responsive breakpoints (900px, 760px, 520px tiers).
+
+Build tag matrix:
+* Default: only pure helper tests run (`uihelpers_test.go`).
+* `-tags=crosshair` adds crosshair interaction / mapping tests (no heavy I/O, but depend on chart math).
+* `-tags=integration` adds screenshot rendering and external command builder tests (file I/O, PNG decoding, synthetic JSONL generation).
+* Combine tags to run everything: `-tags='crosshair integration'`.
+
+Examples:
+```bash
+# Fast sanity (helpers only)
+go test ./cmd/iqmviewer/... -count=1
+
+# Crosshair logic tests too
+go test -tags=crosshair ./cmd/iqmviewer -run TestIndexModeMapping_CentersAndSelection -count=1
+
+# All integration (screenshots + commands)
+go test -tags=integration ./cmd/iqmviewer -run TestScreenshotWidths_ -count=1
+
+# Full suite
+go test -tags='crosshair integration' ./cmd/iqmviewer/... -count=1
+```
+
+Width determinism (headless):
+* `TestScreenshotWidths_BaseSet` ensures all generated screenshots share the same width under forced `screenshotWidthOverride`.
+
+Manual screenshot run (headless):
+```bash
 go run ./cmd/iqmviewer -screenshot -file monitor_results.jsonl -screenshot-outdir docs/images
-- Run:
+```
 
 Flags:
 - -file: Path to monitor_results.jsonl (defaults to ./monitor_results.jsonl if omitted in screenshot mode)
@@ -480,8 +535,9 @@ Flags:
 - -screenshot-variants: 'none' | 'averages' (default 'averages')
 - -screenshot-dns-legacy: Overlay dashed legacy dns_time_ms on the DNS chart (default false)
 - -screenshot-selftest: Include the Local Throughput Self-Test chart (default true)
-```
-go test ./cmd/iqmviewer -run TestScreenshotWidths_ -v
+For just the screenshot width tests use:
+```bash
+go test -tags=integration ./cmd/iqmviewer -run TestScreenshotWidths_ -v
 ```
 
 ## Troubleshooting
